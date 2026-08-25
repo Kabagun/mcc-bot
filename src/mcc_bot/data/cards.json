@@ -10349,6 +10349,10 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "3501",
@@ -10524,6 +10528,10 @@
           "id": "cash_tax_exempt",
           "kind": "cash",
           "tax_exempt": true,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "5422",
@@ -10555,6 +10563,10 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "4112",
@@ -11604,6 +11616,174 @@
               "mcc": "7011",
               "value": 1
             }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bnb_1_2_3",
+      "name": "1-2-3",
+      "issuer": "БНБ-Банк",
+      "emoji": "💳",
+      "reward_programs": [
+        {
+          "id": "cash",
+          "kind": "cash",
+          "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "default": {
+            "value": 1
+          },
+          "excluded_mccs": [
+            "4814",
+            "4900",
+            "6012",
+            "6028",
+            "6050",
+            "6051",
+            "6211",
+            "4829",
+            "6531",
+            "6532",
+            "6533",
+            "6534",
+            "6535",
+            "6536",
+            "6537",
+            "6538",
+            "6539",
+            "6540",
+            "7311",
+            "7399",
+            "7995",
+            "8999",
+            "9211",
+            "9222",
+            "9311",
+            "9399",
+            "9402"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "belgazprombank_cashalot",
+      "name": "Cashalot",
+      "issuer": "Белгазпромбанк",
+      "emoji": "💳",
+      "reward_programs": [
+        {
+          "id": "cash",
+          "kind": "cash",
+          "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 10,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "unlimited": true,
+            "unit": "currency",
+            "currency": "BYN"
+          },
+          "offers": [
+            {
+              "mcc": "5411",
+              "value": 0.5
+            }
+          ],
+          "default": {
+            "value": 1
+          },
+          "excluded_mccs": [
+            "4900",
+            "6010",
+            "6011",
+            "6012",
+            "6051",
+            "6211",
+            "6536",
+            "6537",
+            "6538",
+            "9402",
+            "4899",
+            "4814",
+            "4816",
+            "4821",
+            "4829",
+            "9211",
+            "9222",
+            "9223",
+            "9311",
+            "9399",
+            "8398",
+            "4111",
+            "4131",
+            "4112",
+            "4511",
+            "7523",
+            "5541",
+            "5542",
+            "7995",
+            "9406"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "statusbank_statuskarta",
+      "name": "Статускарта",
+      "issuer": "СтатусБанк",
+      "emoji": "💳",
+      "reward_programs": [
+        {
+          "id": "cash",
+          "kind": "cash",
+          "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "offers": [
+            {
+              "mcc": "5411",
+              "value": 0.5
+            },
+            {
+              "mcc": "5300",
+              "value": 0.5
+            },
+            {
+              "mcc": "5541",
+              "value": 0.5
+            }
+          ],
+          "default": {
+            "value": 1.5
+          },
+          "excluded_mccs": [
+            "4812",
+            "4814",
+            "4816",
+            "4900",
+            "6012",
+            "6028",
+            "6051",
+            "6211",
+            "6536",
+            "6537",
+            "6538",
+            "6540",
+            "7311",
+            "7372",
+            "7399",
+            "7995",
+            "8999",
+            "9311",
+            "9399",
+            "9402"
           ]
         }
       ]

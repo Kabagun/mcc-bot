@@ -87,6 +87,89 @@ R_KARTA_EXCLUSIONS = {
     "9702",
     "9754",
 }
+CASHALOT_EXCLUSIONS = {
+    "4111",
+    "4112",
+    "4131",
+    "4511",
+    "4814",
+    "4816",
+    "4821",
+    "4829",
+    "4899",
+    "4900",
+    "5541",
+    "5542",
+    "6010",
+    "6011",
+    "6012",
+    "6051",
+    "6211",
+    "6536",
+    "6537",
+    "6538",
+    "7523",
+    "7995",
+    "8398",
+    "9211",
+    "9222",
+    "9223",
+    "9311",
+    "9399",
+    "9402",
+    "9406",
+}
+STATUSKARTA_EXCLUSIONS = {
+    "4812",
+    "4814",
+    "4816",
+    "4900",
+    "6012",
+    "6028",
+    "6051",
+    "6211",
+    "6536",
+    "6537",
+    "6538",
+    "6540",
+    "7311",
+    "7372",
+    "7399",
+    "7995",
+    "8999",
+    "9311",
+    "9399",
+    "9402",
+}
+BNB_1_2_3_EXCLUSIONS = {
+    "4814",
+    "4829",
+    "4900",
+    "6012",
+    "6028",
+    "6050",
+    "6051",
+    "6211",
+    "6531",
+    "6532",
+    "6533",
+    "6534",
+    "6535",
+    "6536",
+    "6537",
+    "6538",
+    "6539",
+    "6540",
+    "7311",
+    "7399",
+    "7995",
+    "8999",
+    "9211",
+    "9222",
+    "9311",
+    "9399",
+    "9402",
+}
 SUPPORTED_CARD_KEYS = {"id", "name", "issuer", "emoji", "condition", "reward_programs"}
 SUPPORTED_PROGRAM_KEYS = {
     "id",
@@ -114,14 +197,14 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 12
+    assert len(raw["cards"]) == 15
     assert (
         sum(
             len(program.get("offers", []))
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2815
+        == 2819
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -140,12 +223,18 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     kufar = next(card for card in raw["cards"] if card["id"] == "kufar")
     social = next(card for card in raw["cards"] if card["id"] == "mtbank_social")
     vitamin = next(card for card in raw["cards"] if card["id"] == "vitamin_d")
+    cashalot = next(card for card in raw["cards"] if card["id"] == "belgazprombank_cashalot")
+    statuskarta = next(card for card in raw["cards"] if card["id"] == "statusbank_statuskarta")
+    bnb_1_2_3 = next(card for card in raw["cards"] if card["id"] == "bnb_1_2_3")
     r_karta = next(card for card in raw["cards"] if card["id"] == "reshenie_r_karta")
     yarkaya = next(card for card in raw["cards"] if card["id"] == "yarkaya_karta")
     assert set(kufar["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
     assert social["reward_programs"][0]["default"] == {"value": 1}
     assert set(social["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
     assert set(vitamin["reward_programs"][1]["excluded_mccs"]) == VITAMIN_POINTS_EXCLUSIONS
+    assert set(cashalot["reward_programs"][0]["excluded_mccs"]) == CASHALOT_EXCLUSIONS
+    assert set(statuskarta["reward_programs"][0]["excluded_mccs"]) == STATUSKARTA_EXCLUSIONS
+    assert set(bnb_1_2_3["reward_programs"][0]["excluded_mccs"]) == BNB_1_2_3_EXCLUSIONS
     assert r_karta["reward_programs"][0]["default"] == {"value": 1.5}
     assert set(r_karta["reward_programs"][0]["excluded_mccs"]) == R_KARTA_EXCLUSIONS
     assert set(yarkaya["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
@@ -161,11 +250,14 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "zepter_card",
         "zepter_plus",
         "reshenie_r_karta",
+        "bnb_1_2_3",
         "belveb_dvizhenie",
         "kufar",
         "mtkarta",
         "mtbank_social",
         "yarkaya_karta",
+        "belgazprombank_cashalot",
+        "statusbank_statuskarta",
     ]
     vitamin = matches[0]
     assert vitamin.gross_percent == Decimal("4")
@@ -204,11 +296,14 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "4. 🔴💳 Цептер Card — 2%\n"
         "5. 🔴💳 Цептер PLUS — 2%\n"
         "6. 💳 R-карта — 1,5%\n"
-        "7. ⚫💳 Движение — 1%\n"
-        "8. 🔵💳 Куфар карта — 1% баллами\n"
-        "9. 🔵💳 Мткарта — 1% баллами\n"
-        "10. 🔵💳 Социальная карта — 1%\n"
-        "11. 🟡💳 Яркая карта — 1%"
+        "7. 💳 1-2-3 — 1%\n"
+        "8. ⚫💳 Движение — 1%\n"
+        "9. 🔵💳 Куфар карта — 1% баллами\n"
+        "10. 🔵💳 Мткарта — 1% баллами\n"
+        "11. 🔵💳 Социальная карта — 1%\n"
+        "12. 🟡💳 Яркая карта — 1%\n"
+        "13. 💳 Cashalot — 0,5%\n"
+        "14. 💳 Статускарта — 0,5%"
     )
 
 
@@ -284,7 +379,28 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
     assert yarkaya_program.get("offers", []) == []
     assert set(yarkaya_program["excluded_mccs"]) == KUFAR_EXCLUSIONS
 
-    for card_id in ("zepter_card", "oplati"):
+    cashalot_program = cards["belgazprombank_cashalot"]["reward_programs"][0]
+    assert cashalot_program["default"] == {"value": 1}
+    assert cashalot_program["offers"] == [{"mcc": "5411", "value": 0.5}]
+
+    statuskarta_program = cards["statusbank_statuskarta"]["reward_programs"][0]
+    assert statuskarta_program["default"] == {"value": 1.5}
+    assert statuskarta_program["offers"] == [
+        {"mcc": "5411", "value": 0.5},
+        {"mcc": "5300", "value": 0.5},
+        {"mcc": "5541", "value": 0.5},
+    ]
+
+    bnb_program = cards["bnb_1_2_3"]["reward_programs"][0]
+    assert bnb_program["default"] == {"value": 1}
+    assert bnb_program.get("offers", []) == []
+
+    for card_id in (
+        "zepter_card",
+        "oplati",
+        "belgazprombank_cashalot",
+        "statusbank_statuskarta",
+    ):
         for program in cards[card_id]["reward_programs"]:
             mccs = [offer["mcc"] for offer in program["offers"]]
             assert len(mccs) == len(set(mccs))
@@ -325,6 +441,44 @@ def test_real_catalog_r_karta_default_and_exclusions() -> None:
     assert r_karta.gross_percent == Decimal("1.5")
     assert format_moneyback(r_karta) == "1,5%"
     assert all(match.card.id != "reshenie_r_karta" for match in catalog.lookup("4812"))
+
+
+def test_real_catalog_cashalot_default_override_and_exclusions() -> None:
+    catalog = _catalog()
+    default = next(
+        match for match in catalog.lookup("7297") if match.card.id == "belgazprombank_cashalot"
+    )
+    grocery = next(
+        match for match in catalog.lookup("5411") if match.card.id == "belgazprombank_cashalot"
+    )
+
+    assert default.gross_percent == Decimal("1")
+    assert grocery.gross_percent == Decimal("0.5")
+    assert all(match.card.id != "belgazprombank_cashalot" for match in catalog.lookup("4900"))
+
+
+def test_real_catalog_statuskarta_default_overrides_and_exclusions() -> None:
+    catalog = _catalog()
+    default = next(
+        match for match in catalog.lookup("7297") if match.card.id == "statusbank_statuskarta"
+    )
+
+    assert default.gross_percent == Decimal("1.5")
+    for mcc in ("5411", "5300", "5541"):
+        match = next(
+            match for match in catalog.lookup(mcc) if match.card.id == "statusbank_statuskarta"
+        )
+        assert match.gross_percent == Decimal("0.5")
+    assert all(match.card.id != "statusbank_statuskarta" for match in catalog.lookup("4812"))
+
+
+def test_real_catalog_bnb_1_2_3_default_and_exclusions() -> None:
+    catalog = _catalog()
+    grocery = next(match for match in catalog.lookup("5411") if match.card.id == "bnb_1_2_3")
+
+    assert grocery.gross_percent == Decimal("1")
+    assert format_moneyback(grocery) == "1%"
+    assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("4814"))
 
 
 def test_real_catalog_vitamin_points_exclude_transport() -> None:
@@ -368,6 +522,12 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["vitamin_d"].issuer == "Белинвестбанк"
     assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"
     assert cards["mtkarta"].name == "Мткарта"
+    assert cards["belgazprombank_cashalot"].name == "Cashalot"
+    assert cards["belgazprombank_cashalot"].issuer == "Белгазпромбанк"
+    assert cards["statusbank_statuskarta"].name == "Статускарта"
+    assert cards["statusbank_statuskarta"].issuer == "СтатусБанк"
+    assert cards["bnb_1_2_3"].name == "1-2-3"
+    assert cards["bnb_1_2_3"].issuer == "БНБ-Банк"
     assert cards["reshenie_r_karta"].issuer == "Банк Решение"
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
@@ -376,6 +536,24 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
 
 def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     cards = {card.id: card for card in _catalog().cards}
+    assert all(
+        program.minimum_payment is not None
+        for card in cards.values()
+        for program in card.reward_programs
+    )
+    for card_id, program_id in (
+        ("zepter_card", "cash"),
+        ("oplati", "cash_tax_exempt"),
+        ("oplati", "cash"),
+        ("bnb_1_2_3", "cash"),
+        ("statusbank_statuskarta", "cash"),
+    ):
+        program = next(
+            program for program in cards[card_id].reward_programs if program.id == program_id
+        )
+        assert program.minimum_payment is not None
+        assert program.minimum_payment.amount == Decimal("0")
+        assert program.minimum_payment.currency == "BYN"
     expected = {
         ("belveb_dvizhenie", "cash"): ("0", "50", "currency"),
         ("zepter_plus", "cash"): ("0", "100", "currency"),
@@ -402,6 +580,10 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     assert yarkaya.minimum_payment is not None
     assert yarkaya.minimum_payment.amount == Decimal("10")
     assert yarkaya.maximum_reward is not None and yarkaya.maximum_reward.unlimited
+    cashalot = cards["belgazprombank_cashalot"].reward_programs[0]
+    assert cashalot.minimum_payment is not None
+    assert cashalot.minimum_payment.amount == Decimal("10")
+    assert cashalot.maximum_reward is not None and cashalot.maximum_reward.unlimited
 
 
 def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:
