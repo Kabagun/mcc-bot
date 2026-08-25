@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcc-bot"
+version = "0.1.0"
+description = "Telegram bot for looking up card moneyback by merchant category code"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1,<2",
+    "python-telegram-bot>=22.6,<23",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<8",
+    "ruff>=0.12,<1",
+]
+
+[project.scripts]
+mcc-bot = "mcc_bot.bot:main"
+mcc-check = "mcc_bot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcc_bot"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
