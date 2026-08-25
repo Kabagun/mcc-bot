@@ -40,6 +40,53 @@ KUFAR_EXCLUSIONS = {
     "7995",
     "9402",
 }
+VITAMIN_POINTS_EXCLUSIONS = KUFAR_EXCLUSIONS | {"4111", "4112"}
+R_KARTA_EXCLUSIONS = {
+    "4812",
+    "4814",
+    "4816",
+    "4829",
+    "4900",
+    "5960",
+    "6010",
+    "6011",
+    "6012",
+    "6028",
+    "6050",
+    "6051",
+    "6211",
+    "6300",
+    "6399",
+    "6529",
+    "6530",
+    "6531",
+    "6532",
+    "6533",
+    "6534",
+    "6535",
+    "6536",
+    "6537",
+    "6538",
+    "6540",
+    "7299",
+    "7311",
+    "7372",
+    "7399",
+    "7800",
+    "7801",
+    "7802",
+    "7995",
+    "8999",
+    "9222",
+    "9311",
+    "9399",
+    "9402",
+    "9406",
+    "9700",
+    "9701",
+    "9702",
+    "9754",
+}
 SUPPORTED_CARD_KEYS = {"id", "name", "issuer", "emoji", "condition", "reward_programs"}
 SUPPORTED_PROGRAM_KEYS = {
     "id",
@@ -49,6 +96,8 @@ SUPPORTED_PROGRAM_KEYS = {
     "rules",
     "default",
     "excluded_mccs",
+    "minimum_payment",
+    "maximum_reward",
 }
 
 
@@ -65,7 +114,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 11
+    assert len(raw["cards"]) == 12
     assert (
         sum(
             len(program.get("offers", []))
@@ -91,11 +140,14 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     kufar = next(card for card in raw["cards"] if card["id"] == "kufar")
     social = next(card for card in raw["cards"] if card["id"] == "mtbank_social")
     vitamin = next(card for card in raw["cards"] if card["id"] == "vitamin_d")
+    r_karta = next(card for card in raw["cards"] if card["id"] == "reshenie_r_karta")
     yarkaya = next(card for card in raw["cards"] if card["id"] == "yarkaya_karta")
     assert set(kufar["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
     assert social["reward_programs"][0]["default"] == {"value": 1}
     assert set(social["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
-    assert set(vitamin["reward_programs"][1]["excluded_mccs"]) == KUFAR_EXCLUSIONS
+    assert set(vitamin["reward_programs"][1]["excluded_mccs"]) == VITAMIN_POINTS_EXCLUSIONS
+    assert r_karta["reward_programs"][0]["default"] == {"value": 1.5}
+    assert set(r_karta["reward_programs"][0]["excluded_mccs"]) == R_KARTA_EXCLUSIONS
     assert set(yarkaya["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
 
 
@@ -108,6 +160,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "shopper_mtbank",
         "zepter_card",
         "zepter_plus",
+        "reshenie_r_karta",
         "belveb_dvizhenie",
         "kufar",
         "mtkarta",
@@ -140,6 +193,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     kufar = next(match for match in matches if match.card.id == "kufar")
     assert kufar.gross_percent == Decimal("1")
     assert kufar.components[0].kind == "points"
+    assert format_moneyback(kufar) == "1% баллами"
 
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered == (
@@ -149,11 +203,12 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "3. 🔵💳 Шоппер — 2,5% (2,44% после налога)\n"
         "4. 🔴💳 Цептер Card — 2%\n"
         "5. 🔴💳 Цептер PLUS — 2%\n"
-        "6. ⚫💳 Движение — 1%\n"
-        "7. 🔵💳 Куфар карта — 1%\n"
-        "8. 🔵💳 МТКАРТА — 1%\n"  # noqa: RUF001
-        "9. 🔵💳 Социальная карта — 1%\n"
-        "10. 🟡💳 Яркая карта — 1%"
+        "6. 💳 R-карта — 1,5%\n"
+        "7. ⚫💳 Движение — 1%\n"
+        "8. 🔵💳 Куфар карта — 1% баллами\n"
+        "9. 🔵💳 Мткарта — 1% баллами\n"
+        "10. 🔵💳 Социальная карта — 1%\n"
+        "11. 🟡💳 Яркая карта — 1%"
     )
 
 
@@ -264,6 +319,22 @@ def test_real_catalog_social_uses_one_percent_fallback_with_kufar_exclusions() -
     assert all(match.card.id != "mtbank_social" for match in catalog.lookup("6010"))
 
 
+def test_real_catalog_r_karta_default_and_exclusions() -> None:
+    catalog = _catalog()
+    r_karta = next(match for match in catalog.lookup("7297") if match.card.id == "reshenie_r_karta")
+    assert r_karta.gross_percent == Decimal("1.5")
+    assert format_moneyback(r_karta) == "1,5%"
+    assert all(match.card.id != "reshenie_r_karta" for match in catalog.lookup("4812"))
+
+
+def test_real_catalog_vitamin_points_exclude_transport() -> None:
+    catalog = _catalog()
+    assert all(match.card.id != "vitamin_d" for match in catalog.lookup("4111"))
+    vitamin = next(match for match in catalog.lookup("4112") if match.card.id == "vitamin_d")
+    assert [component.kind for component in vitamin.components] == ["cash"]
+    assert format_moneyback(vitamin) == "1%"
+
+
 def test_real_catalog_kufar_fallback_exclusions_vitamin_and_leading_zero() -> None:
     catalog = _catalog()
 
@@ -296,9 +367,41 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["zepter_card"].issuer == "Цептер Банк"
     assert cards["vitamin_d"].issuer == "Белинвестбанк"
     assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"
+    assert cards["mtkarta"].name == "Мткарта"
+    assert cards["reshenie_r_karta"].issuer == "Банк Решение"
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
         assert cards[card_id].issuer == "МТБанк"
+
+
+def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
+    cards = {card.id: card for card in _catalog().cards}
+    expected = {
+        ("belveb_dvizhenie", "cash"): ("0", "50", "currency"),
+        ("zepter_plus", "cash"): ("0", "100", "currency"),
+        ("mtkarta", "points"): ("10", "200", "points"),
+        ("mtbank_social", "cash"): ("0", "200", "currency"),
+        ("shopper_mtbank", "cash"): ("10", "30", "currency"),
+        ("cactus_mtbank", "cash"): ("0", "300", "points"),
+        ("vitamin_d", "cash"): ("10", "50", "currency"),
+        ("vitamin_d", "points"): ("0", "200", "points"),
+        ("kufar", "points"): ("0", "200", "points"),
+        ("reshenie_r_karta", "cash"): ("0", "100", "currency"),
+    }
+    for (card_id, program_id), (minimum, maximum, unit) in expected.items():
+        program = next(
+            program for program in cards[card_id].reward_programs if program.id == program_id
+        )
+        assert program.minimum_payment is not None
+        assert program.minimum_payment.amount == Decimal(minimum)
+        assert program.minimum_payment.currency == "BYN"
+        assert program.maximum_reward is not None
+        assert program.maximum_reward.amount == Decimal(maximum)
+        assert program.maximum_reward.unit == unit
+    yarkaya = cards["yarkaya_karta"].reward_programs[0]
+    assert yarkaya.minimum_payment is not None
+    assert yarkaya.minimum_payment.amount == Decimal("10")
+    assert yarkaya.maximum_reward is not None and yarkaya.maximum_reward.unlimited
 
 
 def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:

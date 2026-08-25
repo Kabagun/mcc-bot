@@ -18,6 +18,7 @@ from typing import Any
 MCC_PATTERN = re.compile(r"(?:mcc[\s:=-]*)?([0-9]{4})", re.IGNORECASE)
 SUPPORTED_UNITS = frozenset({"percent", "currency"})
 SUPPORTED_PROGRAM_KINDS = frozenset({"cash", "points"})
+SUPPORTED_REWARD_CAP_UNITS = frozenset({"currency", "points"})
 PERCENT_TAX_THRESHOLD = Decimal("2")
 PERCENT_TAX_RATE = Decimal("0.13")
 
@@ -68,6 +69,29 @@ class CardCondition:
 
 
 @dataclass(frozen=True, slots=True)
+class MoneyAmount:
+    """A non-negative monetary amount in a three-letter currency."""
+
+    amount: Decimal
+    currency: str
+
+
+@dataclass(frozen=True, slots=True)
+class RewardCap:
+    """A maximum reward amount, or an explicitly unlimited reward."""
+
+    amount: Decimal | None
+    unit: str
+    currency: str | None = None
+
+    @property
+    def unlimited(self) -> bool:
+        """Return whether the reward has no configured maximum."""
+
+        return self.amount is None
+
+
+@dataclass(frozen=True, slots=True)
 class RewardOffer:
     """One explicit MCC value within a reward program."""
 
@@ -93,6 +117,8 @@ class RewardProgram:
     offers: tuple[RewardOffer, ...]
     default_value: Decimal | None
     excluded_mccs: frozenset[str]
+    minimum_payment: MoneyAmount | None
+    maximum_reward: RewardCap | None
     unit: str = "percent"
     currency: str | None = None
 
@@ -311,6 +337,58 @@ def _parse_exclusions(raw_value: Any, prefix: str) -> frozenset[str]:
     return frozenset(result)
 
 
+def _currency(value: Any, field: str) -> str:
+    currency = _text(value, field)
+    assert currency is not None
+    currency = currency.upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        raise CatalogError(f"{field} должен быть трёхбуквенным кодом")
+    return currency
+
+
+def _parse_minimum_payment(raw_value: Any, prefix: str) -> MoneyAmount | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise CatalogError(f"{prefix} должен быть объектом")
+    _reject_unknown(raw_value, {"amount", "currency"}, prefix)
+    return MoneyAmount(
+        amount=_decimal(raw_value.get("amount"), f"{prefix}.amount"),
+        currency=_currency(raw_value.get("currency"), f"{prefix}.currency"),
+    )
+
+
+def _parse_maximum_reward(raw_value: Any, prefix: str) -> RewardCap | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise CatalogError(f"{prefix} должен быть объектом")
+    _reject_unknown(raw_value, {"amount", "unlimited", "unit", "currency"}, prefix)
+    unit = _text(raw_value.get("unit"), f"{prefix}.unit")
+    assert unit is not None
+    unit = unit.lower()
+    if unit not in SUPPORTED_REWARD_CAP_UNITS:
+        raise CatalogError(
+            f"{prefix}.unit должен быть одним из {sorted(SUPPORTED_REWARD_CAP_UNITS)}"
+        )
+    has_unlimited = "unlimited" in raw_value
+    unlimited = raw_value.get("unlimited", False)
+    if not isinstance(unlimited, bool):
+        raise CatalogError(f"{prefix}.unlimited должен быть boolean")
+    has_amount = "amount" in raw_value
+    if has_amount == has_unlimited or (has_unlimited and not unlimited):
+        raise CatalogError(f"{prefix} должен содержать amount или unlimited: true")
+    amount = None if unlimited else _decimal(raw_value["amount"], f"{prefix}.amount")
+    raw_currency = raw_value.get("currency")
+    if unit == "currency":
+        currency = _currency(raw_currency, f"{prefix}.currency")
+    else:
+        if raw_currency is not None:
+            raise CatalogError(f"{prefix}.currency запрещён для unit points")
+        currency = None
+    return RewardCap(amount=amount, unit=unit, currency=currency)
+
+
 def _parse_reward_program(raw_program: Any, card_index: int, program_index: int) -> RewardProgram:
     prefix = f"cards[{card_index}].reward_programs[{program_index}]"
     if not isinstance(raw_program, dict):
@@ -327,6 +405,8 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
             "rules",
             "default",
             "excluded_mccs",
+            "minimum_payment",
+            "maximum_reward",
         },
         prefix,
     )
@@ -418,6 +498,12 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
     excluded_mccs = _parse_exclusions(
         raw_program.get("excluded_mccs", []), f"{prefix}.excluded_mccs"
     )
+    minimum_payment = _parse_minimum_payment(
+        raw_program.get("minimum_payment"), f"{prefix}.minimum_payment"
+    )
+    maximum_reward = _parse_maximum_reward(
+        raw_program.get("maximum_reward"), f"{prefix}.maximum_reward"
+    )
     return RewardProgram(
         id=program_id,
         kind=kind,
@@ -425,6 +511,8 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
         offers=tuple(offers),
         default_value=default_value,
         excluded_mccs=excluded_mccs,
+        minimum_payment=minimum_payment,
+        maximum_reward=maximum_reward,
         unit=unit,
         currency=currency,
     )

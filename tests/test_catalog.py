@@ -292,6 +292,77 @@ def test_conditions_are_typed(tmp_path: Path) -> None:
     assert card.condition is not None and card.condition.count == 3
 
 
+def test_reward_program_payment_and_cap_terms_are_typed(tmp_path: Path) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "points",
+                    "tax_exempt": False,
+                    "minimum_payment": {"amount": 10, "currency": "byn"},
+                    "maximum_reward": {"amount": 200, "unit": "points"},
+                    "offers": [{"mcc": "5411", "value": 1}],
+                }
+            ),
+            {
+                **_minimal_card(
+                    {
+                        "kind": "cash",
+                        "tax_exempt": False,
+                        "maximum_reward": {
+                            "unlimited": True,
+                            "unit": "currency",
+                            "currency": "byn",
+                        },
+                        "offers": [{"mcc": "5411", "value": 1}],
+                    }
+                ),
+                "id": "unlimited",
+            },
+        ],
+    }
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, payload))
+    points = catalog.cards[0].reward_programs[0]
+    assert points.minimum_payment is not None
+    assert points.minimum_payment.amount == Decimal("10")
+    assert points.minimum_payment.currency == "BYN"
+    assert points.maximum_reward is not None
+    assert points.maximum_reward.amount == Decimal("200")
+    assert points.maximum_reward.unit == "points"
+    unlimited = catalog.cards[1].reward_programs[0].maximum_reward
+    assert unlimited is not None and unlimited.unlimited
+    assert unlimited.currency == "BYN"
+
+
+@pytest.mark.parametrize(
+    "maximum_reward",
+    [
+        {"amount": "200", "unit": "points"},
+        {"amount": 200, "unlimited": True, "unit": "points"},
+        {"amount": 200, "unlimited": False, "unit": "points"},
+        {"amount": 200, "unit": "points", "currency": "BYN"},
+        {"unlimited": False, "unit": "currency", "currency": "BYN"},
+    ],
+)
+def test_reward_cap_contract_is_strict(tmp_path: Path, maximum_reward: dict[str, object]) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "maximum_reward": maximum_reward,
+                    "offers": [{"mcc": "5411", "value": 1}],
+                }
+            )
+        ],
+    }
+    with pytest.raises(CatalogError):
+        CardCatalog.from_file(_write_payload(tmp_path, payload))
+
+
 def test_duplicate_card_program_and_offer_are_rejected(tmp_path: Path) -> None:
     card = _minimal_card(
         {

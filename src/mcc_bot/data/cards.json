@@ -11,6 +11,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 50,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "5912",
@@ -4554,6 +4563,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 100,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "3501",
@@ -4697,7 +4715,7 @@
     },
     {
       "id": "mtkarta",
-      "name": "МТКАРТА",
+      "name": "Мткарта",
       "issuer": "МТБанк",
       "emoji": "🔵💳",
       "condition": {
@@ -4709,6 +4727,14 @@
           "id": "points",
           "kind": "points",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 10,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 200,
+            "unit": "points"
+          },
           "offers": [
             {
               "mcc": "5992",
@@ -9196,6 +9222,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 200,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "5047",
@@ -9319,6 +9354,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 10,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 30,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "5199",
@@ -9461,6 +9505,14 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 300,
+            "unit": "points"
+          },
           "offers": [
             {
               "mcc": "5541",
@@ -9692,6 +9744,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 10,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 50,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "offers": [
             {
               "mcc": "0742",
@@ -10159,10 +10220,20 @@
           "id": "points",
           "kind": "points",
           "tax_exempt": true,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 200,
+            "unit": "points"
+          },
           "default": {
             "value": 3
           },
           "excluded_mccs": [
+            "4111",
+            "4112",
             "6010",
             "6011",
             "6012",
@@ -10207,6 +10278,14 @@
           "id": "points",
           "kind": "points",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 200,
+            "unit": "points"
+          },
           "offers": [
             {
               "mcc": "5411",
@@ -11530,6 +11609,77 @@
       ]
     },
     {
+      "id": "reshenie_r_karta",
+      "name": "R-карта",
+      "issuer": "Банк Решение",
+      "emoji": "💳",
+      "reward_programs": [
+        {
+          "id": "cash",
+          "kind": "cash",
+          "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 100,
+            "unit": "currency",
+            "currency": "BYN"
+          },
+          "default": {
+            "value": 1.5
+          },
+          "excluded_mccs": [
+            "4812",
+            "4814",
+            "4816",
+            "4829",
+            "4900",
+            "5960",
+            "6010",
+            "6011",
+            "6012",
+            "6028",
+            "6050",
+            "6051",
+            "6211",
+            "6300",
+            "6399",
+            "6529",
+            "6530",
+            "6531",
+            "6532",
+            "6533",
+            "6534",
+            "6535",
+            "6536",
+            "6537",
+            "6538",
+            "6540",
+            "7299",
+            "7311",
+            "7372",
+            "7399",
+            "7800",
+            "7801",
+            "7802",
+            "7995",
+            "8999",
+            "9222",
+            "9311",
+            "9399",
+            "9402",
+            "9406",
+            "9700",
+            "9701",
+            "9702",
+            "9754"
+          ]
+        }
+      ]
+    },
+    {
       "id": "yarkaya_karta",
       "name": "Яркая карта",
       "issuer": "Приорбанк",
@@ -11539,6 +11689,15 @@
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
+          "minimum_payment": {
+            "amount": 10,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "unlimited": true,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "default": {
             "value": 1
           },

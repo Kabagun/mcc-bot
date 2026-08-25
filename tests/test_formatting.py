@@ -101,6 +101,7 @@ def test_format_matches_does_not_render_internal_conditions(tmp_path: Path) -> N
     rendered = format_matches("5411", CardCatalog.from_file(path).lookup("5411"))
     assert "подключённых категорий" not in rendered
     assert "Note" not in rendered
+    assert "1% баллами" in rendered
 
 
 def test_split_message_prefers_line_boundaries() -> None:

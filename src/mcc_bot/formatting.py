@@ -44,10 +44,7 @@ def format_moneyback(match: CardMatch) -> str:
 
     if len(match.components) == 1:
         component = match.components[0]
-        return _component_label(
-            component,
-            show_kind=component.kind == "points" and component.tax_exempt,
-        )
+        return _component_label(component, show_kind=component.kind == "points")
     return " + ".join(
         _component_label(component, show_kind=component.kind == "points")
         for component in match.components
