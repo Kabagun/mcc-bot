@@ -22,26 +22,6 @@ def _required(name: str) -> str:
     return value
 
 
-def _boolean(name: str, *, default: bool = False) -> bool:
-    raw_value = os.getenv(name, str(default)).strip().lower()
-    if raw_value in {"1", "true", "yes", "on"}:
-        return True
-    if raw_value in {"0", "false", "no", "off"}:
-        return False
-    raise SettingsError(f"{name} должна иметь значение true или false")
-
-
-def _allowed_user_ids(raw_value: str) -> frozenset[int]:
-    values = [part.strip() for part in raw_value.replace(";", ",").split(",")]
-    try:
-        result = frozenset(int(value) for value in values if value)
-    except ValueError as exc:
-        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS должна содержать числовые ID") from exc
-    if any(value < 0 for value in result):
-        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS должна содержать неотрицательные ID")
-    return result
-
-
 def _path(name: str, default: Path) -> Path:
     raw_value = os.getenv(name, "").strip()
     return Path(raw_value).expanduser() if raw_value else default
@@ -52,8 +32,6 @@ class BotSettings:
     """Complete Telegram bot configuration."""
 
     token: str
-    open_access: bool
-    allowed_user_ids: frozenset[int]
     catalog_path: Path = DEFAULT_CATALOG_PATH
     descriptions_path: Path = DEFAULT_DESCRIPTIONS_PATH
     log_level: str = "INFO"
@@ -62,16 +40,10 @@ class BotSettings:
     def from_environment(cls) -> BotSettings:
         """Load and validate all bot settings from process environment variables."""
 
-        open_access = _boolean("TELEGRAM_OPEN_ACCESS")
-        allowed_user_ids = _allowed_user_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS", ""))
-        if not open_access and not allowed_user_ids:
-            raise SettingsError("Укажите TELEGRAM_OPEN_ACCESS=true или TELEGRAM_ALLOWED_USER_IDS")
         catalog_path = _path("MCC_CATALOG_PATH", DEFAULT_CATALOG_PATH)
         descriptions_path = _path("MCC_DESCRIPTIONS_PATH", DEFAULT_DESCRIPTIONS_PATH)
         return cls(
             token=_required("TELEGRAM_BOT_TOKEN"),
-            open_access=open_access,
-            allowed_user_ids=allowed_user_ids,
             catalog_path=catalog_path,
             descriptions_path=descriptions_path,
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",

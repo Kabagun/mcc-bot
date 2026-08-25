@@ -34,20 +34,6 @@ def load_environment() -> None:
     load_dotenv(dotenv_path=Path(".env"), override=False)
 
 
-def _is_authorized(update: Update, settings: BotSettings) -> bool:
-    """Return whether the update's Telegram user may query the catalog."""
-
-    user = update.effective_user
-    return user is not None and (settings.open_access or user.id in settings.allowed_user_ids)
-
-
-async def _deny(update: Update) -> None:
-    """Respond without revealing whether the catalog contains any data."""
-
-    if update.effective_message is not None:
-        await update.effective_message.reply_text("Доступ запрещён.")
-
-
 async def _configure_bot_commands(application: Application) -> None:
     """Expose the supported commands in Telegram's command menu."""
 
@@ -71,10 +57,6 @@ async def _reply(update: Update, text: str) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle ``/start`` with a short usage guide."""
 
-    settings: BotSettings = context.application.bot_data["settings"]
-    if not _is_authorized(update, settings):
-        await _deny(update)
-        return
     await _reply(
         update,
         "Отправьте четырёхзначный MCC, чтобы увидеть карты с манибэком.\n"  # noqa: RUF001
@@ -93,10 +75,6 @@ async def _lookup_and_reply(
     context: ContextTypes.DEFAULT_TYPE,
     raw_mcc: str,
 ) -> None:
-    settings: BotSettings = context.application.bot_data["settings"]
-    if not _is_authorized(update, settings):
-        await _deny(update)
-        return
     catalog: CardCatalog = context.application.bot_data["catalog"]
     descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
     try:
@@ -111,10 +89,6 @@ async def _lookup_and_reply(
 async def lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle ``/mcc 5411``."""
 
-    settings: BotSettings = context.application.bot_data["settings"]
-    if not _is_authorized(update, settings):
-        await _deny(update)
-        return
     raw_mcc = " ".join(context.args).strip()
     if not raw_mcc:
         await _reply(update, "Укажите четырёхзначный MCC после /mcc, например /mcc 5411.")
@@ -142,7 +116,6 @@ def build_application(settings: BotSettings) -> Application:
     application = (
         ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
     )
-    application.bot_data["settings"] = settings
     application.bot_data["catalog"] = catalog
     application.bot_data["descriptions"] = descriptions
     application.add_handler(CommandHandler("start", start))

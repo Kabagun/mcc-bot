@@ -20,10 +20,8 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and set `TELEGRAM_BOT_TOKEN`. Keep access restricted by filling in
-`TELEGRAM_ALLOWED_USER_IDS`; set `TELEGRAM_OPEN_ACCESS=true` only for an
-intentionally public bot. The process refuses to start if both access modes are
-disabled. `python-dotenv` loads `.env` from the working directory before
+Edit `.env` and set `TELEGRAM_BOT_TOKEN`. The bot is public and answers every
+Telegram user. `python-dotenv` loads `.env` from the working directory before
 settings, while process environment variables take precedence.
 
 Validate or query locally without starting Telegram:
@@ -117,8 +115,6 @@ attribution and pinned source URL.
 | Variable | Required | Description |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | bot only | Token issued by BotFather |
-| `TELEGRAM_OPEN_ACCESS` | no | `true` to allow every Telegram user; defaults to `false` |
-| `TELEGRAM_ALLOWED_USER_IDS` | restricted mode | Comma- or semicolon-separated numeric IDs |
 | `MCC_CATALOG_PATH` | no | Optional external catalog override; otherwise bundled data |
 | `MCC_DESCRIPTIONS_PATH` | no | Optional external MCC map override; otherwise bundled data |
 | `LOG_LEVEL` | no | Python log level; defaults to `INFO` |
