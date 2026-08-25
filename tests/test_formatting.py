@@ -8,7 +8,7 @@ from mcc_bot.descriptions import DescriptionCatalog
 from mcc_bot.formatting import format_matches, format_moneyback, split_message
 
 
-def test_format_matches_is_russian_and_includes_issuer(catalog_path: Path, tmp_path: Path) -> None:
+def test_format_matches_is_compact_and_russian(catalog_path: Path, tmp_path: Path) -> None:
     matches = CardCatalog.from_file(catalog_path).lookup("5411")
     descriptions_path = tmp_path / "descriptions.json"
     descriptions_path.write_text('{"5411": "Продуктовые магазины"}', encoding="utf-8")
@@ -17,8 +17,9 @@ def test_format_matches_is_russian_and_includes_issuer(catalog_path: Path, tmp_p
     rendered = format_matches("5411", matches, descriptions)
 
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
-    assert "1. 🅱️ Beta Card · Beta Bank — 5% деньгами (4,61% после налога)" in rendered
-    assert "3. 🅰️ Alpha Card · Alpha Bank — 2,5% деньгами (2,44% после налога)" in rendered
+    assert "1. 🅱️ Beta Card — 5% (4,61% после налога)" in rendered
+    assert "3. 🅰️ Alpha Card — 2,5% (2,44% после налога)" in rendered
+    assert "Beta Bank" not in rendered
     assert "after tax" not in rendered
 
 
@@ -68,10 +69,10 @@ def test_format_moneyback_tax_and_points_exemption(tmp_path: Path) -> None:
     matches = CardCatalog.from_file(path).lookup("5411")
     by_kind = {match.components[0].kind: match for match in matches}
     assert format_moneyback(by_kind["points"]) == "3% баллами"
-    assert format_moneyback(by_kind["cash"]) == "3% деньгами (2,87% после налога)"
+    assert format_moneyback(by_kind["cash"]) == "3% (2,87% после налога)"
 
 
-def test_format_matches_renders_structured_conditions(tmp_path: Path) -> None:
+def test_format_matches_does_not_render_internal_conditions(tmp_path: Path) -> None:
     path = tmp_path / "cards.json"
     path.write_text(
         json.dumps(
@@ -98,7 +99,7 @@ def test_format_matches_renders_structured_conditions(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     rendered = format_matches("5411", CardCatalog.from_file(path).lookup("5411"))
-    assert "   ↳ до 3 подключённых категорий" in rendered
+    assert "подключённых категорий" not in rendered
     assert "Note" not in rendered
 
 

@@ -2,12 +2,10 @@
   "version": 2,
   "cards": [
     {
-      "id": "screenshot_base_unknown",
-      "name": "Карта (название уточняется)",
-      "emoji": "❓💳",
-      "condition": {
-        "kind": "placeholder_name"
-      },
+      "id": "belveb_dvizhenie",
+      "name": "Движение",
+      "issuer": "Банк БелВЭБ",
+      "emoji": "🏃💳",
       "reward_programs": [
         {
           "id": "cash",

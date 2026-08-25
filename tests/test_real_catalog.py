@@ -112,11 +112,11 @@ def test_real_catalog_5411_starts_with_vitamin_shopper_zepter_and_kufar_explicit
         Decimal("1"),
         Decimal("3"),
     ]
-    assert format_moneyback(vitamin) == "1% деньгами + 3% баллами"
+    assert format_moneyback(vitamin) == "1% + 3% баллами"
 
     shopper = next(match for match in matches if match.card.id == "shopper_mtbank")
     assert shopper.gross_percent == Decimal("2.5")
-    assert format_moneyback(shopper) == "2,5% деньгами (2,44% после налога)"
+    assert format_moneyback(shopper) == "2,5% (2,44% после налога)"
     zepter = next(match for match in matches if match.card.id == "zepter_plus")
     assert zepter.gross_percent == Decimal("2")
     kufar = next(match for match in matches if match.card.id == "kufar")
@@ -125,16 +125,19 @@ def test_real_catalog_5411_starts_with_vitamin_shopper_zepter_and_kufar_explicit
 
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
+    assert "🏃💳 Движение — 1%" in rendered
+    assert "МТБанк / Visa / Kufar" not in rendered
+    assert "подключённых категорий" not in rendered
     assert "манибэк от 0" not in rendered
     assert "after tax" not in rendered and "Note" not in rendered
 
 
-def test_real_catalog_5912_has_taxed_five_percent_and_typed_conditions() -> None:
+def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() -> None:
     matches = _catalog().lookup("5912")
-    screenshot = next(match for match in matches if match.card.id == "screenshot_base_unknown")
-    assert screenshot.gross_percent == Decimal("5")
-    assert screenshot.net_percent == Decimal("4.61")
-    assert format_moneyback(screenshot) == "5% деньгами (4,61% после налога)"
+    social = next(match for match in matches if match.card.id == "mtbank_social")
+    assert social.gross_percent == Decimal("5")
+    assert social.net_percent == Decimal("4.61")
+    assert format_moneyback(social) == "5% (4,61% после налога)"
     assert next(match for match in matches if match.card.id == "mtkarta").card.condition.kind == (
         "max_connected_categories"
     )
@@ -142,8 +145,9 @@ def test_real_catalog_5912_has_taxed_five_percent_and_typed_conditions() -> None
         match for match in matches if match.card.id == "cactus_mtbank"
     ).card.condition.kind == ("selected_category")
     rendered = format_matches("5912", matches, _descriptions())
-    assert "   ↳ до 3 подключённых категорий" in rendered
-    assert "   ↳ только выбранная категория" in rendered
+    assert "🏃💳 Движение — 5% (4,61% после налога)" in rendered
+    assert "подключённых категорий" not in rendered
+    assert "выбранная категория" not in rendered
 
 
 def test_real_catalog_kufar_fallback_exclusions_vitamin_and_leading_zero() -> None:
@@ -165,9 +169,9 @@ def test_real_catalog_kufar_fallback_exclusions_vitamin_and_leading_zero() -> No
 def test_real_catalog_uses_requested_display_metadata() -> None:
     cards = {card.id: card for card in _catalog().cards}
 
-    assert cards["screenshot_base_unknown"].name == "Карта (название уточняется)"
-    assert cards["screenshot_base_unknown"].issuer is None
-    assert cards["screenshot_base_unknown"].emoji == "❓💳"
+    assert cards["belveb_dvizhenie"].name == "Движение"
+    assert cards["belveb_dvizhenie"].issuer == "Банк БелВЭБ"
+    assert cards["belveb_dvizhenie"].emoji == "🏃💳"
     assert cards["zepter_plus"].issuer == "Цептер Банк"
     assert cards["vitamin_d"].issuer == "Белинвестбанк"
     assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"

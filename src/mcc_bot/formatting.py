@@ -24,13 +24,15 @@ def _format_decimal(value: Decimal, *, places: int | None = None) -> str:
     return (rendered or "0").replace(".", ",")
 
 
-def _component_label(component: RewardComponent) -> str:
+def _component_label(component: RewardComponent, *, show_kind: bool = False) -> str:
     if component.unit == "currency":
         currency = component.currency or ""
         return f"{_format_decimal(component.gross_value)} {currency}".strip()
-    kind_label = "деньгами" if component.kind == "cash" else "баллами"
     value = _format_decimal(component.gross_value)
-    result = f"{value}% {kind_label}"
+    kind_label = ""
+    if show_kind:
+        kind_label = " деньгами" if component.kind == "cash" else " баллами"
+    result = f"{value}%{kind_label}"
     if not component.tax_exempt and component.gross_value > PERCENT_TAX_THRESHOLD:
         net = _format_decimal(calculate_net_percent(component.gross_value), places=2)
         result += f" ({net}% после налога)"
@@ -38,9 +40,18 @@ def _component_label(component: RewardComponent) -> str:
 
 
 def format_moneyback(match: CardMatch) -> str:
-    """Render all reward components, preserving their program semantics."""
+    """Render a compact reward, showing kinds only when they disambiguate a stack."""
 
-    return " + ".join(_component_label(component) for component in match.components)
+    if len(match.components) == 1:
+        component = match.components[0]
+        return _component_label(
+            component,
+            show_kind=component.kind == "points" and component.tax_exempt,
+        )
+    return " + ".join(
+        _component_label(component, show_kind=component.kind == "points")
+        for component in match.components
+    )
 
 
 def _description(descriptions: DescriptionCatalog | Mapping[str, str] | None, mcc: str) -> str:
@@ -66,23 +77,6 @@ def _header_emoji(description: str) -> str:
     return "🧾"
 
 
-def _condition_text(match: CardMatch) -> str | None:
-    condition = match.card.condition
-    if condition is None or condition.kind == "placeholder_name":
-        return None
-    if condition.kind == "max_connected_categories":
-        return f"↳ до {condition.count} подключённых категорий"
-    if condition.kind == "selected_category":
-        return "↳ только выбранная категория"
-    if condition.kind == "minimum_spend":
-        amount = _format_decimal(condition.amount or Decimal("0"))
-        currency = "р." if condition.currency == "RUB" else condition.currency  # noqa: RUF001
-        return f"↳ манибэк от {amount} {currency}"
-    if condition.kind == "kufar_rules":
-        return "↳ 1% в продуктах и на АЗС · 2% в остальных магазинах · исключения без манибэка"  # noqa: RUF001
-    return None
-
-
 def format_matches(
     mcc: str,
     matches: tuple[CardMatch, ...],
@@ -96,13 +90,7 @@ def format_matches(
         return f"{header}\n\n❌ Доступных карт нет."
     lines = [header, ""]
     for index, match in enumerate(matches, start=1):
-        issuer = f" · {match.card.issuer}" if match.card.issuer else ""
-        lines.append(
-            f"{index}. {match.card.emoji} {match.card.name}{issuer} — {format_moneyback(match)}"
-        )
-        condition = _condition_text(match)
-        if condition:
-            lines.append(f"   {condition}")
+        lines.append(f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}")
     return "\n".join(lines)
 
 

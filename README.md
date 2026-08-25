@@ -98,8 +98,8 @@ Percentage tax is applied to each component separately: the first 2 percentage
 points are tax-free and only the remainder is reduced by 13%. Thus 3% becomes
 `3% деньгами (2,87% после налога)` and a tax-exempt 3% points reward remains
 `3% баллами`. Display uses comma decimals and never prints raw catalog notes.
-Typed conditions currently include `max_connected_categories`,
-`selected_category`, `minimum_spend`, `kufar_rules`, and `placeholder_name`.
+Typed conditions remain in the catalog for validation and future filtering, but
+the user-facing answer contains only the MCC, card name, and exact reward.
 
 MCC descriptions are loaded from `MCC_DESCRIPTIONS_PATH`, defaulting to the
 bundled `mcc_bot/data/mcc_descriptions.json`. Missing descriptions render as
