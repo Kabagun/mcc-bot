@@ -89,9 +89,12 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     )
     assert all(card.get("issuer") != "не указан" for card in raw["cards"])
     kufar = next(card for card in raw["cards"] if card["id"] == "kufar")
+    social = next(card for card in raw["cards"] if card["id"] == "mtbank_social")
     vitamin = next(card for card in raw["cards"] if card["id"] == "vitamin_d")
     yarkaya = next(card for card in raw["cards"] if card["id"] == "yarkaya_karta")
     assert set(kufar["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
+    assert social["reward_programs"][0]["default"] == {"value": 1}
+    assert set(social["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
     assert set(vitamin["reward_programs"][1]["excluded_mccs"]) == KUFAR_EXCLUSIONS
     assert set(yarkaya["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
 
@@ -108,6 +111,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "belveb_dvizhenie",
         "kufar",
         "mtkarta",
+        "mtbank_social",
         "yarkaya_karta",
     ]
     vitamin = matches[0]
@@ -148,7 +152,8 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "6. ⚫💳 Движение — 1%\n"
         "7. 🔵💳 Куфар карта — 1%\n"
         "8. 🔵💳 МТКАРТА — 1%\n"  # noqa: RUF001
-        "9. 🟡💳 Яркая карта — 1%"
+        "9. 🔵💳 Социальная карта — 1%\n"
+        "10. 🟡💳 Яркая карта — 1%"
     )
 
 
@@ -246,6 +251,17 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
     assert "⚫💳 Движение — 5% (4,61% после налога)" in rendered
     assert "подключённых категорий" not in rendered
     assert "выбранная категория" not in rendered
+
+
+def test_real_catalog_social_uses_one_percent_fallback_with_kufar_exclusions() -> None:
+    catalog = _catalog()
+    matches = catalog.lookup("7297")
+
+    social = next(match for match in matches if match.card.id == "mtbank_social")
+    assert social.gross_percent == Decimal("1")
+    assert social.net_percent == Decimal("1")
+    assert format_moneyback(social) == "1%"
+    assert all(match.card.id != "mtbank_social" for match in catalog.lookup("6010"))
 
 
 def test_real_catalog_kufar_fallback_exclusions_vitamin_and_leading_zero() -> None:
