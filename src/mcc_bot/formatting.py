@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal
 
-from .catalog import PERCENT_TAX_THRESHOLD, CardMatch, RewardComponent, calculate_net_percent
+from .catalog import (
+    PERCENT_TAX_THRESHOLD,
+    CardMatch,
+    RewardComponent,
+    RewardProgram,
+    calculate_net_percent,
+)
 from .descriptions import DescriptionCatalog
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
@@ -51,6 +57,46 @@ def format_moneyback(match: CardMatch) -> str:
     )
 
 
+def _format_maximum_reward(program: RewardProgram) -> str:
+    maximum = program.maximum_reward
+    if maximum is None:
+        return "макс. в месяц не указан"
+    if maximum.unlimited:
+        return "макс. в месяц без лимита"
+    assert maximum.amount is not None
+    amount = _format_decimal(maximum.amount)
+    if maximum.unit == "points":
+        return f"макс. в месяц {amount} баллов"
+    currency = maximum.currency or ""
+    return f"макс. в месяц {amount} {currency}".strip()
+
+
+def _format_program_terms(program: RewardProgram) -> str:
+    minimum = program.minimum_payment
+    if minimum is None:
+        minimum_label = "мин. платёж не указан"
+    else:
+        amount = _format_decimal(minimum.amount)
+        minimum_label = f"мин. платёж {amount} {minimum.currency}"
+    return f"{minimum_label} · {_format_maximum_reward(program)}"
+
+
+def _match_detail_lines(match: CardMatch) -> tuple[str, ...]:
+    lines: list[str] = []
+    if match.card.issuer:
+        lines.append(f"   🏦 {match.card.issuer}")
+
+    programs = {program.id: program for program in match.card.reward_programs}
+    stacked = len(match.components) > 1
+    for component in match.components:
+        program = programs[component.program_id]
+        icon = "⭐" if component.kind == "points" else "💵"
+        kind = "Баллами: " if component.kind == "points" else "Деньгами: "
+        prefix = kind if stacked else ""
+        lines.append(f"   {icon} {prefix}{_format_program_terms(program)}")
+    return tuple(lines)
+
+
 def _description(descriptions: DescriptionCatalog | Mapping[str, str] | None, mcc: str) -> str:
     if descriptions is None:
         return "описание не найдено"
@@ -88,6 +134,7 @@ def format_matches(
     lines = [header, ""]
     for index, match in enumerate(matches, start=1):
         lines.append(f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}")
+        lines.extend(_match_detail_lines(match))
     return "\n".join(lines)
 
 

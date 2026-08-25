@@ -78,7 +78,7 @@ class MoneyAmount:
 
 @dataclass(frozen=True, slots=True)
 class RewardCap:
-    """A maximum reward amount, or an explicitly unlimited reward."""
+    """A maximum monthly reward amount, or an explicitly unlimited reward."""
 
     amount: Decimal | None
     unit: str

@@ -8,7 +8,7 @@ from mcc_bot.descriptions import DescriptionCatalog
 from mcc_bot.formatting import format_matches, format_moneyback, split_message
 
 
-def test_format_matches_is_compact_and_russian(catalog_path: Path, tmp_path: Path) -> None:
+def test_format_matches_renders_issuer_and_reward_terms(catalog_path: Path, tmp_path: Path) -> None:
     matches = CardCatalog.from_file(catalog_path).lookup("5411")
     descriptions_path = tmp_path / "descriptions.json"
     descriptions_path.write_text('{"5411": "Продуктовые магазины"}', encoding="utf-8")
@@ -19,7 +19,9 @@ def test_format_matches_is_compact_and_russian(catalog_path: Path, tmp_path: Pat
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
     assert "1. 🅱️ Beta Card — 5% (4,61% после налога)" in rendered
     assert "3. 🅰️ Alpha Card — 2,5% (2,44% после налога)" in rendered
-    assert "Beta Bank" not in rendered
+    assert "   🏦 Beta Bank" in rendered
+    assert "   🏦 Alpha Bank" in rendered
+    assert "   💵 мин. платёж не указан · макс. в месяц не указан" in rendered
     assert "after tax" not in rendered
 
 

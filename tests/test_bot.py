@@ -53,11 +53,11 @@ def test_text_lookup_accepts_mcc_prefix(catalog_path) -> None:
     assert "Alpha Card" in message.reply_text.await_args.args[0]
 
 
-def test_command_menu_lists_supported_commands() -> None:
+def test_command_menu_lists_only_start() -> None:
     set_commands = AsyncMock()
     application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_commands))
 
     asyncio.run(_configure_bot_commands(application))
 
     commands = set_commands.await_args.args[0]
-    assert [command.command for command in commands] == ["start", "help", "mcc"]
+    assert [command.command for command in commands] == ["start"]
