@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from telegram.error import NetworkError
 
@@ -20,6 +20,16 @@ def test_user_registry_remembers_unique_chat_ids(tmp_path) -> None:
     assert registry.chat_ids() == (10, 20)
     path.unlink()
     assert not path.exists()
+
+
+def test_user_registry_requests_owner_only_permissions(tmp_path) -> None:
+    path = tmp_path / "users.sqlite3"
+    registry = UserRegistry(path)
+
+    with patch("mcc_bot.users.os.chmod") as chmod:
+        registry.initialize()
+
+    chmod.assert_called_once_with(path, 0o600)
 
 
 def test_broadcast_message_reports_successes_and_failures(tmp_path) -> None:

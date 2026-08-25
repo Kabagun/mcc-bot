@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ class UserRegistry:
                 )
                 """
             )
+        os.chmod(self.path, 0o600)
 
     def remember(self, chat_id: int) -> None:
         """Insert a chat or refresh its last-seen timestamp."""
