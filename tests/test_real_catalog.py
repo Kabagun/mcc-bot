@@ -209,6 +209,52 @@ BNB_1_2_3_EXCLUSIONS = {
     "9399",
     "9402",
 }
+COMBO_EXCLUSIONS = {
+    "4812",
+    "4814",
+    "4829",
+    "4899",
+    "4900",
+    "5960",
+    "6010",
+    "6011",
+    "6012",
+    "6028",
+    "6050",
+    "6051",
+    "6211",
+    "6300",
+    "6529",
+    "6530",
+    "6531",
+    "6532",
+    "6533",
+    "6534",
+    "6535",
+    "6536",
+    "6537",
+    "6538",
+    "6539",
+    "6540",
+    "7299",
+    "7311",
+    "7399",
+    "7800",
+    "7801",
+    "7802",
+    "7995",
+    "8398",
+    "8999",
+    "9222",
+    "9223",
+    "9311",
+    "9399",
+    "9402",
+    "9406",
+    "9700",
+    "9701",
+    "9702",
+}
 SPRAUNAYA_MCCS = {
     "2741",
     "4111",
@@ -313,7 +359,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 17
+    assert len(raw["cards"]) == 18
     assert (
         sum(
             len(program.get("offers", []))
@@ -344,6 +390,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     bnb_1_2_3 = next(card for card in raw["cards"] if card["id"] == "bnb_1_2_3")
     spraunaya = next(card for card in raw["cards"] if card["id"] == "dabrabyt_spraunaya")
     izi = next(card for card in raw["cards"] if card["id"] == "belarusbank_izi")
+    combo = next(card for card in raw["cards"] if card["id"] == "paritet_combo")
     r_karta = next(card for card in raw["cards"] if card["id"] == "reshenie_r_karta")
     yarkaya = next(card for card in raw["cards"] if card["id"] == "yarkaya_karta")
     assert set(kufar["reward_programs"][0]["excluded_mccs"]) == KUFAR_EXCLUSIONS
@@ -362,6 +409,10 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     assert len(izi_program["offers"]) == len(IZI_MCCS) == 10
     assert {offer["mcc"] for offer in izi_program["offers"]} == IZI_MCCS
     assert {offer["value"] for offer in izi_program["offers"]} == {2}
+    combo_program = combo["reward_programs"][0]
+    assert combo_program["default"] == {"value": 1.2}
+    assert len(combo_program["excluded_mccs"]) == len(COMBO_EXCLUSIONS) == 44
+    assert set(combo_program["excluded_mccs"]) == COMBO_EXCLUSIONS
     assert r_karta["reward_programs"][0]["default"] == {"value": 1.5}
     assert set(r_karta["reward_programs"][0]["excluded_mccs"]) == R_KARTA_EXCLUSIONS
     yarkaya_exclusions = yarkaya["reward_programs"][0]["excluded_mccs"]
@@ -379,6 +430,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "zepter_card",
         "zepter_plus",
         "reshenie_r_karta",
+        "paritet_combo",
         "dabrabyt_spraunaya",
         "bnb_1_2_3",
         "belveb_dvizhenie",
@@ -438,31 +490,34 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "6. 💳 R-карта — 1,5%\n"
         "   🏦 Банк Решение\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц 100 BYN\n"
-        "7. 💳 Спраўная — 1,11%\n"
+        "7. 💳 КОМБОкарта — 1,2%\n"
+        "   🏦 Паритетбанк\n"
+        "   💵 мин. платёж 5 BYN · макс. в месяц 130 BYN\n"
+        "8. 💳 Спраўная — 1,11%\n"
         "   🏦 Банк Дабрабыт\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц 100 BYN\n"
-        "8. 💳 1-2-3 — 1%\n"
+        "9. 💳 1-2-3 — 1%\n"
         "   🏦 БНБ-Банк\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц не указан\n"
-        "9. ⚫💳 Движение — 1%\n"
+        "10. ⚫💳 Движение — 1%\n"
         "   🏦 Банк БелВЭБ\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц 50 BYN\n"
-        "10. 🔵💳 Куфар карта — 1% баллами\n"
+        "11. 🔵💳 Куфар карта — 1% баллами\n"
         "   🏦 МТБанк / Visa / Kufar\n"
         "   ⭐ мин. платёж 0 BYN · макс. в месяц 200 баллов\n"
-        "11. 🔵💳 Мткарта — 1% баллами\n"
+        "12. 🔵💳 Мткарта — 1% баллами\n"
         "   🏦 МТБанк\n"
         "   ⭐ мин. платёж 10 BYN · макс. в месяц 200 баллов\n"
-        "12. 🔵💳 Социальная карта — 1%\n"
+        "13. 🔵💳 Социальная карта — 1%\n"
         "   🏦 МТБанк\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц 200 BYN\n"
-        "13. 🟡💳 Яркая карта — 1%\n"
+        "14. 🟡💳 Яркая карта — 1%\n"
         "   🏦 Приорбанк\n"
         "   💵 мин. платёж 10 BYN · макс. в месяц без лимита\n"
-        "14. 💳 Cashalot — 0,5%\n"
+        "15. 💳 Cashalot — 0,5%\n"
         "   🏦 Белгазпромбанк\n"
         "   💵 мин. платёж 10 BYN · макс. в месяц без лимита\n"
-        "15. 💳 Статускарта — 0,5%\n"
+        "16. 💳 Статускарта — 0,5%\n"
         "   🏦 СтатусБанк\n"
         "   💵 мин. платёж 0 BYN · макс. в месяц не указан"
     )
@@ -642,6 +697,15 @@ def test_real_catalog_bnb_1_2_3_default_and_exclusions() -> None:
     assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("4814"))
 
 
+def test_real_catalog_combo_default_and_exclusions() -> None:
+    catalog = _catalog()
+    grocery = next(match for match in catalog.lookup("5411") if match.card.id == "paritet_combo")
+
+    assert grocery.gross_percent == Decimal("1.2")
+    assert format_moneyback(grocery) == "1,2%"
+    assert all(match.card.id != "paritet_combo" for match in catalog.lookup("4812"))
+
+
 def test_real_catalog_spraunaya_uses_only_listed_mccs_and_visible_exclusions() -> None:
     catalog = _catalog()
     match = next(match for match in catalog.lookup("5411") if match.card.id == "dabrabyt_spraunaya")
@@ -724,6 +788,8 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["dabrabyt_spraunaya"].issuer == "Банк Дабрабыт"
     assert cards["belarusbank_izi"].name == "Изи-карта"
     assert cards["belarusbank_izi"].issuer == "Беларусбанк"
+    assert cards["paritet_combo"].name == "КОМБОкарта"
+    assert cards["paritet_combo"].issuer == "Паритетбанк"
     assert cards["reshenie_r_karta"].issuer == "Банк Решение"
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
@@ -763,6 +829,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("kufar", "points"): ("0", "200", "points"),
         ("reshenie_r_karta", "cash"): ("0", "100", "currency"),
         ("dabrabyt_spraunaya", "cash"): ("0", "100", "currency"),
+        ("paritet_combo", "cash"): ("5", "130", "currency"),
     }
     for (card_id, program_id), (minimum, maximum, unit) in expected.items():
         program = next(
