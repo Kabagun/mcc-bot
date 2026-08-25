@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/srv/bots/mcc-bot/app
+WorkingDirectory=/srv/bots/mcc-bot
 EnvironmentFile=/srv/bots/mcc-bot/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/srv/bots/mcc-bot/venv/bin/python -m mcc_bot

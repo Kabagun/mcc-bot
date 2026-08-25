@@ -12,47 +12,44 @@ from mcc_bot.catalog import (
     InvalidMccError,
     Moneyback,
     calculate_net_moneyback,
+    calculate_net_percent,
     normalize_mcc,
 )
 
 
-def test_lookup_sorts_moneyback_descending_and_breaks_ties_by_name(catalog_path: Path) -> None:
+def test_lookup_sorts_gross_sum_descending_and_breaks_ties_by_name(catalog_path: Path) -> None:
     catalog = CardCatalog.from_file(catalog_path)
-
     matches = catalog.lookup("5411")
 
     assert [match.card.id for match in matches] == ["beta", "gamma", "alpha"]
-    assert [match.offer.moneyback.value for match in matches] == [
+    assert [match.gross_percent for match in matches] == [
         Decimal("5"),
         Decimal("5"),
         Decimal("2.5"),
     ]
+    assert [component.kind for component in matches[0].components] == ["cash"]
 
 
-def test_lookup_accepts_friendly_mcc_forms(catalog_path: Path) -> None:
+def test_lookup_accepts_friendly_and_leading_zero_forms(catalog_path: Path) -> None:
     catalog = CardCatalog.from_file(catalog_path)
+    assert [match.card.id for match in catalog.lookup("MCC:5411")] == ["beta", "gamma", "alpha"]
 
-    assert [match.card.id for match in catalog.lookup("MCC:5411")] == [
-        "beta",
-        "gamma",
-        "alpha",
-    ]
+    # A zero-padded MCC remains four digits throughout resolution.
+    assert catalog.lookup("0742") == ()
 
 
 def test_lookup_omits_cards_without_requested_offer(catalog_path: Path) -> None:
     catalog = CardCatalog.from_file(catalog_path)
-
     assert [match.card.id for match in catalog.lookup("5812")] == ["alpha"]
     assert catalog.lookup("0000") == ()
 
 
-def test_percentage_tax_formula_is_applied_only_above_two_percent() -> None:
-    assert calculate_net_moneyback(Moneyback(Decimal("2"))) == Decimal("2")
-    assert calculate_net_moneyback(Moneyback(Decimal("3"))) == Decimal("2.87")
+def test_percentage_tax_formula_and_exemption() -> None:
+    assert calculate_net_percent(Decimal("2")) == Decimal("2")
+    assert calculate_net_percent(Decimal("3")) == Decimal("2.87")
+    assert calculate_net_percent(Decimal("5")) == Decimal("4.61")
+    assert calculate_net_percent(Decimal("3"), tax_exempt=True) == Decimal("3")
     assert calculate_net_moneyback(Moneyback(Decimal("2.5"))) == Decimal("2.435")
-    assert calculate_net_moneyback(
-        Moneyback(Decimal("3"), unit="currency", currency="BYN")
-    ) == Decimal("3")
 
 
 @pytest.mark.parametrize("raw_value", ["", "541", "54111", "abc1", "MCC 12", "5411 5812"])
@@ -61,272 +58,249 @@ def test_normalize_mcc_rejects_invalid_values(raw_value: str) -> None:
         normalize_mcc(raw_value)
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [[], {"version": 2, "cards": []}, {"version": 1}, {"cards": []}],
-)
-def test_catalog_root_contract_is_validated(tmp_path: Path, payload: object) -> None:
+def _write_payload(tmp_path: Path, payload: object) -> Path:
     path = tmp_path / "cards.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
+
+def _minimal_card(program: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": "card",
+        "name": "Card",
+        "emoji": "💳",
+        "reward_programs": [program],
+    }
+
+
+@pytest.mark.parametrize(
+    "payload", [[], {"version": 1, "cards": []}, {"version": 3, "cards": []}, {"cards": []}]
+)
+def test_catalog_root_contract_is_validated(tmp_path: Path, payload: object) -> None:
     with pytest.raises(CatalogError):
-        CardCatalog.from_file(path)
+        CardCatalog.from_file(_write_payload(tmp_path, payload))
 
 
-def test_catalog_requires_explicit_version(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text('{"cards": []}', encoding="utf-8")
-
-    with pytest.raises(CatalogError, match=r"catalog\.version is required"):
-        CardCatalog.from_file(path)
-
-
-def test_catalog_allows_empty_live_catalog(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text('{"version": 1, "cards": []}', encoding="utf-8")
-
-    assert CardCatalog.from_file(path).cards == ()
-
-
-def test_catalog_rejects_boolean_version(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text('{"version": true, "cards": []}', encoding="utf-8")
-
-    with pytest.raises(CatalogError, match="version"):
-        CardCatalog.from_file(path)
+def test_catalog_requires_explicit_v2_and_allows_empty_live_catalog(tmp_path: Path) -> None:
+    with pytest.raises(CatalogError, match=r"version: 2"):
+        CardCatalog.from_file(_write_payload(tmp_path, {"cards": []}))
+    assert CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": []})).cards == ()
 
 
 def test_catalog_rejects_invalid_utf8(tmp_path: Path) -> None:
     path = tmp_path / "cards.json"
-    path.write_bytes(b'{"version": 1, "cards": [\xff]}')
-
+    path.write_bytes(b'{"version": 2, "cards": [\xff]}')
     with pytest.raises(CatalogError, match="UTF-8"):
         CardCatalog.from_file(path)
 
 
 @pytest.mark.parametrize(
-    ("offer", "message"),
+    ("program", "message"),
     [
-        ({"mcc": "5411", "moneyback": -1}, "non-negative"),
-        ({"mcc": "5411", "moneyback": "1.5"}, "JSON number"),
-        ({"mcc": "5411", "moneyback": True}, "JSON number"),
-        ({"mcc": "5411", "moneyback": 1, "unit": "points"}, "unit"),
-        ({"mcc": "5411", "moneyback": 1, "unit": "currency"}, "currency"),
-        ({"mcc": "5411", "moneyback": 1, "unit": "percent", "currency": "BYN"}, "currency"),
-        ({"mcc": "5411", "moneyback": 1, "notes": ["not a string"]}, "notes"),
+        (
+            {"kind": "cash", "tax_exempt": False, "offers": [{"mcc": "5411", "value": -1}]},
+            "неотрицательным",
+        ),
+        (
+            {"kind": "cash", "tax_exempt": False, "offers": [{"mcc": "5411", "value": "1.5"}]},
+            "JSON",
+        ),
+        ({"kind": "cash", "tax_exempt": False, "offers": [{"mcc": "5411", "value": True}]}, "JSON"),
+        (
+            {"kind": "cash", "tax_exempt": "false", "offers": [{"mcc": "5411", "value": 1}]},
+            "boolean",
+        ),
+        (
+            {"kind": "other", "tax_exempt": False, "offers": [{"mcc": "5411", "value": 1}]},
+            "cash.*points",
+        ),
+        (
+            {
+                "kind": "cash",
+                "tax_exempt": False,
+                "offers": [{"mcc": "5411", "value": 1}],
+                "unit": "currency",
+            },
+            "обязателен",
+        ),
     ],
 )
-def test_offer_contract_is_validated(
-    tmp_path: Path, offer: dict[str, object], message: str
+def test_reward_program_contract_is_strict(
+    tmp_path: Path, program: dict[str, object], message: str
 ) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "cards": [{"id": "card", "name": "Card", "offers": [offer]}],
-            }
-        ),
-        encoding="utf-8",
-    )
-
+    payload = {"version": 2, "cards": [_minimal_card(program)]}
     with pytest.raises(CatalogError, match=message):
-        CardCatalog.from_file(path)
+        CardCatalog.from_file(_write_payload(tmp_path, payload))
 
 
-def test_currency_moneyback_is_parsed_and_preserved(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
+def test_grouped_rules_are_expanded_and_duplicate_mccs_are_rejected(tmp_path: Path) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "rules": [{"mccs": ["0742", "5411"], "value": 3}],
+                }
+            )
+        ],
+    }
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, payload))
+    assert catalog.lookup("0742")[0].gross_percent == Decimal("3")
+
+    duplicate = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "offers": [{"mcc": "5411", "value": 1}],
+                    "rules": [{"mccs": ["5411"], "value": 2}],
+                }
+            )
+        ],
+    }
+    with pytest.raises(CatalogError, match="дублирующий"):
+        CardCatalog.from_file(_write_payload(tmp_path, duplicate))
+
+
+def test_program_precedence_explicit_exclusion_default_and_zero(tmp_path: Path) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "points",
+                    "tax_exempt": False,
+                    "default": {"value": 2},
+                    "excluded_mccs": ["7999"],
+                    "offers": [
+                        {"mcc": "5411", "value": 1},
+                        {"mcc": "5812", "value": 0},
+                        {"mcc": "7999", "value": 0},
+                    ],
+                }
+            )
+        ],
+    }
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, payload))
+    assert catalog.lookup("5411")[0].gross_percent == Decimal("1")
+    assert catalog.lookup("5812")[0].gross_percent == Decimal("0")
+    assert catalog.lookup("7999")[0].gross_percent == Decimal("0")
+    assert catalog.lookup("5999")[0].gross_percent == Decimal("2")
+
+
+def test_currency_programs_are_supported_but_mixed_dimensions_are_rejected(tmp_path: Path) -> None:
+    valid = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "unit": "currency",
+                    "currency": "byn",
+                    "offers": [{"mcc": "5411", "value": 2}],
+                }
+            )
+        ],
+    }
+    match = CardCatalog.from_file(_write_payload(tmp_path, valid)).lookup("5411")[0]
+    assert match.components[0].moneyback.currency == "BYN"
+
+    mixed = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "unit": "currency",
+                    "currency": "BYN",
+                    "offers": [{"mcc": "5411", "value": 2}],
+                }
+            ),
             {
-                "version": 1,
-                "cards": [
+                **_minimal_card(
                     {
-                        "id": "card",
-                        "name": "Card",
-                        "offers": [
-                            {
-                                "mcc": "5411",
-                                "moneyback": 2,
-                                "unit": "currency",
-                                "currency": "byn",
-                            }
-                        ],
+                        "kind": "cash",
+                        "tax_exempt": False,
+                        "unit": "currency",
+                        "currency": "USD",
+                        "offers": [{"mcc": "5411", "value": 2}],
                     }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+                ),
+                "id": "other",
+            },
+        ],
+    }
+    with pytest.raises(CatalogError, match="нельзя сравнить"):
+        CardCatalog.from_file(_write_payload(tmp_path, mixed))
 
-    match = CardCatalog.from_file(path).lookup("5411")[0]
-    assert match.offer.moneyback.currency == "BYN"
 
-
-@pytest.mark.parametrize(
-    ("second_offer", "expected_message"),
-    [
-        ({"mcc": "5411", "moneyback": 2, "unit": "currency", "currency": "BYN"}, "incompatible"),
-        ({"mcc": "5411", "moneyback": 2, "unit": "currency", "currency": "USD"}, "USD"),
-    ],
-)
-def test_catalog_rejects_cross_card_moneyback_dimensions(
-    tmp_path: Path, second_offer: dict[str, object], expected_message: str
-) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
+def test_cash_and_points_stack_and_tax_is_component_wise(tmp_path: Path) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
             {
-                "version": 1,
-                "cards": [
+                "id": "stacked",
+                "name": "Stacked",
+                "emoji": "✨",
+                "reward_programs": [
                     {
-                        "id": "percent-card",
-                        "name": "Percent Card",
-                        "offers": [{"mcc": "5411", "moneyback": 5, "unit": "percent"}],
+                        "id": "cash",
+                        "kind": "cash",
+                        "tax_exempt": False,
+                        "offers": [{"mcc": "5411", "value": 3}],
                     },
                     {
-                        "id": "other-card",
-                        "name": "Other Card",
-                        "offers": [second_offer],
+                        "id": "points",
+                        "kind": "points",
+                        "tax_exempt": True,
+                        "offers": [{"mcc": "5411", "value": 3}],
                     },
                 ],
             }
-        ),
-        encoding="utf-8",
-    )
+        ],
+    }
+    match = CardCatalog.from_file(_write_payload(tmp_path, payload)).lookup("5411")[0]
+    assert match.gross_percent == Decimal("6")
+    assert [component.net_percent for component in match.components] == [
+        Decimal("2.87"),
+        Decimal("3"),
+    ]
 
-    with pytest.raises(CatalogError, match=expected_message):
-        CardCatalog.from_file(path)
 
-
-def test_default_offer_fallback_and_explicit_precedence(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
+def test_conditions_are_typed(tmp_path: Path) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
             {
-                "version": 1,
-                "cards": [
-                    {
-                        "id": "kufar",
-                        "name": "Kufar card",
-                        "default_offer": {"moneyback": 2, "unit": "percent"},
-                        "excluded_mccs": ["7999"],
-                        "offers": [
-                            {"mcc": "5411", "moneyback": 1, "unit": "percent"},
-                            {"mcc": "5812", "moneyback": 0, "unit": "percent"},
-                        ],
-                    }
+                "id": "card",
+                "name": "Card",
+                "emoji": "💳",
+                "condition": {"kind": "max_connected_categories", "count": 3},
+                "reward_programs": [
+                    {"kind": "cash", "tax_exempt": False, "offers": [{"mcc": "5411", "value": 1}]}
                 ],
             }
-        ),
-        encoding="utf-8",
+        ],
+    }
+    card = CardCatalog.from_file(_write_payload(tmp_path, payload)).cards[0]
+    assert card.condition is not None and card.condition.count == 3
+
+
+def test_duplicate_card_program_and_offer_are_rejected(tmp_path: Path) -> None:
+    card = _minimal_card(
+        {
+            "id": "cash",
+            "kind": "cash",
+            "tax_exempt": False,
+            "offers": [{"mcc": "5411", "value": 1}, {"mcc": 5411, "value": 2}],
+        }
     )
-    catalog = CardCatalog.from_file(path)
-
-    assert catalog.lookup("5411")[0].offer.moneyback.value == Decimal("1")
-    assert catalog.lookup("5812")[0].offer.moneyback.value == Decimal("0")
-    assert catalog.lookup("5999")[0].offer.moneyback.value == Decimal("2")
-    assert catalog.lookup("7999") == ()
-
-
-def test_default_offer_can_be_used_without_explicit_offers(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "cards": [
-                    {
-                        "id": "card",
-                        "name": "Card",
-                        "default_offer": {"moneyback": 2, "unit": "percent"},
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert CardCatalog.from_file(path).lookup("5411")[0].offer.moneyback.value == Decimal("2")
-
-
-def test_explicit_offer_wins_over_exclusion(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "cards": [
-                    {
-                        "id": "card",
-                        "name": "Card",
-                        "default_offer": {"moneyback": 2},
-                        "excluded_mccs": ["5411"],
-                        "offers": [{"mcc": "5411", "moneyback": 0}],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert CardCatalog.from_file(path).lookup("5411")[0].offer.moneyback.value == Decimal("0")
-
-
-def test_default_offer_dimension_conflicts_are_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "cards": [
-                    {
-                        "id": "percent-card",
-                        "name": "Percent Card",
-                        "default_offer": {"moneyback": 2, "unit": "percent"},
-                        "offers": [],
-                    },
-                    {
-                        "id": "currency-card",
-                        "name": "Currency Card",
-                        "default_offer": {
-                            "moneyback": 2,
-                            "unit": "currency",
-                            "currency": "BYN",
-                        },
-                        "offers": [],
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(CatalogError, match=r"MCC 0000.*incompatible"):
-        CardCatalog.from_file(path)
-
-
-def test_duplicate_card_or_offer_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "cards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "cards": [
-                    {
-                        "id": "card",
-                        "name": "Card",
-                        "offers": [
-                            {"mcc": "5411", "moneyback": 1},
-                            {"mcc": 5411, "moneyback": 2},
-                        ],
-                    },
-                    {"id": "card", "name": "Other", "offers": []},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(CatalogError, match="duplicate"):
-        CardCatalog.from_file(path)
+    payload = {"version": 2, "cards": [card, {**card, "name": "Other"}]}
+    with pytest.raises(CatalogError, match="дублиру"):
+        CardCatalog.from_file(_write_payload(tmp_path, payload))

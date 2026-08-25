@@ -12,27 +12,48 @@ def catalog_path(tmp_path: Path) -> Path:
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "cards": [
                     {
                         "id": "alpha",
                         "name": "Alpha Card",
                         "issuer": "Alpha Bank",
-                        "offers": [
-                            {"mcc": "5411", "moneyback": 2.5, "unit": "percent"},
-                            {"mcc": "5812", "moneyback": 1, "unit": "percent"},
+                        "emoji": "🅰️",
+                        "reward_programs": [
+                            {
+                                "kind": "cash",
+                                "tax_exempt": False,
+                                "offers": [
+                                    {"mcc": "5411", "value": 2.5},
+                                    {"mcc": "5812", "value": 1},
+                                ],
+                            }
                         ],
                     },
                     {
                         "id": "beta",
                         "name": "Beta Card",
                         "issuer": "Beta Bank",
-                        "offers": [{"mcc": "5411", "moneyback": 5, "unit": "percent"}],
+                        "emoji": "🅱️",
+                        "reward_programs": [
+                            {
+                                "kind": "cash",
+                                "tax_exempt": False,
+                                "offers": [{"mcc": "5411", "value": 5}],
+                            }
+                        ],
                     },
                     {
                         "id": "gamma",
                         "name": "Gamma Card",
-                        "offers": [{"mcc": "5411", "moneyback": 5, "unit": "percent"}],
+                        "emoji": "🌀",
+                        "reward_programs": [
+                            {
+                                "kind": "cash",
+                                "tax_exempt": False,
+                                "offers": [{"mcc": "5411", "value": 5}],
+                            }
+                        ],
                     },
                 ],
             },

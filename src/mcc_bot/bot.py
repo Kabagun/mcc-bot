@@ -18,6 +18,7 @@ from telegram.ext import (
 
 from .catalog import CardCatalog, CatalogError, InvalidMccError, normalize_mcc
 from .config import BotSettings, SettingsError
+from .descriptions import DescriptionCatalog
 from .formatting import format_matches, split_message
 
 LOGGER = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ async def _deny(update: Update) -> None:
     """Respond without revealing whether the catalog contains any data."""
 
     if update.effective_message is not None:
-        await update.effective_message.reply_text("Access denied.")
+        await update.effective_message.reply_text("Доступ запрещён.")
 
 
 async def _configure_bot_commands(application: Application) -> None:
@@ -52,9 +53,9 @@ async def _configure_bot_commands(application: Application) -> None:
 
     await application.bot.set_my_commands(
         [
-            BotCommand(command="start", description="Show MCC lookup instructions"),
-            BotCommand(command="help", description="Show help"),
-            BotCommand(command="mcc", description="Look up a four-digit MCC"),
+            BotCommand(command="start", description="Инструкция по MCC"),
+            BotCommand(command="help", description="Помощь"),
+            BotCommand(command="mcc", description="Найти MCC"),
         ]
     )
 
@@ -76,8 +77,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await _reply(
         update,
-        "Send a four-digit MCC code to see matching cards sorted by moneyback.\n"
-        "Example: 5411 or /mcc 5411",
+        "Отправьте четырёхзначный MCC, чтобы увидеть карты с манибэком.\n"  # noqa: RUF001
+        "Пример: 5411 или /mcc 5411",
     )
 
 
@@ -97,13 +98,14 @@ async def _lookup_and_reply(
         await _deny(update)
         return
     catalog: CardCatalog = context.application.bot_data["catalog"]
+    descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
     try:
         normalized_mcc = normalize_mcc(raw_mcc)
         matches = catalog.lookup(normalized_mcc)
     except InvalidMccError as exc:
         await _reply(update, str(exc))
         return
-    await _reply(update, format_matches(normalized_mcc, matches))
+    await _reply(update, format_matches(normalized_mcc, matches, descriptions))
 
 
 async def lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,7 +117,7 @@ async def lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     raw_mcc = " ".join(context.args).strip()
     if not raw_mcc:
-        await _reply(update, "Send a four-digit MCC after /mcc, for example /mcc 5411.")
+        await _reply(update, "Укажите четырёхзначный MCC после /mcc, например /mcc 5411.")
         return
     await _lookup_and_reply(update, context, raw_mcc)
 
@@ -134,6 +136,7 @@ def build_application(settings: BotSettings) -> Application:
 
     try:
         catalog = CardCatalog.from_file(settings.catalog_path)
+        descriptions = DescriptionCatalog.from_file(settings.descriptions_path)
     except CatalogError as exc:
         raise SettingsError(str(exc)) from exc
     application = (
@@ -141,6 +144,7 @@ def build_application(settings: BotSettings) -> Application:
     )
     application.bot_data["settings"] = settings
     application.bot_data["catalog"] = catalog
+    application.bot_data["descriptions"] = descriptions
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("mcc", lookup_command))

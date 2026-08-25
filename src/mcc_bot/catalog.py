@@ -1,4 +1,10 @@
-"""Load, validate, and query the editable card moneyback catalog."""
+"""Load, validate, and query the versioned card rewards catalog.
+
+The JSON catalog deliberately keeps card presentation, eligibility conditions,
+and reward programs separate. A card may have more than one independent
+program (for example cash plus points), while each program resolves its own
+explicit MCC rules, exclusions, and fallback in that order.
+"""
 
 from __future__ import annotations
 
@@ -11,12 +17,13 @@ from typing import Any
 
 MCC_PATTERN = re.compile(r"(?:mcc[\s:=-]*)?([0-9]{4})", re.IGNORECASE)
 SUPPORTED_UNITS = frozenset({"percent", "currency"})
+SUPPORTED_PROGRAM_KINDS = frozenset({"cash", "points"})
 PERCENT_TAX_THRESHOLD = Decimal("2")
 PERCENT_TAX_RATE = Decimal("0.13")
 
 
 class CatalogError(ValueError):
-    """Raised when the catalog cannot be loaded or does not follow its contract."""
+    """Raised when the catalog cannot be loaded or violates its contract."""
 
 
 class InvalidMccError(ValueError):
@@ -25,12 +32,11 @@ class InvalidMccError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Moneyback:
-    """A moneyback value and the unit in which it is displayed.
+    """A percentage reward value.
 
-    ``percent`` is useful for the usual card cashback-rate data. ``currency``
-    represents an absolute amount and requires a three-letter ISO-style code.
-    The catalog should use one unit/currency consistently when values are to be
-    compared directly.
+    This small value object is retained as a convenient public API for callers
+    that need to inspect a component. Production data uses ``percent``;
+    ``currency`` remains available for comparable absolute rewards.
     """
 
     value: Decimal
@@ -39,78 +45,187 @@ class Moneyback:
 
     def __post_init__(self) -> None:
         if self.value < 0:
-            raise CatalogError("moneyback must not be negative")
+            raise CatalogError("Манибэк не может быть отрицательным")
         if self.unit not in SUPPORTED_UNITS:
             raise CatalogError(
-                f"moneyback unit must be one of {sorted(SUPPORTED_UNITS)}, got {self.unit!r}"
+                f"Единица манибэка должна быть одной из {sorted(SUPPORTED_UNITS)}, "
+                f"получено {self.unit!r}"
             )
         if self.unit == "currency" and not self.currency:
-            raise CatalogError("currency is required when moneyback unit is 'currency'")
+            raise CatalogError("Для единицы currency требуется код валюты")
         if self.unit == "percent" and self.currency is not None:
-            raise CatalogError("currency is not allowed when moneyback unit is 'percent'")
+            raise CatalogError("Код валюты нельзя указывать для единицы percent")
 
 
 @dataclass(frozen=True, slots=True)
-class OfferDetails:
-    """Moneyback metadata shared by explicit and default offers."""
+class CardCondition:
+    """A typed, renderable card eligibility condition."""
 
-    moneyback: Moneyback
-    notes: str | None = None
+    kind: str
+    count: int | None = None
+    amount: Decimal | None = None
+    currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class CardOffer:
-    """One card's moneyback value for one MCC."""
+class RewardOffer:
+    """One explicit MCC value within a reward program."""
 
     mcc: str
-    moneyback: Moneyback
-    notes: str | None = None
+    value: Decimal
+    unit: str = "percent"
+    currency: str | None = None
+
+    @property
+    def moneyback(self) -> Moneyback:
+        """Expose the value through the v1-compatible object shape."""
+
+        return Moneyback(self.value, unit=self.unit, currency=self.currency)
+
+
+@dataclass(frozen=True, slots=True)
+class RewardProgram:
+    """One independently resolved cash or points program."""
+
+    id: str
+    kind: str
+    tax_exempt: bool
+    offers: tuple[RewardOffer, ...]
+    default_value: Decimal | None
+    excluded_mccs: frozenset[str]
+    unit: str = "percent"
+    currency: str | None = None
+
+    def offer_map(self) -> dict[str, RewardOffer]:
+        """Return explicit offers indexed by normalized MCC."""
+
+        return {offer.mcc: offer for offer in self.offers}
 
 
 @dataclass(frozen=True, slots=True)
 class Card:
-    """A card and all MCC-specific offers configured for it."""
+    """A card, its display metadata, conditions, and reward programs."""
 
     id: str
     name: str
     issuer: str | None
-    offers: tuple[CardOffer, ...]
-    notes: str | None = None
-    default_offer: OfferDetails | None = None
-    excluded_mccs: frozenset[str] = frozenset()
+    emoji: str
+    condition: CardCondition | None
+    reward_programs: tuple[RewardProgram, ...]
+
+    @property
+    def offers(self) -> tuple[RewardOffer, ...]:
+        """Return all explicit offers flattened across programs."""
+
+        return tuple(offer for program in self.reward_programs for offer in program.offers)
+
+
+@dataclass(frozen=True, slots=True)
+class RewardComponent:
+    """One resolved reward component in a card match."""
+
+    program_id: str
+    kind: str
+    gross_value: Decimal
+    tax_exempt: bool
+    unit: str = "percent"
+    currency: str | None = None
+
+    @property
+    def gross_percent(self) -> Decimal:
+        """Compatibility alias for percentage production data."""
+
+        return self.gross_value
+
+    @property
+    def net_percent(self) -> Decimal:
+        """Return this component after the percentage tax rule."""
+
+        if self.unit != "percent":
+            return self.gross_value
+        return calculate_net_percent(self.gross_value, tax_exempt=self.tax_exempt)
+
+    @property
+    def net_value(self) -> Decimal:
+        """Return this component's net value in its configured unit."""
+
+        return self.net_percent
+
+    @property
+    def moneyback(self) -> Moneyback:
+        """Expose the gross value through a familiar object shape."""
+
+        return Moneyback(self.gross_value, unit=self.unit, currency=self.currency)
 
 
 @dataclass(frozen=True, slots=True)
 class CardMatch:
-    """A card returned by an MCC lookup, paired with its matching offer."""
+    """A card and all reward components effective for one MCC."""
 
     card: Card
-    offer: CardOffer
+    mcc: str
+    components: tuple[RewardComponent, ...]
+
+    @property
+    def gross_percent(self) -> Decimal:
+        """Compatibility alias for the sum used for ranking."""
+
+        return sum((component.gross_percent for component in self.components), Decimal("0"))
+
+    @property
+    def gross_value(self) -> Decimal:
+        """Sum of gross numeric component values used for ranking."""
+
+        return self.gross_percent
+
+    @property
+    def net_percent(self) -> Decimal:
+        """Compatibility alias for the component-wise net sum."""
+
+        return sum((component.net_percent for component in self.components), Decimal("0"))
+
+    @property
+    def net_value(self) -> Decimal:
+        """Sum of component-wise net numeric values."""
+
+        return self.net_percent
+
+    @property
+    def offer(self) -> RewardOffer:
+        """Return the first component as a migration convenience."""
+
+        if not self.components:
+            raise AttributeError("a card match has no reward components")
+        component = self.components[0]
+        return RewardOffer(self.mcc, component.gross_value, component.unit, component.currency)
 
 
-def calculate_net_moneyback(moneyback: Moneyback) -> Decimal:
-    """Return percentage moneyback after the 13% tax above the 2% threshold."""
+def calculate_net_percent(value: Decimal, *, tax_exempt: bool = False) -> Decimal:
+    """Apply 13% tax to the portion above 2%, unless explicitly exempt."""
 
-    if moneyback.unit != "percent" or moneyback.value <= PERCENT_TAX_THRESHOLD:
-        return moneyback.value
-    return PERCENT_TAX_THRESHOLD + (moneyback.value - PERCENT_TAX_THRESHOLD) * (
+    if tax_exempt or value <= PERCENT_TAX_THRESHOLD:
+        return value
+    return PERCENT_TAX_THRESHOLD + (value - PERCENT_TAX_THRESHOLD) * (
         Decimal("1") - PERCENT_TAX_RATE
     )
 
 
-def normalize_mcc(raw_value: str) -> str:
-    """Normalize a raw MCC value to exactly four digits.
+def calculate_net_moneyback(moneyback: Moneyback, *, tax_exempt: bool = False) -> Decimal:
+    """Compatibility wrapper applying the v2 component tax rule."""
 
-    The parser accepts a bare code (``5411``) and friendly forms such as
-    ``MCC 5411`` or ``mcc:5411``. It deliberately rejects values with more or
-    fewer than four digits so a typo cannot silently return another category.
-    """
+    if moneyback.unit != "percent":
+        return moneyback.value
+    return calculate_net_percent(moneyback.value, tax_exempt=tax_exempt)
+
+
+def normalize_mcc(raw_value: str) -> str:
+    """Normalize a raw MCC value to exactly four digits."""
 
     if not isinstance(raw_value, str):
-        raise InvalidMccError("MCC must be a four-digit number")
+        raise InvalidMccError("MCC должен состоять из четырёх цифр")
     match = MCC_PATTERN.fullmatch(raw_value.strip())
     if match is None:
-        raise InvalidMccError("MCC must be a four-digit number, for example 5411")
+        raise InvalidMccError("MCC должен состоять из четырёх цифр, например 5411")
     return match.group(1)
 
 
@@ -118,241 +233,353 @@ def _text(value: Any, field: str, *, required: bool = True) -> str | None:
     if value is None and not required:
         return None
     if not isinstance(value, str):
-        raise CatalogError(f"{field} must be a non-empty string")
+        raise CatalogError(f"{field} должен быть непустой строкой")
     result = value.strip()
     if required and not result:
-        raise CatalogError(f"{field} must be a non-empty string")
+        raise CatalogError(f"{field} должен быть непустой строкой")
     return result or None
 
 
+def _reject_unknown(raw: dict[str, Any], allowed: set[str], prefix: str) -> None:
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise CatalogError(f"{prefix} содержит неподдерживаемые поля: {', '.join(unknown)}")
+
+
 def _decimal(value: Any, field: str) -> Decimal:
-    # JSON numbers decode to Python ``int`` or ``float``. Strings are rejected
-    # deliberately so a typo such as ``"5%"`` cannot enter the catalog.
+    """Parse only JSON numeric values; reject strings and booleans."""
+
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise CatalogError(f"{field} must be a non-negative JSON number")
+        raise CatalogError(f"{field} должен быть неотрицательным числом JSON")
     try:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise CatalogError(f"{field} must be a non-negative JSON number") from exc
+        raise CatalogError(f"{field} должен быть неотрицательным числом JSON") from exc
     if not result.is_finite() or result < 0:
-        raise CatalogError(f"{field} must be a non-negative finite number")
+        raise CatalogError(f"{field} должен быть конечным неотрицательным числом")
     return result
-
-
-def _moneyback(raw_offer: dict[str, Any], prefix: str) -> Moneyback:
-    value = _decimal(raw_offer.get("moneyback"), f"{prefix}.moneyback")
-    raw_unit = raw_offer.get("unit", "percent")
-    unit = _text(raw_unit, f"{prefix}.unit")
-    assert unit is not None
-    unit = unit.lower()
-    currency = _text(raw_offer.get("currency"), f"{prefix}.currency", required=False)
-    if currency is not None:
-        currency = currency.upper()
-        if not re.fullmatch(r"[A-Z]{3}", currency):
-            raise CatalogError(f"{prefix}.currency must be a three-letter code")
-    try:
-        return Moneyback(value=value, unit=unit, currency=currency)
-    except CatalogError as exc:
-        raise CatalogError(f"{prefix}: {exc}") from exc
-
-
-def _offer_details(raw_offer: dict[str, Any], prefix: str) -> OfferDetails:
-    return OfferDetails(
-        moneyback=_moneyback(raw_offer, prefix),
-        notes=_text(raw_offer.get("notes"), f"{prefix}.notes", required=False),
-    )
 
 
 def _catalog_mcc(raw_value: Any, field: str) -> str:
     if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int)):
-        raise CatalogError(f"{field} must be a four-digit MCC")
+        raise CatalogError(f"{field} должен быть четырёхзначным MCC")
     try:
         return normalize_mcc(str(raw_value))
     except InvalidMccError as exc:
-        raise CatalogError(f"{field} must be a four-digit MCC") from exc
+        raise CatalogError(f"{field} должен быть четырёхзначным MCC") from exc
+
+
+def _parse_condition(raw_condition: Any, prefix: str) -> CardCondition | None:
+    if raw_condition is None:
+        return None
+    if not isinstance(raw_condition, dict):
+        raise CatalogError(f"{prefix} должен быть объектом")
+    _reject_unknown(raw_condition, {"kind", "count", "amount", "currency"}, prefix)
+    kind = _text(raw_condition.get("kind"), f"{prefix}.kind")
+    assert kind is not None
+    if kind == "placeholder_name":
+        return CardCondition(kind=kind)
+    if kind == "max_connected_categories":
+        count = raw_condition.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise CatalogError(f"{prefix}.count должен быть положительным целым числом")
+        return CardCondition(kind=kind, count=count)
+    if kind == "selected_category":
+        return CardCondition(kind=kind)
+    if kind == "minimum_spend":
+        amount = _decimal(raw_condition.get("amount"), f"{prefix}.amount")
+        currency = _text(raw_condition.get("currency"), f"{prefix}.currency")
+        assert currency is not None
+        return CardCondition(kind=kind, amount=amount, currency=currency.upper())
+    if kind == "kufar_rules":
+        return CardCondition(kind=kind)
+    raise CatalogError(f"{prefix}.kind не поддерживается: {kind!r}")
+
+
+def _parse_exclusions(raw_value: Any, prefix: str) -> frozenset[str]:
+    if raw_value is None:
+        return frozenset()
+    if not isinstance(raw_value, list):
+        raise CatalogError(f"{prefix} должен быть массивом")
+    result: set[str] = set()
+    for index, raw_mcc in enumerate(raw_value):
+        field = f"{prefix}[{index}]"
+        mcc = _catalog_mcc(raw_mcc, field)
+        if mcc in result:
+            raise CatalogError(f"{prefix} содержит дублирующий MCC {mcc}")
+        result.add(mcc)
+    return frozenset(result)
+
+
+def _parse_reward_program(raw_program: Any, card_index: int, program_index: int) -> RewardProgram:
+    prefix = f"cards[{card_index}].reward_programs[{program_index}]"
+    if not isinstance(raw_program, dict):
+        raise CatalogError(f"{prefix} должен быть объектом")
+    _reject_unknown(
+        raw_program,
+        {
+            "id",
+            "kind",
+            "tax_exempt",
+            "unit",
+            "currency",
+            "offers",
+            "rules",
+            "default",
+            "excluded_mccs",
+        },
+        prefix,
+    )
+    kind = _text(raw_program.get("kind"), f"{prefix}.kind")
+    assert kind is not None
+    kind = kind.lower()
+    if kind not in SUPPORTED_PROGRAM_KINDS:
+        raise CatalogError(f"{prefix}.kind должен быть cash или points")
+    program_id = _text(raw_program.get("id", kind), f"{prefix}.id")
+    assert program_id is not None
+    tax_exempt = raw_program.get("tax_exempt")
+    if not isinstance(tax_exempt, bool):
+        raise CatalogError(f"{prefix}.tax_exempt должен быть boolean")
+    unit = _text(raw_program.get("unit", "percent"), f"{prefix}.unit")
+    assert unit is not None
+    unit = unit.lower()
+    if unit not in SUPPORTED_UNITS:
+        raise CatalogError(f"{prefix}.unit должен быть percent или currency")
+    currency = _text(raw_program.get("currency"), f"{prefix}.currency", required=False)
+    if currency is not None:
+        currency = currency.upper()
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            raise CatalogError(f"{prefix}.currency должен быть трёхбуквенным кодом")
+    if unit == "currency" and currency is None:
+        raise CatalogError(f"{prefix}.currency обязателен для unit currency")
+    if unit == "percent" and currency is not None:
+        raise CatalogError(f"{prefix}.currency запрещён для unit percent")
+
+    raw_offers = raw_program.get("offers", [])
+    if not isinstance(raw_offers, list):
+        raise CatalogError(f"{prefix}.offers должен быть массивом")
+    raw_rules = raw_program.get("rules", [])
+    if not isinstance(raw_rules, list):
+        raise CatalogError(f"{prefix}.rules должен быть массивом")
+    offers: list[RewardOffer] = []
+    seen_mcc: set[str] = set()
+
+    def add_offer(
+        raw_offer: Any, offer_prefix: str, mcc_value: Any, *, validate_fields: bool = True
+    ) -> None:
+        if not isinstance(raw_offer, dict):
+            raise CatalogError(f"{offer_prefix} должен быть объектом")
+        if validate_fields:
+            _reject_unknown(raw_offer, {"mcc", "value"}, offer_prefix)
+        mcc = _catalog_mcc(mcc_value, f"{offer_prefix}.mcc")
+        if mcc in seen_mcc:
+            raise CatalogError(f"{prefix} содержит дублирующий offer для MCC {mcc}")
+        seen_mcc.add(mcc)
+        offers.append(
+            RewardOffer(
+                mcc=mcc,
+                value=_decimal(raw_offer.get("value"), f"{offer_prefix}.value"),
+                unit=unit,
+                currency=currency,
+            )
+        )
+
+    for offer_index, raw_offer in enumerate(raw_offers):
+        if not isinstance(raw_offer, dict):
+            raise CatalogError(f"{prefix}.offers[{offer_index}] должен быть объектом")
+        add_offer(raw_offer, f"{prefix}.offers[{offer_index}]", raw_offer.get("mcc", ""))
+
+    for rule_index, raw_rule in enumerate(raw_rules):
+        rule_prefix = f"{prefix}.rules[{rule_index}]"
+        if not isinstance(raw_rule, dict):
+            raise CatalogError(f"{rule_prefix} должен быть объектом")
+        _reject_unknown(raw_rule, {"mccs", "value"}, rule_prefix)
+        raw_mccs = raw_rule.get("mccs")
+        if not isinstance(raw_mccs, list) or not raw_mccs:
+            raise CatalogError(f"{rule_prefix}.mccs должен быть непустым массивом")
+        for mcc_index, raw_mcc in enumerate(raw_mccs):
+            # Grouped rules are normalized to explicit values in memory. A
+            # duplicate across groups is rejected just like duplicate offers.
+            add_offer(
+                raw_rule,
+                f"{rule_prefix}.mccs[{mcc_index}]",
+                raw_mcc,
+                validate_fields=False,
+            )
+
+    raw_default = raw_program.get("default")
+    if raw_default is None:
+        default_value = None
+    elif not isinstance(raw_default, dict):
+        raise CatalogError(f"{prefix}.default должен быть объектом")
+    else:
+        _reject_unknown(raw_default, {"value"}, f"{prefix}.default")
+        default_value = _decimal(raw_default.get("value"), f"{prefix}.default.value")
+    excluded_mccs = _parse_exclusions(
+        raw_program.get("excluded_mccs", []), f"{prefix}.excluded_mccs"
+    )
+    return RewardProgram(
+        id=program_id,
+        kind=kind,
+        tax_exempt=tax_exempt,
+        offers=tuple(offers),
+        default_value=default_value,
+        excluded_mccs=excluded_mccs,
+        unit=unit,
+        currency=currency,
+    )
 
 
 def _parse_card(raw_card: Any, card_index: int) -> Card:
+    prefix = f"cards[{card_index}]"
     if not isinstance(raw_card, dict):
-        raise CatalogError(f"cards[{card_index}] must be an object")
-    card_id = _text(raw_card.get("id"), f"cards[{card_index}].id")
-    name = _text(raw_card.get("name"), f"cards[{card_index}].name")
-    issuer = _text(raw_card.get("issuer"), f"cards[{card_index}].issuer", required=False)
-    notes = _text(raw_card.get("notes"), f"cards[{card_index}].notes", required=False)
-    assert card_id is not None and name is not None
-    raw_offers = raw_card.get("offers", [])
-    if not isinstance(raw_offers, list):
-        raise CatalogError(f"cards[{card_index}].offers must be an array")
-
-    offers: list[CardOffer] = []
-    seen_mcc: set[str] = set()
-    for offer_index, raw_offer in enumerate(raw_offers):
-        if not isinstance(raw_offer, dict):
-            raise CatalogError(f"cards[{card_index}].offers[{offer_index}] must be an object")
-        prefix = f"cards[{card_index}].offers[{offer_index}]"
-        mcc = _catalog_mcc(raw_offer.get("mcc", ""), f"{prefix}.mcc")
-        if mcc in seen_mcc:
-            raise CatalogError(f"cards[{card_index}] contains duplicate offer for MCC {mcc}")
-        seen_mcc.add(mcc)
-        details = _offer_details(raw_offer, prefix)
-        offers.append(
-            CardOffer(
-                mcc=mcc,
-                moneyback=details.moneyback,
-                notes=details.notes,
-            )
-        )
-    raw_default = raw_card.get("default_offer")
-    if raw_default is None:
-        default_offer = None
-    elif not isinstance(raw_default, dict):
-        raise CatalogError(f"cards[{card_index}].default_offer must be an object")
-    else:
-        default_offer = _offer_details(raw_default, f"cards[{card_index}].default_offer")
-
-    raw_excluded = raw_card.get("excluded_mccs", [])
-    if not isinstance(raw_excluded, list):
-        raise CatalogError(f"cards[{card_index}].excluded_mccs must be an array")
-    excluded_mccs: set[str] = set()
-    for exclusion_index, raw_mcc in enumerate(raw_excluded):
-        field = f"cards[{card_index}].excluded_mccs[{exclusion_index}]"
-        mcc = _catalog_mcc(raw_mcc, field)
-        if mcc in excluded_mccs:
-            raise CatalogError(f"cards[{card_index}] contains duplicate excluded MCC {mcc}")
-        excluded_mccs.add(mcc)
-
+        raise CatalogError(f"{prefix} должен быть объектом")
+    _reject_unknown(
+        raw_card, {"id", "name", "issuer", "emoji", "condition", "reward_programs"}, prefix
+    )
+    card_id = _text(raw_card.get("id"), f"{prefix}.id")
+    name = _text(raw_card.get("name"), f"{prefix}.name")
+    issuer = _text(raw_card.get("issuer"), f"{prefix}.issuer", required=False)
+    emoji = _text(raw_card.get("emoji"), f"{prefix}.emoji")
+    assert card_id is not None and name is not None and emoji is not None
+    condition = _parse_condition(raw_card.get("condition"), f"{prefix}.condition")
+    raw_programs = raw_card.get("reward_programs")
+    if not isinstance(raw_programs, list) or not raw_programs:
+        raise CatalogError(f"{prefix}.reward_programs должен быть непустым массивом")
+    programs: list[RewardProgram] = []
+    seen_program_ids: set[str] = set()
+    for program_index, raw_program in enumerate(raw_programs):
+        program = _parse_reward_program(raw_program, card_index, program_index)
+        if program.id in seen_program_ids:
+            raise CatalogError(f"{prefix} содержит дублирующую программу {program.id!r}")
+        seen_program_ids.add(program.id)
+        programs.append(program)
     return Card(
         id=card_id,
         name=name,
         issuer=issuer,
-        offers=tuple(offers),
-        notes=notes,
-        default_offer=default_offer,
-        excluded_mccs=frozenset(excluded_mccs),
+        emoji=emoji,
+        condition=condition,
+        reward_programs=tuple(programs),
     )
 
 
-def _moneyback_dimensions_label(dimensions: tuple[str, str | None]) -> str:
-    unit, currency = dimensions
-    return f"{unit}/{currency}" if currency else unit
+def _effective_program_offer(program: RewardProgram, mcc: str) -> RewardOffer | None:
+    """Resolve explicit > exclusion > default for one program."""
 
-
-def _effective_offer(card: Card, mcc: str) -> CardOffer | None:
-    """Resolve one card's explicit/default/excluded offer precedence."""
-
-    for offer in card.offers:
-        if offer.mcc == mcc:
-            return offer
-    if mcc in card.excluded_mccs or card.default_offer is None:
+    explicit = program.offer_map().get(mcc)
+    if explicit is not None:
+        return explicit
+    if mcc in program.excluded_mccs or program.default_value is None:
         return None
-    return CardOffer(
+    return RewardOffer(
         mcc=mcc,
-        moneyback=card.default_offer.moneyback,
-        notes=card.default_offer.notes,
+        value=program.default_value,
+        unit=program.unit,
+        currency=program.currency,
     )
 
 
-def _validate_moneyback_dimensions(cards: tuple[Card, ...]) -> None:
-    """Ensure every effective offer for each possible MCC is comparable."""
+def _validate_reward_dimensions(cards: tuple[Card, ...]) -> None:
+    """Reject cross-card unit mismatches before ranking results."""
 
-    # MCCs are exactly four ASCII digits, so this finite pass also covers
-    # default offers whose effective MCCs are not listed explicitly in JSON.
-    offer_maps = [(card, {offer.mcc: offer for offer in card.offers}) for card in cards]
+    # Four-digit MCC space is small. The finite pass also checks defaults that
+    # do not appear explicitly in the JSON and preserves the v1 safety rule.
     for mcc_number in range(10000):
         mcc = f"{mcc_number:04d}"
-        dimensions_by_mcc: dict[str, tuple[tuple[str, str | None], str]] = {}
-        for card, offer_map in offer_maps:
-            offer = offer_map.get(mcc)
-            if offer is None and mcc not in card.excluded_mccs and card.default_offer is not None:
-                offer = CardOffer(
-                    mcc=mcc,
-                    moneyback=card.default_offer.moneyback,
-                    notes=card.default_offer.notes,
-                )
-            if offer is None:
-                continue
-            dimensions = (offer.moneyback.unit, offer.moneyback.currency)
-            previous = dimensions_by_mcc.get(mcc)
-            if previous is None:
-                dimensions_by_mcc[mcc] = (dimensions, card.id)
-                continue
-            previous_dimensions, previous_card_id = previous
-            if dimensions != previous_dimensions:
-                previous_label = _moneyback_dimensions_label(previous_dimensions)
-                current_label = _moneyback_dimensions_label(dimensions)
-                raise CatalogError(
-                    f"MCC {mcc} has incompatible moneyback units: "
-                    f"card {previous_card_id!r} uses {previous_label}, "
-                    f"card {card.id!r} uses {current_label}"
-                )
+        dimensions: tuple[str, str | None] | None = None
+        owner: tuple[str, str] | None = None
+        for card in cards:
+            for program in card.reward_programs:
+                if _effective_program_offer(program, mcc) is None:
+                    continue
+                current = (program.unit, program.currency)
+                if dimensions is None:
+                    dimensions = current
+                    owner = (card.id, program.id)
+                    continue
+                if current != dimensions:
+                    assert owner is not None
+                    raise CatalogError(
+                        f"MCC {mcc}: единицы манибэка нельзя сравнить: "
+                        f"карта {owner[0]!r}, программа {owner[1]!r} использует "
+                        f"{dimensions[0]}/{dimensions[1]}, "
+                        f"карта {card.id!r}, программа {program.id!r} использует "
+                        f"{current[0]}/{current[1]}"
+                    )
 
 
 @dataclass(frozen=True, slots=True)
 class CardCatalog:
-    """Validated in-memory catalog used by Telegram handlers."""
+    """Validated in-memory catalog used by Telegram handlers and the CLI."""
 
     cards: tuple[Card, ...]
 
     @classmethod
     def from_file(cls, path: Path | str) -> CardCatalog:
-        """Read and validate a JSON catalog from ``path``."""
+        """Read and validate a UTF-8 version 2 JSON catalog from ``path``."""
 
         path = Path(path)
         try:
             raw_text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise CatalogError(f"Could not read catalog {path}: {exc.strerror or exc}") from exc
         except UnicodeDecodeError as exc:
-            raise CatalogError(f"Catalog {path} must be UTF-8 encoded") from exc
+            raise CatalogError(f"Каталог {path} должен быть в кодировке UTF-8") from exc
+        except OSError as exc:
+            raise CatalogError(
+                f"Не удалось прочитать каталог {path}: {exc.strerror or exc}"  # noqa: RUF001
+            ) from exc
         try:
             raw_catalog = json.loads(raw_text)
         except json.JSONDecodeError as exc:
-            raise CatalogError(f"Catalog {path} is not valid JSON: {exc.msg}") from exc
+            raise CatalogError(f"Каталог {path} содержит некорректный JSON: {exc.msg}") from exc
         if not isinstance(raw_catalog, dict):
-            raise CatalogError("catalog root must be an object")
+            raise CatalogError("Корень каталога должен быть объектом")
+        _reject_unknown(raw_catalog, {"version", "cards"}, "catalog")
         if "version" not in raw_catalog:
-            raise CatalogError("catalog.version is required and must be 1")
+            raise CatalogError("В каталоге обязательно поле version: 2")  # noqa: RUF001
         version = raw_catalog["version"]
-        if isinstance(version, bool) or not isinstance(version, int) or version != 1:
-            raise CatalogError("catalog version must be 1")
+        if isinstance(version, bool) or not isinstance(version, int) or version != 2:
+            raise CatalogError("Версия каталога должна быть равна 2")
         raw_cards = raw_catalog.get("cards")
         if not isinstance(raw_cards, list):
-            raise CatalogError("catalog.cards must be an array")
+            raise CatalogError("Поле cards каталога должно быть массивом")
 
         cards: list[Card] = []
         seen_ids: set[str] = set()
         for card_index, raw_card in enumerate(raw_cards):
             card = _parse_card(raw_card, card_index)
             if card.id in seen_ids:
-                raise CatalogError(f"duplicate card id: {card.id}")
+                raise CatalogError(f"Повторяется идентификатор карты: {card.id}")
             seen_ids.add(card.id)
             cards.append(card)
-
-        # Sorting raw numeric values is only meaningful when all effective
-        # offers for a given MCC share the same unit and currency. Reject the
-        # ambiguous catalog at startup instead of returning misleading rankings.
-        _validate_moneyback_dimensions(tuple(cards))
-        return cls(cards=tuple(cards))
+        card_tuple = tuple(cards)
+        _validate_reward_dimensions(card_tuple)
+        return cls(cards=card_tuple)
 
     def lookup(self, raw_mcc: str) -> tuple[CardMatch, ...]:
-        """Return matching cards sorted by moneyback descending.
-
-        Card name and ID provide deterministic tie-breakers. Sorting compares
-        the numeric values in the catalog; for meaningful comparisons, keep a
-        catalog (or a queried subset) on one unit and currency.
-        """
+        """Return cards with at least one component, sorted by gross sum."""
 
         mcc = normalize_mcc(raw_mcc)
         matches: list[CardMatch] = []
         for card in self.cards:
-            offer = _effective_offer(card, mcc)
-            if offer is not None:
-                matches.append(CardMatch(card=card, offer=offer))
+            components: list[RewardComponent] = []
+            for program in card.reward_programs:
+                offer = _effective_program_offer(program, mcc)
+                if offer is None:
+                    continue
+                components.append(
+                    RewardComponent(
+                        program_id=program.id,
+                        kind=program.kind,
+                        gross_value=offer.value,
+                        tax_exempt=program.tax_exempt,
+                        unit=offer.unit,
+                        currency=offer.currency,
+                    )
+                )
+            if components:
+                matches.append(CardMatch(card=card, mcc=mcc, components=tuple(components)))
         matches.sort(
-            key=lambda match: (
-                -match.offer.moneyback.value,
-                match.card.name.casefold(),
-                match.card.id,
-            )
+            key=lambda match: (-match.gross_percent, match.card.name.casefold(), match.card.id)
         )
         return tuple(matches)

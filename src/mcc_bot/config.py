@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_CATALOG_PATH = Path("data/cards.json")
+from .resources import DEFAULT_CATALOG_PATH, DEFAULT_DESCRIPTIONS_PATH
 
 
 class SettingsError(ValueError):
@@ -16,7 +16,9 @@ class SettingsError(ValueError):
 def _required(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise SettingsError(f"Required environment variable is missing: {name}")
+        raise SettingsError(
+            f"Не задана обязательная переменная окружения: {name}"  # noqa: RUF001
+        )
     return value
 
 
@@ -26,7 +28,7 @@ def _boolean(name: str, *, default: bool = False) -> bool:
         return True
     if raw_value in {"0", "false", "no", "off"}:
         return False
-    raise SettingsError(f"{name} must be true or false")
+    raise SettingsError(f"{name} должна иметь значение true или false")
 
 
 def _allowed_user_ids(raw_value: str) -> frozenset[int]:
@@ -34,10 +36,15 @@ def _allowed_user_ids(raw_value: str) -> frozenset[int]:
     try:
         result = frozenset(int(value) for value in values if value)
     except ValueError as exc:
-        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS must contain numeric IDs") from exc
+        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS должна содержать числовые ID") from exc
     if any(value < 0 for value in result):
-        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS must contain non-negative IDs")
+        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS должна содержать неотрицательные ID")
     return result
+
+
+def _path(name: str, default: Path) -> Path:
+    raw_value = os.getenv(name, "").strip()
+    return Path(raw_value).expanduser() if raw_value else default
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +55,7 @@ class BotSettings:
     open_access: bool
     allowed_user_ids: frozenset[int]
     catalog_path: Path = DEFAULT_CATALOG_PATH
+    descriptions_path: Path = DEFAULT_DESCRIPTIONS_PATH
     log_level: str = "INFO"
 
     @classmethod
@@ -57,14 +65,14 @@ class BotSettings:
         open_access = _boolean("TELEGRAM_OPEN_ACCESS")
         allowed_user_ids = _allowed_user_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS", ""))
         if not open_access and not allowed_user_ids:
-            raise SettingsError(
-                "Set TELEGRAM_OPEN_ACCESS=true or provide TELEGRAM_ALLOWED_USER_IDS"
-            )
-        catalog_path = Path(os.getenv("MCC_CATALOG_PATH", str(DEFAULT_CATALOG_PATH))).expanduser()
+            raise SettingsError("Укажите TELEGRAM_OPEN_ACCESS=true или TELEGRAM_ALLOWED_USER_IDS")
+        catalog_path = _path("MCC_CATALOG_PATH", DEFAULT_CATALOG_PATH)
+        descriptions_path = _path("MCC_DESCRIPTIONS_PATH", DEFAULT_DESCRIPTIONS_PATH)
         return cls(
             token=_required("TELEGRAM_BOT_TOKEN"),
             open_access=open_access,
             allowed_user_ids=allowed_user_ids,
             catalog_path=catalog_path,
+            descriptions_path=descriptions_path,
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         )

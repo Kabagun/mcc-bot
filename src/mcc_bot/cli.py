@@ -9,7 +9,8 @@ from contextlib import suppress
 from pathlib import Path
 
 from .catalog import CardCatalog, CatalogError, InvalidMccError
-from .config import DEFAULT_CATALOG_PATH
+from .config import DEFAULT_CATALOG_PATH, DEFAULT_DESCRIPTIONS_PATH
+from .descriptions import DescriptionCatalog
 from .formatting import format_matches
 
 
@@ -23,15 +24,21 @@ def _configure_output() -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Validate or query an MCC moneyback catalog")
+    parser = argparse.ArgumentParser(description="Проверить или запросить каталог манибэка MCC")
     parser.add_argument(
         "--catalog",
         type=Path,
         default=DEFAULT_CATALOG_PATH,
-        help=f"catalog JSON path (default: {DEFAULT_CATALOG_PATH})",
+        help=f"путь к каталогу JSON (по умолчанию: {DEFAULT_CATALOG_PATH})",
     )
-    parser.add_argument("--mcc", help="optional four-digit MCC to query")
-    parser.add_argument("--json", action="store_true", help="emit lookup results as JSON")
+    parser.add_argument(
+        "--descriptions",
+        type=Path,
+        default=DEFAULT_DESCRIPTIONS_PATH,
+        help=f"путь к описаниям MCC (по умолчанию: {DEFAULT_DESCRIPTIONS_PATH})",
+    )
+    parser.add_argument("--mcc", help="необязательный четырёхзначный MCC")
+    parser.add_argument("--json", action="store_true", help="вывести результат в JSON")
     return parser
 
 
@@ -42,8 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         catalog = CardCatalog.from_file(args.catalog)
+        descriptions = DescriptionCatalog.from_file(args.descriptions)
         if args.mcc is None:
-            print(f"Catalog is valid: {len(catalog.cards)} card(s)")
+            print(f"Каталог корректен: карт — {len(catalog.cards)}")
             return 0
         matches = catalog.lookup(args.mcc)
     except (CatalogError, InvalidMccError) as exc:
@@ -56,16 +64,23 @@ def main(argv: list[str] | None = None) -> int:
                 "id": match.card.id,
                 "name": match.card.name,
                 "issuer": match.card.issuer,
-                "mcc": match.offer.mcc,
-                "moneyback": str(match.offer.moneyback.value),
-                "unit": match.offer.moneyback.unit,
-                "currency": match.offer.moneyback.currency,
+                "mcc": match.mcc,
+                "rewards": [
+                    {
+                        "program_id": component.program_id,
+                        "kind": component.kind,
+                        "gross_percent": str(component.gross_percent),
+                        "net_percent": str(component.net_percent),
+                        "tax_exempt": component.tax_exempt,
+                    }
+                    for component in match.components
+                ],
             }
             for match in matches
         ]
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(format_matches(args.mcc, matches))
+        print(format_matches(args.mcc, matches, descriptions))
     return 0
 
 
