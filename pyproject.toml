@@ -23,6 +23,7 @@ dev = [
 [project.scripts]
 mcc-bot = "mcc_bot.bot:main"
 mcc-check = "mcc_bot.cli:main"
+mcc-broadcast = "mcc_bot.broadcast:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcc_bot"]

@@ -7,7 +7,7 @@ from decimal import Decimal
 from mcc_bot.catalog import CardCatalog
 from mcc_bot.config import DEFAULT_CATALOG_PATH, DEFAULT_DESCRIPTIONS_PATH
 from mcc_bot.descriptions import DescriptionCatalog
-from mcc_bot.formatting import format_matches, format_moneyback
+from mcc_bot.formatting import format_limits, format_matches, format_moneyback
 
 DATA_PATH = DEFAULT_CATALOG_PATH
 DESCRIPTION_PATH = DEFAULT_DESCRIPTIONS_PATH
@@ -332,7 +332,15 @@ SPRAUNAYA_EXCLUSIONS = {
     "9402",
 }
 IZI_MCCS = {"5811", "5812", "5813", "5814", "7832", "7922", "7929", "7932", "7933", "7991"}
-SUPPORTED_CARD_KEYS = {"id", "name", "issuer", "emoji", "condition", "reward_programs"}
+SUPPORTED_CARD_KEYS = {
+    "id",
+    "name",
+    "issuer",
+    "emoji",
+    "condition",
+    "reward_limits",
+    "reward_programs",
+}
 SUPPORTED_PROGRAM_KEYS = {
     "id",
     "kind",
@@ -343,6 +351,10 @@ SUPPORTED_PROGRAM_KEYS = {
     "excluded_mccs",
     "minimum_payment",
     "maximum_reward",
+    "monthly_maximum_not_defined",
+    "maximum_reward_alternatives",
+    "domestic_country",
+    "foreign_value",
 }
 
 
@@ -366,7 +378,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2888
+        == 2887
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -381,7 +393,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
         for program in card["reward_programs"]
         for offer in program.get("offers", [])
     )
-    assert all(card.get("issuer") != "не указан" for card in raw["cards"])
+    assert all(card.get("issuer") for card in raw["cards"])
     kufar = next(card for card in raw["cards"] if card["id"] == "kufar")
     social = next(card for card in raw["cards"] if card["id"] == "mtbank_social")
     vitamin = next(card for card in raw["cards"] if card["id"] == "vitamin_d")
@@ -473,53 +485,21 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     assert rendered == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
         "1. 🟢💳 Витамин Д — 1% + 3% баллами\n"
-        "   🏦 Белинвестбанк\n"
-        "   💵 Деньгами: мин. платёж 10 BYN · макс. в месяц 50 BYN\n"
-        "   ⭐ Баллами: мин. платёж 0 BYN · макс. в месяц 200 баллов\n"
-        "2. ⚫💳 Оплати — 3%\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц не указан\n"
+        "2. 🟢💳 Оплати — 3%\n"
         "3. 🔵💳 Шоппер — 2,5% (2,44% после налога)\n"
-        "   🏦 МТБанк\n"
-        "   💵 мин. платёж 10 BYN · макс. в месяц 30 BYN\n"
         "4. 🔴💳 Цептер Card — 2%\n"
-        "   🏦 Цептер Банк\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц не указан\n"
         "5. 🔴💳 Цептер PLUS — 2%\n"
-        "   🏦 Цептер Банк\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц 100 BYN\n"
-        "6. 💳 R-карта — 1,5%\n"
-        "   🏦 Банк Решение\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц 100 BYN\n"
-        "7. 💳 КОМБОкарта — 1,2%\n"
-        "   🏦 Паритетбанк\n"
-        "   💵 мин. платёж 5 BYN · макс. в месяц 130 BYN\n"
-        "8. 💳 Спраўная — 1,11%\n"
-        "   🏦 Банк Дабрабыт\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц 100 BYN\n"
-        "9. 💳 1-2-3 — 1%\n"
-        "   🏦 БНБ-Банк\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц не указан\n"
-        "10. ⚫💳 Движение — 1%\n"
-        "   🏦 Банк БелВЭБ\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц 50 BYN\n"
+        "6. 🟪💳 R-карта — 1,5%\n"
+        "7. 🟠💳 КОМБОкарта — 1,2%\n"
+        "8. 🟣💳 Спраўная — 1,11%\n"
+        "9. 🔷💳 1-2-3 — 1%\n"
+        "10. ⬛💳 Движение — 1%\n"
         "11. 🔵💳 Куфар карта — 1% баллами\n"
-        "   🏦 МТБанк / Visa / Kufar\n"
-        "   ⭐ мин. платёж 0 BYN · макс. в месяц 200 баллов\n"
         "12. 🔵💳 Мткарта — 1% баллами\n"
-        "   🏦 МТБанк\n"
-        "   ⭐ мин. платёж 10 BYN · макс. в месяц 200 баллов\n"
         "13. 🔵💳 Социальная карта — 1%\n"
-        "   🏦 МТБанк\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц 200 BYN\n"
         "14. 🟡💳 Яркая карта — 1%\n"
-        "   🏦 Приорбанк\n"
-        "   💵 мин. платёж 10 BYN · макс. в месяц без лимита\n"
-        "15. 💳 Cashalot — 0,5%\n"
-        "   🏦 Белгазпромбанк\n"
-        "   💵 мин. платёж 10 BYN · макс. в месяц без лимита\n"
-        "16. 💳 Статускарта — 0,5%\n"
-        "   🏦 СтатусБанк\n"
-        "   💵 мин. платёж 0 BYN · макс. в месяц не указан"
+        "15. 🟦💳 Cashalot — 0,5%\n"
+        "16. 🟥💳 Статускарта — 0,5%"
     )
 
 
@@ -530,7 +510,7 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
 
     zepter_card = cards["zepter_card"]
     zepter_offers = zepter_card["reward_programs"][0]["offers"]
-    assert len(zepter_offers) == 40
+    assert len(zepter_offers) == 39
     assert {offer["mcc"] for offer in zepter_offers} == {
         "3351",
         "3501",
@@ -555,7 +535,6 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
         "5812",
         "5814",
         "5912",
-        "5944",
         "5945",
         "5962",
         "5977",
@@ -574,6 +553,18 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
         "8099",
     }
     assert {offer["value"] for offer in zepter_offers} == {2}
+    zepter_program = zepter_card["reward_programs"][0]
+    assert zepter_program["domestic_country"] == "BY"
+    assert zepter_program["foreign_value"] == 1
+    assert zepter_program["maximum_reward"] == {
+        "amount": 150,
+        "unit": "currency",
+        "currency": "BYN",
+    }
+    assert zepter_program["maximum_reward_alternatives"] == [
+        {"amount": 50, "unit": "currency", "currency": "USD"},
+        {"amount": 50, "unit": "currency", "currency": "EUR"},
+    ]
 
     oplati = cards["oplati"]
     exempt_program, one_percent_program = oplati["reward_programs"]
@@ -635,7 +626,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
         match for match in matches if match.card.id == "cactus_mtbank"
     ).card.condition.kind == ("selected_category")
     rendered = format_matches("5912", matches, _descriptions())
-    assert "⚫💳 Движение — 5% (4,61% после налога)" in rendered
+    assert "⬛💳 Движение — 5% (4,61% после налога)" in rendered
     assert "подключённых категорий" not in rendered
     assert "выбранная категория" not in rendered
 
@@ -724,9 +715,9 @@ def test_real_catalog_izi_uses_two_percent_for_only_listed_mccs() -> None:
     assert format_moneyback(match) == "2%"
     assert all(match.card.id != "belarusbank_izi" for match in catalog.lookup("5411"))
     rendered = format_matches("5812", catalog.lookup("5812"), _descriptions())
-    assert "💳 Изи-карта — 2%" in rendered
-    assert "🏦 Беларусбанк" in rendered
-    assert "мин. платёж 0 BYN · макс. в месяц не указан" in rendered
+    assert "🟩💳 Изи-карта — 2%" in rendered
+    assert "Беларусбанк" not in rendered
+    assert "мин. платёж" not in rendered
 
 
 def test_real_catalog_vitamin_points_exclude_transport() -> None:
@@ -771,11 +762,32 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
 
     assert cards["belveb_dvizhenie"].name == "Движение"
     assert cards["belveb_dvizhenie"].issuer == "Банк БелВЭБ"
-    assert cards["belveb_dvizhenie"].emoji == "⚫💳"
+    expected_markers = {
+        "belveb_dvizhenie": "⬛💳",
+        "zepter_plus": "🔴💳",
+        "mtkarta": "🔵💳",
+        "mtbank_social": "🔵💳",
+        "shopper_mtbank": "🔵💳",
+        "cactus_mtbank": "🔵💳",
+        "vitamin_d": "🟢💳",
+        "kufar": "🔵💳",
+        "zepter_card": "🔴💳",
+        "oplati": "🟢💳",
+        "paritet_combo": "🟠💳",
+        "dabrabyt_spraunaya": "🟣💳",
+        "belarusbank_izi": "🟩💳",
+        "bnb_1_2_3": "🔷💳",
+        "belgazprombank_cashalot": "🟦💳",
+        "statusbank_statuskarta": "🟥💳",
+        "reshenie_r_karta": "🟪💳",
+        "yarkaya_karta": "🟡💳",
+    }
+    assert {card_id: cards[card_id].emoji for card_id in expected_markers} == expected_markers
     assert cards["zepter_plus"].issuer == "Цептер Банк"
     assert cards["zepter_card"].name == "Цептер Card"
     assert cards["zepter_card"].issuer == "Цептер Банк"
     assert cards["vitamin_d"].issuer == "Белинвестбанк"
+    assert cards["oplati"].issuer == "Белинвестбанк"
     assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"
     assert cards["mtkarta"].name == "Мткарта"
     assert cards["belgazprombank_cashalot"].name == "Cashalot"
@@ -820,6 +832,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     expected = {
         ("belveb_dvizhenie", "cash"): ("0", "50", "currency"),
         ("zepter_plus", "cash"): ("0", "100", "currency"),
+        ("zepter_card", "cash"): ("0", "150", "currency"),
         ("mtkarta", "points"): ("10", "200", "points"),
         ("mtbank_social", "cash"): ("0", "200", "currency"),
         ("shopper_mtbank", "cash"): ("10", "30", "currency"),
@@ -830,6 +843,9 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("reshenie_r_karta", "cash"): ("0", "100", "currency"),
         ("dabrabyt_spraunaya", "cash"): ("0", "100", "currency"),
         ("paritet_combo", "cash"): ("5", "130", "currency"),
+        ("belarusbank_izi", "cash"): ("0", "20", "currency"),
+        ("bnb_1_2_3", "cash"): ("0", "123", "currency"),
+        ("statusbank_statuskarta", "cash"): ("0", "100", "currency"),
     }
     for (card_id, program_id), (minimum, maximum, unit) in expected.items():
         program = next(
@@ -849,6 +865,21 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     assert cashalot.minimum_payment is not None
     assert cashalot.minimum_payment.amount == Decimal("10")
     assert cashalot.maximum_reward is not None and cashalot.maximum_reward.unlimited
+
+    rendered = format_limits(tuple(cards.values()))
+    assert (
+        "🟢💳 Витамин Д — 💵 мин. платёж 10 BYN · макс. в месяц 50 BYN · "
+        "⭐ мин. платёж 0 BYN · макс. в месяц 200 баллов"
+    ) in rendered
+    assert ("🟠💳 КОМБОкарта — 💵 мин. платёж 5 BYN · макс. в месяц 130 BYN") in rendered
+    oplati_line = next(line for line in rendered.splitlines() if "Оплати" in line)
+    assert oplati_line.count("мин. платёж") == 1
+    assert "месячный лимит не установлен" in oplati_line
+    assert "лимит 20 BYN/7 дней" in oplati_line
+    assert "лимит 20 BYN/операцию" in oplati_line
+    assert (
+        "🔴💳 Цептер Card — 💵 мин. платёж 0 BYN · макс. в месяц 150 BYN / 50 USD / 50 EUR"
+    ) in rendered
 
 
 def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:

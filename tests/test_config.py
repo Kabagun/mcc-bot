@@ -8,6 +8,7 @@ from mcc_bot.bot import load_environment
 from mcc_bot.config import (
     DEFAULT_CATALOG_PATH,
     DEFAULT_DESCRIPTIONS_PATH,
+    DEFAULT_USER_REGISTRY_PATH,
     BotSettings,
     SettingsError,
 )
@@ -28,11 +29,13 @@ def test_from_environment_reads_catalog_paths(monkeypatch: pytest.MonkeyPatch) -
     _set_required_environment(monkeypatch)
     monkeypatch.setenv("MCC_CATALOG_PATH", "~/catalog.json")
     monkeypatch.setenv("MCC_DESCRIPTIONS_PATH", "~/descriptions.json")
+    monkeypatch.setenv("MCC_USER_REGISTRY_PATH", "~/users.sqlite3")
 
     settings = BotSettings.from_environment()
 
     assert settings.catalog_path == Path("~/catalog.json").expanduser()
     assert settings.descriptions_path == Path("~/descriptions.json").expanduser()
+    assert settings.user_registry_path == Path("~/users.sqlite3").expanduser()
 
 
 def test_default_catalog_paths_are_bundled_resources() -> None:
@@ -40,6 +43,7 @@ def test_default_catalog_paths_are_bundled_resources() -> None:
     assert DEFAULT_DESCRIPTIONS_PATH.name == "mcc_descriptions.json"
     assert DEFAULT_CATALOG_PATH.is_file()
     assert DEFAULT_DESCRIPTIONS_PATH.is_file()
+    assert Path("var/users.sqlite3") == DEFAULT_USER_REGISTRY_PATH
 
 
 def test_load_environment_reads_dotenv_from_working_directory(

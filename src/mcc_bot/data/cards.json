@@ -5,7 +5,7 @@
       "id": "belveb_dvizhenie",
       "name": "Движение",
       "issuer": "Банк БелВЭБ",
-      "emoji": "⚫💳",
+      "emoji": "⬛💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -10353,6 +10353,25 @@
             "amount": 0,
             "currency": "BYN"
           },
+          "maximum_reward": {
+            "amount": 150,
+            "unit": "currency",
+            "currency": "BYN"
+          },
+          "maximum_reward_alternatives": [
+            {
+              "amount": 50,
+              "unit": "currency",
+              "currency": "USD"
+            },
+            {
+              "amount": 50,
+              "unit": "currency",
+              "currency": "EUR"
+            }
+          ],
+          "domestic_country": "BY",
+          "foreign_value": 1,
           "offers": [
             {
               "mcc": "3501",
@@ -10451,10 +10470,6 @@
               "value": 2
             },
             {
-              "mcc": "5944",
-              "value": 2
-            },
-            {
               "mcc": "5945",
               "value": 2
             },
@@ -10521,8 +10536,22 @@
     {
       "id": "oplati",
       "name": "Оплати",
-      "issuer": null,
-      "emoji": "⚫💳",
+      "issuer": "Белинвестбанк",
+      "emoji": "🟢💳",
+      "reward_limits": [
+        {
+          "amount": 20,
+          "unit": "currency",
+          "currency": "BYN",
+          "period": "week"
+        },
+        {
+          "amount": 20,
+          "unit": "currency",
+          "currency": "BYN",
+          "period": "transaction"
+        }
+      ],
       "reward_programs": [
         {
           "id": "cash_tax_exempt",
@@ -10532,6 +10561,7 @@
             "amount": 0,
             "currency": "BYN"
           },
+          "monthly_maximum_not_defined": true,
           "offers": [
             {
               "mcc": "5422",
@@ -10567,6 +10597,7 @@
             "amount": 0,
             "currency": "BYN"
           },
+          "monthly_maximum_not_defined": true,
           "offers": [
             {
               "mcc": "4112",
@@ -11624,7 +11655,7 @@
       "id": "paritet_combo",
       "name": "КОМБОкарта",
       "issuer": "Паритетбанк",
-      "emoji": "💳",
+      "emoji": "🟠💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -11695,7 +11726,7 @@
       "id": "dabrabyt_spraunaya",
       "name": "Спраўная",
       "issuer": "Банк Дабрабыт",
-      "emoji": "💳",
+      "emoji": "🟣💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -11970,7 +12001,7 @@
       "id": "belarusbank_izi",
       "name": "Изи-карта",
       "issuer": "Беларусбанк",
-      "emoji": "💳",
+      "emoji": "🟩💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -11978,6 +12009,11 @@
           "tax_exempt": false,
           "minimum_payment": {
             "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 20,
+            "unit": "currency",
             "currency": "BYN"
           },
           "offers": [
@@ -12029,7 +12065,7 @@
       "id": "bnb_1_2_3",
       "name": "1-2-3",
       "issuer": "БНБ-Банк",
-      "emoji": "💳",
+      "emoji": "🔷💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12037,6 +12073,11 @@
           "tax_exempt": false,
           "minimum_payment": {
             "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 123,
+            "unit": "currency",
             "currency": "BYN"
           },
           "default": {
@@ -12078,7 +12119,7 @@
       "id": "belgazprombank_cashalot",
       "name": "Cashalot",
       "issuer": "Белгазпромбанк",
-      "emoji": "💳",
+      "emoji": "🟦💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12141,7 +12182,7 @@
       "id": "statusbank_statuskarta",
       "name": "Статускарта",
       "issuer": "СтатусБанк",
-      "emoji": "💳",
+      "emoji": "🟥💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12149,6 +12190,11 @@
           "tax_exempt": false,
           "minimum_payment": {
             "amount": 0,
+            "currency": "BYN"
+          },
+          "maximum_reward": {
+            "amount": 100,
+            "unit": "currency",
             "currency": "BYN"
           },
           "offers": [
@@ -12197,7 +12243,7 @@
       "id": "reshenie_r_karta",
       "name": "R-карта",
       "issuer": "Банк Решение",
-      "emoji": "💳",
+      "emoji": "🟪💳",
       "reward_programs": [
         {
           "id": "cash",

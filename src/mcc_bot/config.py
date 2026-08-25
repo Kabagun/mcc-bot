@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .resources import DEFAULT_CATALOG_PATH, DEFAULT_DESCRIPTIONS_PATH
 
+DEFAULT_USER_REGISTRY_PATH = Path("var/users.sqlite3")
+
 
 class SettingsError(ValueError):
     """Raised when required application configuration is missing or invalid."""
@@ -34,6 +36,7 @@ class BotSettings:
     token: str
     catalog_path: Path = DEFAULT_CATALOG_PATH
     descriptions_path: Path = DEFAULT_DESCRIPTIONS_PATH
+    user_registry_path: Path = DEFAULT_USER_REGISTRY_PATH
     log_level: str = "INFO"
 
     @classmethod
@@ -42,9 +45,11 @@ class BotSettings:
 
         catalog_path = _path("MCC_CATALOG_PATH", DEFAULT_CATALOG_PATH)
         descriptions_path = _path("MCC_DESCRIPTIONS_PATH", DEFAULT_DESCRIPTIONS_PATH)
+        user_registry_path = _path("MCC_USER_REGISTRY_PATH", DEFAULT_USER_REGISTRY_PATH)
         return cls(
             token=_required("TELEGRAM_BOT_TOKEN"),
             catalog_path=catalog_path,
             descriptions_path=descriptions_path,
+            user_registry_path=user_registry_path,
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         )

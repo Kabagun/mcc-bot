@@ -13,13 +13,15 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
 from .catalog import CardCatalog, CatalogError, InvalidMccError, normalize_mcc
 from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
-from .formatting import format_matches, split_message
+from .formatting import format_limits, format_matches, split_message
+from .users import UserRegistry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +60,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(
         update,
         "Отправьте четырёхзначный MCC, чтобы увидеть карты с манибэком.\n"  # noqa: RUF001
-        "Пример: 5411 или /mcc 5411",
+        "Пример: 5411 или /mcc 5411\n"
+        "Лимиты по картам: /limits",
     )
 
 
@@ -103,6 +106,23 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _lookup_and_reply(update, context, message.text)
 
 
+async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/limits`` by returning all payment thresholds and monthly caps."""
+
+    catalog: CardCatalog = context.application.bot_data["catalog"]
+    await _reply(update, format_limits(catalog.cards))
+
+
+async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Persist the effective chat ID before processing a supported update."""
+
+    chat = update.effective_chat
+    if chat is None:
+        return
+    registry: UserRegistry = context.application.bot_data["user_registry"]
+    registry.remember(chat.id)
+
+
 def build_application(settings: BotSettings) -> Application:
     """Build a configured Telegram application without starting polling."""
 
@@ -111,14 +131,19 @@ def build_application(settings: BotSettings) -> Application:
         descriptions = DescriptionCatalog.from_file(settings.descriptions_path)
     except CatalogError as exc:
         raise SettingsError(str(exc)) from exc
+    user_registry = UserRegistry(settings.user_registry_path)
+    user_registry.initialize()
     application = (
         ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
     )
     application.bot_data["catalog"] = catalog
     application.bot_data["descriptions"] = descriptions
+    application.bot_data["user_registry"] = user_registry
+    application.add_handler(TypeHandler(Update, remember_chat), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("mcc", lookup_command))
+    application.add_handler(CommandHandler("limits", limits_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_text))
     return application
 

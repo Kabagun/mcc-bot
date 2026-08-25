@@ -335,6 +335,61 @@ def test_reward_program_payment_and_cap_terms_are_typed(tmp_path: Path) -> None:
     assert unlimited.currency == "BYN"
 
 
+def test_reward_program_supports_currency_cap_alternatives_and_foreign_rate(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "version": 2,
+        "cards": [
+            _minimal_card(
+                {
+                    "kind": "cash",
+                    "tax_exempt": False,
+                    "maximum_reward": {
+                        "amount": 150,
+                        "unit": "currency",
+                        "currency": "byn",
+                    },
+                    "maximum_reward_alternatives": [
+                        {"amount": 50, "unit": "currency", "currency": "usd"},
+                        {"amount": 50, "unit": "currency", "currency": "eur"},
+                    ],
+                    "domestic_country": "by",
+                    "foreign_value": 1,
+                    "offers": [{"mcc": "5411", "value": 2}],
+                }
+            )
+        ],
+    }
+
+    program = CardCatalog.from_file(_write_payload(tmp_path, payload)).cards[0].reward_programs[0]
+
+    assert program.maximum_reward is not None
+    assert program.maximum_reward.currency == "BYN"
+    assert [cap.currency for cap in program.maximum_reward_alternatives] == ["USD", "EUR"]
+    assert program.domestic_country == "BY"
+    assert program.foreign_value == Decimal("1")
+
+
+def test_card_supports_non_monthly_reward_limits(tmp_path: Path) -> None:
+    card = _minimal_card(
+        {
+            "kind": "cash",
+            "tax_exempt": False,
+            "offers": [{"mcc": "5411", "value": 1}],
+        }
+    )
+    card["reward_limits"] = [
+        {"amount": 20, "unit": "currency", "currency": "byn", "period": "week"},
+        {"amount": 20, "unit": "currency", "currency": "byn", "period": "transaction"},
+    ]
+
+    parsed = CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))
+
+    assert [limit.period for limit in parsed.cards[0].reward_limits] == ["week", "transaction"]
+    assert all(limit.amount == Decimal("20") for limit in parsed.cards[0].reward_limits)
+
+
 @pytest.mark.parametrize(
     "maximum_reward",
     [

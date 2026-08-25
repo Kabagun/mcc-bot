@@ -19,6 +19,7 @@ MCC_PATTERN = re.compile(r"(?:mcc[\s:=-]*)?([0-9]{4})", re.IGNORECASE)
 SUPPORTED_UNITS = frozenset({"percent", "currency"})
 SUPPORTED_PROGRAM_KINDS = frozenset({"cash", "points"})
 SUPPORTED_REWARD_CAP_UNITS = frozenset({"currency", "points"})
+SUPPORTED_REWARD_LIMIT_PERIODS = frozenset({"transaction", "week"})
 PERCENT_TAX_THRESHOLD = Decimal("2")
 PERCENT_TAX_RATE = Decimal("0.13")
 
@@ -92,6 +93,16 @@ class RewardCap:
 
 
 @dataclass(frozen=True, slots=True)
+class RewardLimit:
+    """A finite reward limit for a period other than a calendar month."""
+
+    amount: Decimal
+    unit: str
+    period: str
+    currency: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RewardOffer:
     """One explicit MCC value within a reward program."""
 
@@ -119,6 +130,10 @@ class RewardProgram:
     excluded_mccs: frozenset[str]
     minimum_payment: MoneyAmount | None
     maximum_reward: RewardCap | None
+    monthly_maximum_not_defined: bool
+    maximum_reward_alternatives: tuple[RewardCap, ...]
+    domestic_country: str | None
+    foreign_value: Decimal | None
     unit: str = "percent"
     currency: str | None = None
 
@@ -137,6 +152,7 @@ class Card:
     issuer: str | None
     emoji: str
     condition: CardCondition | None
+    reward_limits: tuple[RewardLimit, ...]
     reward_programs: tuple[RewardProgram, ...]
 
     @property
@@ -389,6 +405,63 @@ def _parse_maximum_reward(raw_value: Any, prefix: str) -> RewardCap | None:
     return RewardCap(amount=amount, unit=unit, currency=currency)
 
 
+def _parse_maximum_reward_alternatives(raw_value: Any, prefix: str) -> tuple[RewardCap, ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list) or not raw_value:
+        raise CatalogError(f"{prefix} должен быть непустым массивом")
+    alternatives: list[RewardCap] = []
+    for index, raw_cap in enumerate(raw_value):
+        cap = _parse_maximum_reward(raw_cap, f"{prefix}[{index}]")
+        assert cap is not None
+        alternatives.append(cap)
+    return tuple(alternatives)
+
+
+def _parse_reward_limits(raw_value: Any, prefix: str) -> tuple[RewardLimit, ...]:
+    if raw_value is None:
+        return ()
+    if not isinstance(raw_value, list) or not raw_value:
+        raise CatalogError(f"{prefix} должен быть непустым массивом")
+    limits: list[RewardLimit] = []
+    for index, raw_limit in enumerate(raw_value):
+        limit_prefix = f"{prefix}[{index}]"
+        if not isinstance(raw_limit, dict):
+            raise CatalogError(f"{limit_prefix} должен быть объектом")
+        _reject_unknown(raw_limit, {"amount", "unit", "currency", "period"}, limit_prefix)
+        unit = _text(raw_limit.get("unit"), f"{limit_prefix}.unit")
+        assert unit is not None
+        unit = unit.lower()
+        if unit not in SUPPORTED_REWARD_CAP_UNITS:
+            raise CatalogError(
+                f"{limit_prefix}.unit должен быть одним из {sorted(SUPPORTED_REWARD_CAP_UNITS)}"
+            )
+        period = _text(raw_limit.get("period"), f"{limit_prefix}.period")
+        assert period is not None
+        period = period.lower()
+        if period not in SUPPORTED_REWARD_LIMIT_PERIODS:
+            raise CatalogError(
+                f"{limit_prefix}.period должен быть одним из "
+                f"{sorted(SUPPORTED_REWARD_LIMIT_PERIODS)}"
+            )
+        raw_currency = raw_limit.get("currency")
+        if unit == "currency":
+            currency = _currency(raw_currency, f"{limit_prefix}.currency")
+        else:
+            if raw_currency is not None:
+                raise CatalogError(f"{limit_prefix}.currency запрещён для unit points")
+            currency = None
+        limits.append(
+            RewardLimit(
+                amount=_decimal(raw_limit.get("amount"), f"{limit_prefix}.amount"),
+                unit=unit,
+                period=period,
+                currency=currency,
+            )
+        )
+    return tuple(limits)
+
+
 def _parse_reward_program(raw_program: Any, card_index: int, program_index: int) -> RewardProgram:
     prefix = f"cards[{card_index}].reward_programs[{program_index}]"
     if not isinstance(raw_program, dict):
@@ -407,6 +480,10 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
             "excluded_mccs",
             "minimum_payment",
             "maximum_reward",
+            "monthly_maximum_not_defined",
+            "maximum_reward_alternatives",
+            "domestic_country",
+            "foreign_value",
         },
         prefix,
     )
@@ -504,6 +581,34 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
     maximum_reward = _parse_maximum_reward(
         raw_program.get("maximum_reward"), f"{prefix}.maximum_reward"
     )
+    monthly_maximum_not_defined = raw_program.get("monthly_maximum_not_defined", False)
+    if not isinstance(monthly_maximum_not_defined, bool):
+        raise CatalogError(f"{prefix}.monthly_maximum_not_defined должен быть boolean")
+    if maximum_reward is not None and monthly_maximum_not_defined:
+        raise CatalogError(
+            f"{prefix}.maximum_reward нельзя сочетать с monthly_maximum_not_defined"  # noqa: RUF001
+        )
+    maximum_reward_alternatives = _parse_maximum_reward_alternatives(
+        raw_program.get("maximum_reward_alternatives"),
+        f"{prefix}.maximum_reward_alternatives",
+    )
+    if maximum_reward is None and maximum_reward_alternatives:
+        raise CatalogError(f"{prefix}.maximum_reward обязателен при maximum_reward_alternatives")
+    domestic_country = _text(
+        raw_program.get("domestic_country"), f"{prefix}.domestic_country", required=False
+    )
+    if domestic_country is not None:
+        domestic_country = domestic_country.upper()
+        if not re.fullmatch(r"[A-Z]{2}", domestic_country):
+            raise CatalogError(f"{prefix}.domestic_country должен быть двухбуквенным кодом")
+    raw_foreign_value = raw_program.get("foreign_value")
+    foreign_value = (
+        _decimal(raw_foreign_value, f"{prefix}.foreign_value")
+        if raw_foreign_value is not None
+        else None
+    )
+    if (domestic_country is None) != (foreign_value is None):
+        raise CatalogError(f"{prefix}.domestic_country и foreign_value должны задаваться вместе")
     return RewardProgram(
         id=program_id,
         kind=kind,
@@ -513,6 +618,10 @@ def _parse_reward_program(raw_program: Any, card_index: int, program_index: int)
         excluded_mccs=excluded_mccs,
         minimum_payment=minimum_payment,
         maximum_reward=maximum_reward,
+        monthly_maximum_not_defined=monthly_maximum_not_defined,
+        maximum_reward_alternatives=maximum_reward_alternatives,
+        domestic_country=domestic_country,
+        foreign_value=foreign_value,
         unit=unit,
         currency=currency,
     )
@@ -523,7 +632,9 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
     if not isinstance(raw_card, dict):
         raise CatalogError(f"{prefix} должен быть объектом")
     _reject_unknown(
-        raw_card, {"id", "name", "issuer", "emoji", "condition", "reward_programs"}, prefix
+        raw_card,
+        {"id", "name", "issuer", "emoji", "condition", "reward_limits", "reward_programs"},
+        prefix,
     )
     card_id = _text(raw_card.get("id"), f"{prefix}.id")
     name = _text(raw_card.get("name"), f"{prefix}.name")
@@ -531,6 +642,7 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
     emoji = _text(raw_card.get("emoji"), f"{prefix}.emoji")
     assert card_id is not None and name is not None and emoji is not None
     condition = _parse_condition(raw_card.get("condition"), f"{prefix}.condition")
+    reward_limits = _parse_reward_limits(raw_card.get("reward_limits"), f"{prefix}.reward_limits")
     raw_programs = raw_card.get("reward_programs")
     if not isinstance(raw_programs, list) or not raw_programs:
         raise CatalogError(f"{prefix}.reward_programs должен быть непустым массивом")
@@ -548,6 +660,7 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
         issuer=issuer,
         emoji=emoji,
         condition=condition,
+        reward_limits=reward_limits,
         reward_programs=tuple(programs),
     )
 

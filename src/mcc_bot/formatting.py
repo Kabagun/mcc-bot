@@ -7,8 +7,11 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from .catalog import (
     PERCENT_TAX_THRESHOLD,
+    Card,
     CardMatch,
+    RewardCap,
     RewardComponent,
+    RewardLimit,
     RewardProgram,
     calculate_net_percent,
 )
@@ -57,18 +60,25 @@ def format_moneyback(match: CardMatch) -> str:
     )
 
 
-def _format_maximum_reward(program: RewardProgram) -> str:
-    maximum = program.maximum_reward
-    if maximum is None:
-        return "макс. в месяц не указан"
+def _format_reward_cap(maximum: RewardCap) -> str:
     if maximum.unlimited:
-        return "макс. в месяц без лимита"
+        return "без лимита"
     assert maximum.amount is not None
     amount = _format_decimal(maximum.amount)
     if maximum.unit == "points":
-        return f"макс. в месяц {amount} баллов"
+        return f"{amount} баллов"
     currency = maximum.currency or ""
-    return f"макс. в месяц {amount} {currency}".strip()
+    return f"{amount} {currency}".strip()
+
+
+def _format_maximum_reward(program: RewardProgram) -> str:
+    maximum = program.maximum_reward
+    if maximum is None:
+        if program.monthly_maximum_not_defined:
+            return "месячный лимит не установлен"
+        return "макс. в месяц не указан"
+    alternatives = (maximum, *program.maximum_reward_alternatives)
+    return "макс. в месяц " + " / ".join(_format_reward_cap(cap) for cap in alternatives)
 
 
 def _format_program_terms(program: RewardProgram) -> str:
@@ -81,20 +91,27 @@ def _format_program_terms(program: RewardProgram) -> str:
     return f"{minimum_label} · {_format_maximum_reward(program)}"
 
 
-def _match_detail_lines(match: CardMatch) -> tuple[str, ...]:
-    lines: list[str] = []
-    if match.card.issuer:
-        lines.append(f"   🏦 {match.card.issuer}")
+def _format_reward_limit(limit: RewardLimit) -> str:
+    amount = _format_decimal(limit.amount)
+    value = f"{amount} баллов" if limit.unit == "points" else f"{amount} {limit.currency}"
+    period = "7 дней" if limit.period == "week" else "операцию"
+    return f"лимит {value}/{period}"
 
-    programs = {program.id: program for program in match.card.reward_programs}
-    stacked = len(match.components) > 1
-    for component in match.components:
-        program = programs[component.program_id]
-        icon = "⭐" if component.kind == "points" else "💵"
-        kind = "Баллами: " if component.kind == "points" else "Деньгами: "
-        prefix = kind if stacked else ""
-        lines.append(f"   {icon} {prefix}{_format_program_terms(program)}")
-    return tuple(lines)
+
+def format_limits(cards: tuple[Card, ...]) -> str:
+    """Format card payment thresholds and monthly reward caps."""
+
+    lines = ["📊 Лимиты по картам", ""]
+    for index, card in enumerate(sorted(cards, key=lambda item: item.name.casefold()), start=1):
+        programs = []
+        for program in card.reward_programs:
+            icon = "⭐" if program.kind == "points" else "💵"
+            rendered = f"{icon} {_format_program_terms(program)}"
+            if rendered not in programs:
+                programs.append(rendered)
+        programs.extend(f"⏱️ {_format_reward_limit(limit)}" for limit in card.reward_limits)
+        lines.append(f"{index}. {card.emoji} {card.name} — {' · '.join(programs)}")
+    return "\n".join(lines)
 
 
 def _description(descriptions: DescriptionCatalog | Mapping[str, str] | None, mcc: str) -> str:
@@ -134,7 +151,6 @@ def format_matches(
     lines = [header, ""]
     for index, match in enumerate(matches, start=1):
         lines.append(f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}")
-        lines.extend(_match_detail_lines(match))
     return "\n".join(lines)
 
 
