@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
@@ -94,7 +95,7 @@ async def _lookup_and_reply(
         await _reply(update, str(exc))
         return
     try:
-        pages = format_match_pages(normalized_mcc, matches, descriptions)
+        pages = format_match_pages(normalized_mcc, matches, descriptions, html=True)
     except ValueError:
         await _reply(update, RESULT_TOO_LONG)
         return
@@ -105,10 +106,11 @@ async def _lookup_and_reply(
         if matches:
             await message.reply_text(
                 page.compact,
+                parse_mode=ParseMode.HTML,
                 reply_markup=_details_keyboard(normalized_mcc, page_index, details=False),
             )
         else:
-            await message.reply_text(page.compact)
+            await message.reply_text(page.compact, parse_mode=ParseMode.HTML)
 
 
 def _details_keyboard(mcc: str, page: int, *, details: bool) -> InlineKeyboardMarkup:
@@ -149,7 +151,7 @@ async def toggle_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not matches:
         return
     try:
-        pages = format_match_pages(mcc, matches, descriptions)
+        pages = format_match_pages(mcc, matches, descriptions, html=True)
     except ValueError:
         text, keyboard = RESULT_TOO_LONG, None
     else:
@@ -159,7 +161,7 @@ async def toggle_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text = page.expanded if details else page.compact
         keyboard = _details_keyboard(mcc, page_index, details=details)
     try:
-        await query.edit_message_text(text, reply_markup=keyboard)
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).casefold():
             LOGGER.info("Could not edit an MCC details message")

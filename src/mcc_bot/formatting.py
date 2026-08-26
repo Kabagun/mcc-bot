@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from html import escape
 
 from .catalog import (
     PERCENT_TAX_THRESHOLD,
@@ -20,6 +21,7 @@ from .descriptions import DescriptionCatalog
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3900
+_KEYCAP_DIGITS = str.maketrans({str(digit): f"{digit}\ufe0f\u20e3" for digit in range(10)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +44,15 @@ def _format_decimal(value: Decimal, *, places: int | None = None) -> str:
     return (rendered or "0").replace(".", ",")
 
 
-def _component_label(component: RewardComponent, *, show_kind: bool = False) -> str:
+def _component_label(
+    component: RewardComponent, *, show_kind: bool = False, emoji: bool = False
+) -> str:
     if component.unit == "currency":
         currency = component.currency or ""
         return f"{_format_decimal(component.gross_value)} {currency}".strip()
     value = _format_decimal(component.gross_value)
+    if emoji:
+        value = value.translate(_KEYCAP_DIGITS)
     kind_label = ""
     if show_kind:
         kind_label = " деньгами" if component.kind == "cash" else " баллами"
@@ -57,14 +63,17 @@ def _component_label(component: RewardComponent, *, show_kind: bool = False) -> 
     return result
 
 
-def format_moneyback(match: CardMatch) -> str:
-    """Render a compact reward, showing kinds only when they disambiguate a stack."""
+def format_moneyback(match: CardMatch, *, emoji: bool = False) -> str:
+    """Render a compact reward, optionally using keycaps for gross percent digits.
+
+    Net percentages and currency amounts always retain ordinary digits.
+    """
 
     if len(match.components) == 1:
         component = match.components[0]
-        return _component_label(component, show_kind=component.kind == "points")
+        return _component_label(component, show_kind=component.kind == "points", emoji=emoji)
     return " + ".join(
-        _component_label(component, show_kind=component.kind == "points")
+        _component_label(component, show_kind=component.kind == "points", emoji=emoji)
         for component in match.components
     )
 
@@ -212,14 +221,16 @@ def format_matches(
     descriptions: DescriptionCatalog | Mapping[str, str] | None = None,
     *,
     details: bool = False,
+    html: bool = False,
 ) -> str:
     """Format MCC results, optionally adding banks and effective program terms.
 
-    The default compact representation is unchanged. Use ``format_match_pages``
-    for bounded Telegram replies that can switch views without moving cards.
+    Plain text is the default. ``html=True`` escapes catalog text for Telegram,
+    bolds the header and card names, italicizes issuers, and uses gross percent
+    keycaps. Use ``format_match_pages`` for bounded replies with stable cards.
     """
 
-    header = _match_header(mcc, descriptions)
+    header = _match_header(mcc, descriptions, html=html)
     if not matches:
         return f"{header}\n\n❌ Доступных карт нет."
     separator = "\n\n" if details else "\n"
@@ -227,22 +238,32 @@ def format_matches(
         header
         + "\n\n"
         + separator.join(
-            _match_block(match, index, details=details)
+            _match_block(match, index, details=details, html=html)
             for index, match in enumerate(matches, start=1)
         )
     )
 
 
-def _match_header(mcc: str, descriptions: DescriptionCatalog | Mapping[str, str] | None) -> str:
+def _match_header(
+    mcc: str, descriptions: DescriptionCatalog | Mapping[str, str] | None, *, html: bool
+) -> str:
     description = _description(descriptions, mcc)
-    return f"{_header_emoji(description)} MCC {mcc} — {description}"
+    header = f"{_header_emoji(description)} MCC {mcc} — {description}"
+    return f"<b>{escape(header)}</b>" if html else header
 
 
-def _match_block(match: CardMatch, index: int, *, details: bool) -> str:
-    summary = f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}"
+def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> str:
+    marker, name = match.card.emoji, match.card.name
+    reward = format_moneyback(match, emoji=html)
+    if html:
+        marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
+    summary = f"{index}. {marker} {name} — {reward}"
     if not details:
         return summary
-    return "\n".join([summary, *(f"   {line}" for line in _match_details(match))])
+    lines = _match_details(match)
+    if html:
+        lines = [f"<i>{escape(lines[0])}</i>", *(escape(line) for line in lines[1:])]
+    return "\n".join([summary, *(f"   {line}" for line in lines)])
 
 
 def _telegram_length(text: str) -> int:
@@ -256,10 +277,13 @@ def format_match_pages(
     descriptions: DescriptionCatalog | Mapping[str, str] | None = None,
     *,
     max_length: int = SAFE_MESSAGE_LENGTH,
+    html: bool = False,
 ) -> tuple[MatchPage, ...]:
     """Build stable whole-card pages sized for both compact and expanded views.
 
-    Headers repeat and ranks remain global. Lengths count UTF-16 units; a
+    Headers repeat and ranks remain global. ``html=True`` uses the escaped rich
+    style of ``format_matches`` and keeps tags balanced within every page.
+    Lengths conservatively count raw UTF-16 units, including HTML markup; a
     ``ValueError`` signals an invalid bound or an individual card/header that
     cannot fit without dropping information. No card or term is truncated.
     """
@@ -267,17 +291,17 @@ def format_match_pages(
     if not 0 < max_length <= MAX_TELEGRAM_MESSAGE_LENGTH:
         raise ValueError("Invalid Telegram message length bound")
     if not matches:
-        text = format_matches(mcc, matches, descriptions)
+        text = format_matches(mcc, matches, descriptions, html=html)
         if _telegram_length(text) > max_length:
             raise ValueError("MCC header exceeds the Telegram message length bound")
         return (MatchPage(text, text),)
-    header = _match_header(mcc, descriptions)
+    header = _match_header(mcc, descriptions, html=html)
     pages: list[MatchPage] = []
     compact = expanded = header
     has_cards = False
     for index, match in enumerate(matches, start=1):
-        compact_block = _match_block(match, index, details=False)
-        expanded_block = _match_block(match, index, details=True)
+        compact_block = _match_block(match, index, details=False, html=html)
+        expanded_block = _match_block(match, index, details=True, html=html)
         compact_candidate = compact + ("\n" if has_cards else "\n\n") + compact_block
         expanded_candidate = expanded + "\n\n" + expanded_block
         if (

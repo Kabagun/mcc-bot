@@ -631,6 +631,40 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
     assert "выбранная категория" not in rendered
 
 
+def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> None:
+    matches = _catalog().lookup("5411")
+    rendered = format_matches("5411", matches, _descriptions(), html=True)
+
+    assert rendered == (
+        "<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n"
+        "1. 💳 <b>Витамин Д</b> — 1️⃣% + 3️⃣% баллами\n"
+        "2. 💳 <b>Оплати</b> — 3️⃣%\n"
+        "3. 💳 <b>Шоппер</b> — 2️⃣,5️⃣% (2,44%)\n"
+        "4. 💳 <b>Цептер Card</b> — 2️⃣%\n"
+        "5. 💳 <b>Цептер PLUS</b> — 2️⃣%\n"
+        "6. 💳 <b>R-карта</b> — 1️⃣,5️⃣%\n"
+        "7. 💳 <b>КОМБОкарта</b> — 1️⃣,2️⃣%\n"
+        "8. 💳 <b>Спраўная</b> — 1️⃣,1️⃣1️⃣%\n"
+        "9. 💳 <b>1-2-3</b> — 1️⃣%\n"
+        "10. 💳 <b>Движение</b> — 1️⃣%\n"
+        "11. 💳 <b>Куфар</b> — 1️⃣% баллами\n"
+        "12. 💳 <b>Мткарта</b> — 1️⃣% баллами\n"
+        "13. 💳 <b>Социальная</b> — 1️⃣%\n"
+        "14. 💳 <b>Яркая</b> — 1️⃣%\n"
+        "15. 💳 <b>Cashalot</b> — 0️⃣,5️⃣%\n"
+        "16. 💳 <b>Статускарта</b> — 0️⃣,5️⃣%"
+    )
+    pages = format_match_pages("5411", matches, _descriptions(), html=True)
+    assert len(pages) == 1
+    assert pages[0].compact == rendered
+    assert pages[0].expanded == format_matches(
+        "5411", matches, _descriptions(), details=True, html=True
+    )
+    assert "   <i>Белинвестбанк</i>\n" in pages[0].expanded
+    assert "Деньги: мин. платёж 10 BYN · макс. 50 BYN/мес." in pages[0].expanded
+    assert "Баллы: без минимума · макс. 200 баллов/мес." in pages[0].expanded
+
+
 def test_real_catalog_social_uses_one_percent_fallback_with_kufar_exclusions() -> None:
     catalog = _catalog()
     matches = catalog.lookup("7297")

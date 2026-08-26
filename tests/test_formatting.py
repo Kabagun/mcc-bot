@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from decimal import Decimal
+from html import escape
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -390,3 +392,233 @@ def test_empty_match_pages_have_the_normal_no_cards_message() -> None:
 def test_match_pages_reject_invalid_length_bounds(bound) -> None:
     with pytest.raises(ValueError, match="Invalid"):
         format_match_pages("5411", (), max_length=bound)
+
+
+def _html_text(text: str) -> str:
+    """Check balanced supported markup and return its visible text."""
+
+    root = ElementTree.fromstring(f"<message>{text}</message>")
+    for element in root.iter():
+        assert element.tag in {"message", "b", "i"}
+        assert not element.attrib
+    return "".join(root.itertext())
+
+
+@pytest.mark.parametrize("details", [False, True])
+def test_html_matches_style_only_header_names_and_issuers(catalog_path, details) -> None:
+    matches = CardCatalog.from_file(catalog_path).lookup("5411")
+    descriptions = {"5411": "Продуктовые магазины"}
+
+    rendered = format_matches("5411", matches, descriptions, details=details, html=True)
+
+    assert rendered.startswith("<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n")
+    assert "1. 🅱️ <b>Beta Card</b> — 5️⃣% (4,61%)" in rendered
+    assert "3. 🅰️ <b>Alpha Card</b> — 2️⃣,5️⃣% (2,44%)" in rendered
+    assert rendered.count("<b>") == len(matches) + 1
+    assert rendered.count("<i>") == (len(matches) if details else 0)
+    if details:
+        assert "   <i>Beta Bank</i>\n   Мин. платёж не указан" in rendered
+        assert "   <i>Банк не указан</i>\n" in rendered
+    assert _html_text(rendered).replace("\ufe0f\u20e3", "") == format_matches(
+        "5411", matches, descriptions, details=details
+    )
+
+
+@pytest.mark.parametrize(
+    ("gross", "reward"),
+    [
+        ("0.5", "0️⃣,5️⃣%"),
+        ("1", "1️⃣%"),
+        ("1.11", "1️⃣,1️⃣1️⃣%"),
+        ("2.50", "2️⃣,5️⃣% (2,44%)"),
+        ("19.8765432", "1️⃣9️⃣,8️⃣7️⃣6️⃣5️⃣4️⃣3️⃣2️⃣% (17,55%)"),
+    ],
+)
+def test_html_matches_use_keycaps_only_for_gross_percent_digits(catalog_path, gross, reward):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    match = replace(
+        base,
+        card=replace(base.card, name="Card 10", emoji="💳"),
+        components=(replace(base.components[0], gross_value=Decimal(gross)),),
+    )
+
+    rendered = format_matches("5411", (match,), html=True)
+
+    assert rendered.endswith(f"1. 💳 <b>Card 10</b> — {reward}")
+    assert format_moneyback(match, emoji=True) == reward
+    assert format_moneyback(match) == reward.replace("\ufe0f\u20e3", "")
+
+
+def test_html_matches_keep_mixed_rewards_and_limits_in_their_original_units(catalog_path):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    cash = replace(
+        base.card.reward_programs[0],
+        id="cash",
+        minimum_payment=MoneyAmount(Decimal("3.5"), "BYN"),
+        maximum_reward=RewardCap(Decimal(150), "currency", "BYN"),
+        maximum_reward_alternatives=(RewardCap(Decimal(50), "currency", "USD"),),
+    )
+    points = replace(
+        cash,
+        id="points",
+        kind="points",
+        minimum_payment=MoneyAmount(Decimal(0), "BYN"),
+        maximum_reward=RewardCap(Decimal(200), "points"),
+        maximum_reward_alternatives=(),
+    )
+    match = replace(
+        base,
+        card=replace(
+            base.card,
+            reward_programs=(cash, points),
+            reward_limits=(
+                RewardLimit(Decimal(20), "currency", "week", "BYN"),
+                RewardLimit(Decimal(2), "points", "transaction"),
+            ),
+        ),
+        components=(
+            RewardComponent("cash", "cash", Decimal("12.5"), False, "currency", "BYN"),
+            RewardComponent("points", "points", Decimal("1.11"), True),
+        ),
+    )
+
+    rendered = format_matches("5411", (match,), details=True, html=True)
+
+    assert " — 12,5 BYN + 1️⃣,1️⃣1️⃣% баллами\n" in rendered
+    assert "   Деньги: мин. платёж 3,5 BYN · макс. 150 BYN / 50 USD/мес." in rendered
+    assert "   Баллы: без минимума · макс. 200 баллов/мес." in rendered
+    assert "   По карте: макс. кэшбэк 20 BYN/неделю · макс. кэшбэк 2 баллов/операцию" in rendered
+    assert _html_text(rendered).replace("\ufe0f\u20e3", "") == format_matches(
+        "5411", (match,), details=True
+    )
+    points_only = replace(match, components=(match.components[1],))
+    rendered = format_matches("5411", (points_only,), details=True, html=True)
+    assert "Без минимума · макс. кэшбэк 200 баллов/мес." in rendered
+    assert "3,5 BYN" not in rendered and "150 BYN" not in rendered
+
+
+@pytest.mark.parametrize("descriptions_as_catalog", [False, True])
+def test_html_matches_escape_all_dynamic_fields_before_adding_markup(
+    catalog_path, descriptions_as_catalog
+):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    name = '<b title="card">Card & "name"</b>'
+    issuer = 'Bank & <u title="issuer">'
+    marker = "💳<s>&"
+    currency = '<b>BYN</b> & "currency"'
+    description = '<script>alert("MCC")</script> & &#x31;'
+    mcc = "5411" if descriptions_as_catalog else '<5411&">'
+    descriptions = {mcc: description}
+    if descriptions_as_catalog:
+        descriptions = DescriptionCatalog(descriptions)
+    program = replace(
+        base.card.reward_programs[0],
+        minimum_payment=MoneyAmount(Decimal(3), currency),
+        maximum_reward=RewardCap(Decimal(150), "currency", currency),
+        maximum_reward_alternatives=(RewardCap(None, "currency", currency),),
+    )
+    match = replace(
+        base,
+        card=replace(
+            base.card,
+            name=name,
+            issuer=issuer,
+            emoji=marker,
+            reward_programs=(program,),
+            reward_limits=(RewardLimit(Decimal(20), "currency", "week", currency),),
+        ),
+        components=(replace(base.components[0], unit="currency", currency=currency),),
+    )
+
+    pages = format_match_pages(mcc, (match,), descriptions, html=True)
+
+    assert len(pages) == 1
+    for details, rendered in ((False, pages[0].compact), (True, pages[0].expanded)):
+        assert rendered == format_matches(mcc, (match,), descriptions, details=details, html=True)
+        assert _html_text(rendered) == format_matches(mcc, (match,), descriptions, details=details)
+        assert rendered.startswith(f"<b>🧾 MCC {escape(mcc)} — {escape(description)}</b>")
+        assert f"1. {escape(marker)} <b>{escape(name)}</b> — 5 {escape(currency)}" in rendered
+        if details:
+            assert f"   <i>{escape(issuer)}</i>\n" in rendered
+            assert f"Мин. платёж 3 {escape(currency)}" in rendered
+            assert (
+                f"макс. кэшбэк 150 {escape(currency)} / без лимита {escape(currency)}" in rendered
+            )
+            assert f"макс. кэшбэк 20 {escape(currency)}/неделю" in rendered
+    assert match.card.name == name and match.card.issuer == issuer
+
+
+def test_html_match_pages_keep_whole_cards_balanced_tags_and_global_ranks(catalog_path):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    matches = tuple(
+        replace(base, card=replace(base.card, id=f"card-{i}", name=f"💳 Card <{i:03d}> &"))
+        for i in range(100)
+    )
+    descriptions = {"5411": "Продукты & <магазины>"}
+
+    pages = format_match_pages("5411", matches, descriptions, html=True)
+
+    assert len(pages) > 1
+    all_summaries = []
+    for page in pages:
+        for rendered in (page.compact, page.expanded):
+            assert len(rendered.encode("utf-16-le")) // 2 <= SAFE_MESSAGE_LENGTH
+            assert _html_text(rendered).startswith("🛒 MCC 5411 — Продукты & <магазины>\n\n")
+        summaries = page.compact.splitlines()[2:]
+        expanded_blocks = page.expanded.split("\n\n")[1:]
+        assert summaries == [block.splitlines()[0] for block in expanded_blocks]
+        assert len(summaries) == page.expanded.count("   <i>Beta Bank</i>\n")
+        assert all(block.endswith("макс. в месяц не указан") for block in expanded_blocks)
+        all_summaries.extend(summaries)
+    assert (
+        all_summaries == format_matches("5411", matches, descriptions, html=True).splitlines()[2:]
+    )
+    assert all_summaries[-1].startswith("100. 🅱️ <b>💳 Card &lt;099&gt; &amp;</b>")
+
+
+@pytest.mark.parametrize("card_count", [1, 2])
+def test_html_match_pages_respect_exact_raw_utf16_boundaries(catalog_path, card_count):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    match = replace(base, card=replace(base.card, name="💳<&" * 20))
+    matches = (match,) * card_count
+    expanded = format_matches("5411", matches, details=True, html=True)
+    units = len(expanded.encode("utf-16-le")) // 2
+
+    assert format_match_pages("5411", matches, max_length=units, html=True)[0].expanded == expanded
+    if card_count == 1:
+        with pytest.raises(ValueError, match="exceeds"):
+            format_match_pages("5411", matches, max_length=units - 1, html=True)
+    else:
+        pages = format_match_pages("5411", matches, max_length=units - 1, html=True)
+        assert len(pages) == 2
+        assert pages[1].compact.splitlines()[2].startswith("2. ")
+        for page in pages:
+            for rendered in (page.compact, page.expanded):
+                _html_text(rendered)
+                assert len(rendered.encode("utf-16-le")) // 2 <= units - 1
+
+
+def test_html_empty_match_pages_style_and_escape_header_at_exact_bound() -> None:
+    descriptions = {"5411": 'Food <b>& "shop"</b>'}
+    expected = "<b>🧾 MCC 5411 — Food &lt;b&gt;&amp; &quot;shop&quot;&lt;/b&gt;</b>"
+    expected += "\n\n❌ Доступных карт нет."
+    units = len(expected.encode("utf-16-le")) // 2
+
+    assert format_matches("5411", (), descriptions, html=True) == expected
+    pages = format_match_pages("5411", (), descriptions, max_length=units, html=True)
+    assert len(pages) == 1
+    assert pages[0].compact == pages[0].expanded == expected
+    assert _html_text(expected) == format_matches("5411", (), descriptions)
+    with pytest.raises(ValueError, match="MCC header exceeds"):
+        format_match_pages("5411", (), descriptions, max_length=units - 1, html=True)
+
+
+@pytest.mark.parametrize("oversized_field", ["name", "issuer", "description"])
+def test_html_match_pages_reject_oversized_escaped_fields(catalog_path, oversized_field):
+    base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    descriptions = {"5411": "&" * 1000} if oversized_field == "description" else None
+    if oversized_field != "description":
+        base = replace(base, card=replace(base.card, **{oversized_field: "&" * 1000}))
+
+    with pytest.raises(ValueError, match="exceeds"):
+        format_match_pages("5411", (base,), descriptions, html=True)

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from telegram import BotCommand
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, NetworkError
 from telegram.ext import CallbackQueryHandler
 
@@ -47,6 +48,7 @@ def test_start_sends_russian_usage_instructions(catalog_path) -> None:
 
     message.reply_text.assert_awaited_once()
     assert "четырёхзначный MCC" in message.reply_text.await_args.args[0]
+    assert "parse_mode" not in message.reply_text.await_args.kwargs
 
 
 def test_lookup_command_replies_with_sorted_russian_results(catalog_path) -> None:
@@ -81,6 +83,7 @@ def test_limits_replies_immediately_and_does_not_change_number_lookup(catalog_pa
     limits_result = limits_message.reply_text.await_args.args[0]
     assert "📊 Лимиты по картам" in limits_result
     assert "Alpha Card" in limits_result
+    assert "parse_mode" not in limits_message.reply_text.await_args.kwargs
 
     lookup_message = SimpleNamespace(text="5411", reply_text=AsyncMock())
     asyncio.run(lookup_text(SimpleNamespace(effective_message=lookup_message), context))
@@ -146,8 +149,9 @@ def test_all_lookup_paths_attach_details_button_with_normalized_mcc(catalog_path
     assert button.text == "🏦 Банки и минимальный платёж"
     assert button.callback_data == "mcc_details:5411:0:1"
     assert len(button.callback_data.encode()) <= 64
+    assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
     assert message.reply_text.await_args.args[0] == format_matches(
-        "5411", catalog.lookup("5411"), context.application.bot_data["descriptions"]
+        "5411", catalog.lookup("5411"), context.application.bot_data["descriptions"], html=True
     )
 
 
@@ -164,6 +168,10 @@ def test_invalid_or_empty_lookups_have_no_details_button(catalog_path, raw_mcc) 
 
     message.reply_text.assert_awaited_once()
     assert "reply_markup" not in message.reply_text.await_args.kwargs
+    if raw_mcc == "9999":
+        assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
+    else:
+        assert "parse_mode" not in message.reply_text.await_args.kwargs
 
 
 def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_text(catalog_path):
@@ -171,13 +179,17 @@ def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_tex
     incoming = SimpleNamespace(text="5411", reply_text=AsyncMock())
     asyncio.run(lookup_text(SimpleNamespace(effective_message=incoming), context))
     compact = incoming.reply_text.await_args.args[0]
+    assert "<b>Beta Card</b> — 5️⃣% (4,61%)" in compact
+    assert "<b>Alpha Card</b> — 2️⃣,5️⃣% (2,44%)" in compact
     query = _callback(_button(incoming.reply_text.await_args).callback_data)
 
     asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))
 
     query.answer.assert_awaited_once()
     query.edit_message_text.assert_awaited_once()
-    assert "Beta Bank" in query.edit_message_text.await_args.args[0]
+    assert "<i>Beta Bank</i>" in query.edit_message_text.await_args.args[0]
+    assert "<b>Beta Card</b>" in query.edit_message_text.await_args.args[0]
+    assert query.edit_message_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
     button = _button(query.edit_message_text.await_args)
     assert button.text == "Скрыть подробности"
     assert button.callback_data == "mcc_details:5411:0:0"
@@ -187,10 +199,34 @@ def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_tex
 
     assert query.edit_message_text.await_count == 2
     assert query.edit_message_text.await_args.args[0] == compact
+    assert query.edit_message_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
     assert _button(query.edit_message_text.await_args).text == "🏦 Банки и минимальный платёж"
     query.message.reply_text.assert_not_awaited()
     incoming.reply_text.assert_awaited_once()
     assert set(context.application.bot_data) == {"catalog", "descriptions"}
+
+
+def test_html_catalog_text_remains_literal_through_lookup_and_details(catalog_path) -> None:
+    base = CardCatalog.from_file(catalog_path).cards[0]
+    card = replace(base, name="A & <B>", issuer="Bank & <issuer>")
+    context = _context(CardCatalog((card,)))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(
+        labels={"5411": "Food & <shops>"}
+    )
+    message = SimpleNamespace(text="5411", reply_text=AsyncMock())
+
+    asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
+
+    compact = message.reply_text.await_args.args[0]
+    assert "<b>A &amp; &lt;B&gt;</b>" in compact
+    assert "Food &amp; &lt;shops&gt;" in compact
+    assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
+    query = _callback(_button(message.reply_text.await_args).callback_data)
+    asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))
+    expanded = query.edit_message_text.await_args.args[0]
+    assert "<i>Bank &amp; &lt;issuer&gt;</i>" in expanded
+    assert "<issuer>" not in expanded
+    assert query.edit_message_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
 
 def test_details_state_is_independent_for_messages_even_with_same_mcc(catalog_path) -> None:
@@ -339,19 +375,22 @@ def test_large_catalog_replies_in_stable_pages_and_each_toggles_in_place(catalog
     asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
 
     pages = format_match_pages(
-        "5411", catalog.lookup("5411"), context.application.bot_data["descriptions"]
+        "5411", catalog.lookup("5411"), context.application.bot_data["descriptions"], html=True
     )
     assert len(pages) > 1
     assert message.reply_text.await_count == len(pages)
     for index, call in enumerate(message.reply_text.await_args_list):
         assert call.args[0] == pages[index].compact
+        assert call.kwargs["parse_mode"] == ParseMode.HTML
         assert _button(call).callback_data == f"mcc_details:5411:{index}:1"
         query = _callback(_button(call).callback_data)
         asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))
         assert query.edit_message_text.await_args.args[0] == pages[index].expanded
+        assert query.edit_message_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
         query.data = _button(query.edit_message_text.await_args).callback_data
         asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))
         assert query.edit_message_text.await_args.args[0] == call.args[0]
+        assert query.edit_message_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
         query.message.reply_text.assert_not_awaited()
     assert message.reply_text.await_count == len(pages)
 
