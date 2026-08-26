@@ -10544,12 +10544,6 @@
           "unit": "currency",
           "currency": "BYN",
           "period": "week"
-        },
-        {
-          "amount": 20,
-          "unit": "currency",
-          "currency": "BYN",
-          "period": "transaction"
         }
       ],
       "reward_programs": [
@@ -10558,7 +10552,7 @@
           "kind": "cash",
           "tax_exempt": true,
           "minimum_payment": {
-            "amount": 0,
+            "amount": 3,
             "currency": "BYN"
           },
           "monthly_maximum_not_defined": true,
@@ -10594,7 +10588,7 @@
           "kind": "cash",
           "tax_exempt": false,
           "minimum_payment": {
-            "amount": 0,
+            "amount": 3,
             "currency": "BYN"
           },
           "monthly_maximum_not_defined": true,

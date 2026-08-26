@@ -49,6 +49,13 @@ to run an MCC lookup.
 Friendly forms such as `MCC 5411` and `mcc:5411` are accepted; other input
 receives a short Russian validation message.
 
+Each result message with matching cards has a `🏦 Банки и минимальный платёж`
+button. It edits that message to show bank names, minimum eligible payments,
+and maximum rewards with their periods. `Скрыть подробности` restores the compact
+list. Cash and points terms are shown separately when both apply to the MCC;
+inactive reward programs are not displayed. Long lists use stable card pages,
+each with its own button, so opening details does not send additional messages.
+
 The bot stores only Telegram chat IDs and first/last-seen timestamps in
 `var/users.sqlite3`; message contents and user profiles are not retained. This
 registry supports operator broadcasts without changing MCC lookup state. Run a
@@ -109,8 +116,9 @@ are rejected.
 explicit unlimited monthly cap such as
 `{"unlimited": true, "unit": "currency", "currency": "BYN"}`. These terms
 are validated catalog metadata. MCC-only lookup does not filter by transaction
-amount. MCC lookup stays compact and renders only card names and rewards; the
-separate `/limits` command renders minimum eligible payments and maximum rewards.
+amount. MCC lookup starts compact, with card names and rewards; its detail button
+shows the matching programs' payment thresholds and caps. The separate `/limits`
+command renders minimum eligible payments and maximum rewards for all cards.
 Missing maximums are shown explicitly as unspecified.
 
 `maximum_reward_alternatives` stores additional account-currency caps when one
@@ -125,6 +133,8 @@ weekly or per-transaction cap. `/limits` shows these alongside the monthly
 maximum instead of converting them into an inaccurate monthly estimate.
 `monthly_maximum_not_defined: true` distinguishes an officially absent monthly
 cap from catalog data that is still unknown.
+Оплати has a 3 BYN minimum payment and a 20 BYN weekly reward cap, with no
+per-transaction reward cap.
 
 For each program the resolution order is explicit offer, exclusion, then
 default. An explicit `0` is a real zero-reward result; an excluded MCC with no

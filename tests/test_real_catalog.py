@@ -7,7 +7,7 @@ from decimal import Decimal
 from mcc_bot.catalog import CardCatalog
 from mcc_bot.config import DEFAULT_CATALOG_PATH, DEFAULT_DESCRIPTIONS_PATH
 from mcc_bot.descriptions import DescriptionCatalog
-from mcc_bot.formatting import format_limits, format_matches, format_moneyback
+from mcc_bot.formatting import format_limits, format_match_pages, format_matches, format_moneyback
 
 DATA_PATH = DEFAULT_CATALOG_PATH
 DESCRIPTION_PATH = DEFAULT_DESCRIPTIONS_PATH
@@ -821,8 +821,6 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     )
     for card_id, program_id in (
         ("zepter_card", "cash"),
-        ("oplati", "cash_tax_exempt"),
-        ("oplati", "cash"),
         ("statusbank_statuskarta", "cash"),
         ("belarusbank_izi", "cash"),
     ):
@@ -880,11 +878,80 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     oplati_line = next(line for line in rendered.splitlines() if "Оплати" in line)
     assert oplati_line.count("мин. платёж") == 1
     assert "месячный лимит не установлен" in oplati_line
+    assert "мин. платёж 3 BYN" in oplati_line
     assert "лимит 20 BYN/7 дней" in oplati_line
-    assert "лимит 20 BYN/операцию" in oplati_line
+    assert "операцию" not in oplati_line
     assert (
         "💳 Цептер Card — 💵 мин. платёж 0 BYN · макс. в месяц 150 BYN / 50 USD / 50 EUR"
     ) in rendered
+
+
+def test_oplati_has_three_byn_minimum_and_only_a_weekly_reward_cap() -> None:
+    catalog = _catalog()
+    card = next(card for card in catalog.cards if card.id == "oplati")
+
+    for program in card.reward_programs:
+        assert program.minimum_payment is not None
+        assert program.minimum_payment.amount == Decimal("3")
+        assert program.minimum_payment.currency == "BYN"
+        assert program.maximum_reward is None
+        assert program.monthly_maximum_not_defined is True
+
+    assert len(card.reward_limits) == 1
+    cap = card.reward_limits[0]
+    assert cap.amount == Decimal("20")
+    assert cap.unit == "currency"
+    assert cap.currency == "BYN"
+    assert cap.period == "week"
+
+    for mcc, percent in (("5411", "3"), ("4112", "1")):
+        match = next(match for match in catalog.lookup(mcc) if match.card.id == "oplati")
+        assert match.gross_percent == match.net_percent == Decimal(percent)
+
+
+def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() -> None:
+    catalog = _catalog()
+    matches = catalog.lookup("5411")
+    by_id = {match.card.id: match for match in matches}
+
+    oplati = format_matches("5411", (by_id["oplati"],), _descriptions(), details=True)
+    assert "💳 Оплати — 3%" in oplati
+    assert "Белинвестбанк" in oplati
+    assert "Мин. платёж 3 BYN" in oplati
+    assert "20 BYN/неделю" in oplati
+    assert "Банк:" not in oplati
+    assert "операцию" not in oplati
+    assert "20 BYN/мес." not in oplati
+
+    vitamin = format_matches("5411", (by_id["vitamin_d"],), details=True)
+    assert "Деньги:" in vitamin and "Баллы:" in vitamin
+    assert "10 BYN" in vitamin and "без минимума" in vitamin
+    assert "50 BYN/мес." in vitamin and "200 баллов/мес." in vitamin
+
+    kufar = format_matches("5411", (by_id["kufar"],), details=True)
+    assert "МТБанк" in kufar
+    assert "Visa" not in kufar and "Kufar" not in kufar
+
+    social = format_matches("5411", (by_id["mtbank_social"],), details=True)
+    assert "100 BYN/мес." in social
+    bnb = format_matches("5411", (by_id["bnb_1_2_3"],), details=True)
+    assert "10 BYN" in bnb and "123 BYN/мес." in bnb
+
+    pages = format_match_pages("5411", matches, _descriptions())
+    assert len(pages) == 1
+    assert pages[0].compact == format_matches("5411", matches, _descriptions())
+    assert pages[0].expanded == format_matches("5411", matches, _descriptions(), details=True)
+    assert len(pages[0].expanded.encode("utf-16-le")) // 2 <= 3900
+
+
+def test_vitamin_points_only_details_do_not_show_cash_thresholds_or_caps() -> None:
+    match = next(match for match in _catalog().lookup("1234") if match.card.id == "vitamin_d")
+    rendered = format_matches("1234", (match,), details=True)
+    assert "3% баллами" in rendered
+    assert "200 баллов/мес." in rendered
+    assert "без минимума" in rendered.casefold()
+    assert "50 BYN" not in rendered and "10 BYN" not in rendered
+    assert "Деньги:" not in rendered
 
 
 def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from .catalog import (
@@ -19,6 +20,14 @@ from .descriptions import DescriptionCatalog
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3900
+
+
+@dataclass(frozen=True, slots=True)
+class MatchPage:
+    """The compact and expanded views of the same ranked card page."""
+
+    compact: str
+    expanded: str
 
 
 def _format_decimal(value: Decimal, *, places: int | None = None) -> str:
@@ -98,6 +107,66 @@ def _format_reward_limit(limit: RewardLimit) -> str:
     return f"лимит {value}/{period}"
 
 
+def _detail_limit(limit: RewardLimit) -> str:
+    value = _format_reward_cap(RewardCap(limit.amount, limit.unit, limit.currency))
+    period = "неделю" if limit.period == "week" else "операцию"
+    return f"макс. кэшбэк {value}/{period}"
+
+
+def _detail_cap(maximum: RewardCap) -> str:
+    if maximum.unlimited and maximum.currency:
+        return f"без лимита {maximum.currency}"
+    return _format_reward_cap(maximum)
+
+
+def _detail_program_terms(program: RewardProgram, *, generic: bool, has_card_limits: bool) -> str:
+    minimum = program.minimum_payment
+    if minimum is None:
+        minimum_label = "мин. платёж не указан"
+    elif minimum.amount == 0:
+        minimum_label = "без минимума"
+    else:
+        minimum_label = f"мин. платёж {_format_decimal(minimum.amount)} {minimum.currency}"
+    terms = [minimum_label]
+    maximum = program.maximum_reward
+    if maximum is not None:
+        if maximum.unlimited and not program.maximum_reward_alternatives:
+            terms.append("без месячного лимита")
+        else:
+            alternatives = (maximum, *program.maximum_reward_alternatives)
+            values = " / ".join(_detail_cap(cap) for cap in alternatives)
+            label = "макс. кэшбэк" if generic else "макс."
+            terms.append(f"{label} {values}/мес.")
+    elif not program.monthly_maximum_not_defined:
+        terms.append("макс. в месяц не указан")
+    elif not has_card_limits:
+        terms.append("месячный лимит не установлен")
+    return " · ".join(terms)
+
+
+def _match_details(match: CardMatch) -> list[str]:
+    issuer = (match.card.issuer or "").split("/", maxsplit=1)[0].strip()
+    lines = [issuer or "Банк не указан"]
+    programs_by_id = {program.id: program for program in match.card.reward_programs}
+    programs = [programs_by_id[component.program_id] for component in match.components]
+    single_program = len(programs) == 1
+    card_limits = match.card.reward_limits
+    for program in programs:
+        terms = _detail_program_terms(
+            program, generic=single_program, has_card_limits=bool(card_limits)
+        )
+        if single_program:
+            terms = terms[0].upper() + terms[1:]
+            terms = " · ".join([terms, *(_detail_limit(limit) for limit in card_limits)])
+        else:
+            kind = "Деньги" if program.kind == "cash" else "Баллы"
+            terms = f"{kind}: {terms}"
+        lines.append(terms)
+    if not single_program and card_limits:
+        lines.append("По карте: " + " · ".join(_detail_limit(limit) for limit in card_limits))
+    return lines
+
+
 def format_limits(cards: tuple[Card, ...]) -> str:
     """Format card payment thresholds and monthly reward caps."""
 
@@ -141,17 +210,93 @@ def format_matches(
     mcc: str,
     matches: tuple[CardMatch, ...],
     descriptions: DescriptionCatalog | Mapping[str, str] | None = None,
+    *,
+    details: bool = False,
 ) -> str:
-    """Format an MCC lookup as a compact Russian Telegram message."""
+    """Format MCC results, optionally adding banks and effective program terms.
 
-    description = _description(descriptions, mcc)
-    header = f"{_header_emoji(description)} MCC {mcc} — {description}"
+    The default compact representation is unchanged. Use ``format_match_pages``
+    for bounded Telegram replies that can switch views without moving cards.
+    """
+
+    header = _match_header(mcc, descriptions)
     if not matches:
         return f"{header}\n\n❌ Доступных карт нет."
-    lines = [header, ""]
+    separator = "\n\n" if details else "\n"
+    return (
+        header
+        + "\n\n"
+        + separator.join(
+            _match_block(match, index, details=details)
+            for index, match in enumerate(matches, start=1)
+        )
+    )
+
+
+def _match_header(mcc: str, descriptions: DescriptionCatalog | Mapping[str, str] | None) -> str:
+    description = _description(descriptions, mcc)
+    return f"{_header_emoji(description)} MCC {mcc} — {description}"
+
+
+def _match_block(match: CardMatch, index: int, *, details: bool) -> str:
+    summary = f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}"
+    if not details:
+        return summary
+    return "\n".join([summary, *(f"   {line}" for line in _match_details(match))])
+
+
+def _telegram_length(text: str) -> int:
+    # Count astral emoji as two UTF-16 units, conservatively within Telegram's bound.
+    return len(text.encode("utf-16-le")) // 2
+
+
+def format_match_pages(
+    mcc: str,
+    matches: tuple[CardMatch, ...],
+    descriptions: DescriptionCatalog | Mapping[str, str] | None = None,
+    *,
+    max_length: int = SAFE_MESSAGE_LENGTH,
+) -> tuple[MatchPage, ...]:
+    """Build stable whole-card pages sized for both compact and expanded views.
+
+    Headers repeat and ranks remain global. Lengths count UTF-16 units; a
+    ``ValueError`` signals an invalid bound or an individual card/header that
+    cannot fit without dropping information. No card or term is truncated.
+    """
+
+    if not 0 < max_length <= MAX_TELEGRAM_MESSAGE_LENGTH:
+        raise ValueError("Invalid Telegram message length bound")
+    if not matches:
+        text = format_matches(mcc, matches, descriptions)
+        if _telegram_length(text) > max_length:
+            raise ValueError("MCC header exceeds the Telegram message length bound")
+        return (MatchPage(text, text),)
+    header = _match_header(mcc, descriptions)
+    pages: list[MatchPage] = []
+    compact = expanded = header
+    has_cards = False
     for index, match in enumerate(matches, start=1):
-        lines.append(f"{index}. {match.card.emoji} {match.card.name} — {format_moneyback(match)}")
-    return "\n".join(lines)
+        compact_block = _match_block(match, index, details=False)
+        expanded_block = _match_block(match, index, details=True)
+        compact_candidate = compact + ("\n" if has_cards else "\n\n") + compact_block
+        expanded_candidate = expanded + "\n\n" + expanded_block
+        if (
+            max(_telegram_length(compact_candidate), _telegram_length(expanded_candidate))
+            > max_length
+        ):
+            if has_cards:
+                pages.append(MatchPage(compact, expanded))
+            compact_candidate = header + "\n\n" + compact_block
+            expanded_candidate = header + "\n\n" + expanded_block
+            if (
+                max(_telegram_length(compact_candidate), _telegram_length(expanded_candidate))
+                > max_length
+            ):
+                raise ValueError("A card or MCC header exceeds the Telegram message length bound")
+        compact, expanded = compact_candidate, expanded_candidate
+        has_cards = True
+    pages.append(MatchPage(compact, expanded))
+    return tuple(pages)
 
 
 def split_message(message: str, *, max_length: int = SAFE_MESSAGE_LENGTH) -> tuple[str, ...]:
