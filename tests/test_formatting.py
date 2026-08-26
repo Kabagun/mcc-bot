@@ -412,29 +412,27 @@ def test_html_matches_style_only_header_names_and_issuers(catalog_path, details)
     rendered = format_matches("5411", matches, descriptions, details=details, html=True)
 
     assert rendered.startswith("<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n")
-    assert "1. 🅱️ <b>Beta Card</b> — 5️⃣% (4,61%)" in rendered
-    assert "3. 🅰️ <b>Alpha Card</b> — 2️⃣,5️⃣% (2,44%)" in rendered
+    assert "1. 🅱️ <b>Beta Card</b> — 5% (4,61%)" in rendered
+    assert "3. 🅰️ <b>Alpha Card</b> — 2,5% (2,44%)" in rendered
     assert rendered.count("<b>") == len(matches) + 1
     assert rendered.count("<i>") == (len(matches) if details else 0)
     if details:
         assert "   <i>Beta Bank</i>\n   Мин. платёж не указан" in rendered
         assert "   <i>Банк не указан</i>\n" in rendered
-    assert _html_text(rendered).replace("\ufe0f\u20e3", "") == format_matches(
-        "5411", matches, descriptions, details=details
-    )
+    assert _html_text(rendered) == format_matches("5411", matches, descriptions, details=details)
 
 
 @pytest.mark.parametrize(
     ("gross", "reward"),
     [
-        ("0.5", "0️⃣,5️⃣%"),
-        ("1", "1️⃣%"),
-        ("1.11", "1️⃣,1️⃣1️⃣%"),
-        ("2.50", "2️⃣,5️⃣% (2,44%)"),
-        ("19.8765432", "1️⃣9️⃣,8️⃣7️⃣6️⃣5️⃣4️⃣3️⃣2️⃣% (17,55%)"),
+        ("0.5", "0,5%"),
+        ("1", "1%"),
+        ("1.11", "1,11%"),
+        ("2.50", "2,5% (2,44%)"),
+        ("19.8765432", "19,8765432% (17,55%)"),
     ],
 )
-def test_html_matches_use_keycaps_only_for_gross_percent_digits(catalog_path, gross, reward):
+def test_html_matches_use_ordinary_digits_for_all_percentages(catalog_path, gross, reward):
     base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
     match = replace(
         base,
@@ -445,8 +443,8 @@ def test_html_matches_use_keycaps_only_for_gross_percent_digits(catalog_path, gr
     rendered = format_matches("5411", (match,), html=True)
 
     assert rendered.endswith(f"1. 💳 <b>Card 10</b> — {reward}")
-    assert format_moneyback(match, emoji=True) == reward
-    assert format_moneyback(match) == reward.replace("\ufe0f\u20e3", "")
+    assert format_moneyback(match) == reward
+    assert "\u20e3" not in rendered
 
 
 def test_html_matches_keep_mixed_rewards_and_limits_in_their_original_units(catalog_path):
@@ -484,13 +482,11 @@ def test_html_matches_keep_mixed_rewards_and_limits_in_their_original_units(cata
 
     rendered = format_matches("5411", (match,), details=True, html=True)
 
-    assert " — 12,5 BYN + 1️⃣,1️⃣1️⃣% баллами\n" in rendered
+    assert " — 12,5 BYN + 1,11% баллами\n" in rendered
     assert "   Деньги: мин. платёж 3,5 BYN · макс. 150 BYN / 50 USD/мес." in rendered
     assert "   Баллы: без минимума · макс. 200 баллов/мес." in rendered
     assert "   По карте: макс. кэшбэк 20 BYN/неделю · макс. кэшбэк 2 баллов/операцию" in rendered
-    assert _html_text(rendered).replace("\ufe0f\u20e3", "") == format_matches(
-        "5411", (match,), details=True
-    )
+    assert _html_text(rendered) == format_matches("5411", (match,), details=True)
     points_only = replace(match, components=(match.components[1],))
     rendered = format_matches("5411", (points_only,), details=True, html=True)
     assert "Без минимума · макс. кэшбэк 200 баллов/мес." in rendered

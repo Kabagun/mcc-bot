@@ -179,8 +179,8 @@ def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_tex
     incoming = SimpleNamespace(text="5411", reply_text=AsyncMock())
     asyncio.run(lookup_text(SimpleNamespace(effective_message=incoming), context))
     compact = incoming.reply_text.await_args.args[0]
-    assert "<b>Beta Card</b> — 5️⃣% (4,61%)" in compact
-    assert "<b>Alpha Card</b> — 2️⃣,5️⃣% (2,44%)" in compact
+    assert "<b>Beta Card</b> — 5% (4,61%)" in compact
+    assert "<b>Alpha Card</b> — 2,5% (2,44%)" in compact
     query = _callback(_button(incoming.reply_text.await_args).callback_data)
 
     asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))

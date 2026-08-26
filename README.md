@@ -56,10 +56,9 @@ list. Cash and points terms are shown separately when both apply to the MCC;
 inactive reward programs are not displayed. Long lists use stable card pages,
 each with its own button, so opening details does not send additional messages.
 
-MCC replies use bold headings and card names, italic bank names, and keycap emoji
-for gross percentage digits: `1️⃣%`, `2️⃣,5️⃣%`, or `1️⃣% + 3️⃣% баллами`.
-Ranks, payment amounts, limits, and the after-tax percentage in parentheses stay
-in ordinary digits. Both views keep the same layout and card order. Catalog
+MCC replies use bold headings and card names, and italic bank names.
+All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,44%)`,
+and `1% + 3% баллами`. Both views keep the same layout and card order. Catalog
 text is escaped for Telegram HTML; the local CLI and `/limits` stay plain text.
 
 The bot stores only Telegram chat IDs and first/last-seen timestamps in

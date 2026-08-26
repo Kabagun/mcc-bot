@@ -21,7 +21,6 @@ from .descriptions import DescriptionCatalog
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3900
-_KEYCAP_DIGITS = str.maketrans({str(digit): f"{digit}\ufe0f\u20e3" for digit in range(10)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,15 +43,11 @@ def _format_decimal(value: Decimal, *, places: int | None = None) -> str:
     return (rendered or "0").replace(".", ",")
 
 
-def _component_label(
-    component: RewardComponent, *, show_kind: bool = False, emoji: bool = False
-) -> str:
+def _component_label(component: RewardComponent, *, show_kind: bool = False) -> str:
     if component.unit == "currency":
         currency = component.currency or ""
         return f"{_format_decimal(component.gross_value)} {currency}".strip()
     value = _format_decimal(component.gross_value)
-    if emoji:
-        value = value.translate(_KEYCAP_DIGITS)
     kind_label = ""
     if show_kind:
         kind_label = " деньгами" if component.kind == "cash" else " баллами"
@@ -63,17 +58,14 @@ def _component_label(
     return result
 
 
-def format_moneyback(match: CardMatch, *, emoji: bool = False) -> str:
-    """Render a compact reward, optionally using keycaps for gross percent digits.
-
-    Net percentages and currency amounts always retain ordinary digits.
-    """
+def format_moneyback(match: CardMatch) -> str:
+    """Render a compact reward with ordinary digits and explicit points labels."""
 
     if len(match.components) == 1:
         component = match.components[0]
-        return _component_label(component, show_kind=component.kind == "points", emoji=emoji)
+        return _component_label(component, show_kind=component.kind == "points")
     return " + ".join(
-        _component_label(component, show_kind=component.kind == "points", emoji=emoji)
+        _component_label(component, show_kind=component.kind == "points")
         for component in match.components
     )
 
@@ -226,8 +218,8 @@ def format_matches(
     """Format MCC results, optionally adding banks and effective program terms.
 
     Plain text is the default. ``html=True`` escapes catalog text for Telegram,
-    bolds the header and card names, italicizes issuers, and uses gross percent
-    keycaps. Use ``format_match_pages`` for bounded replies with stable cards.
+    bolds the header and card names, and italicizes issuers. All numbers retain
+    ordinary digits. Use ``format_match_pages`` for bounded replies with stable cards.
     """
 
     header = _match_header(mcc, descriptions, html=html)
@@ -254,7 +246,7 @@ def _match_header(
 
 def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> str:
     marker, name = match.card.emoji, match.card.name
-    reward = format_moneyback(match, emoji=html)
+    reward = format_moneyback(match)
     if html:
         marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
     summary = f"{index}. {marker} {name} — {reward}"
