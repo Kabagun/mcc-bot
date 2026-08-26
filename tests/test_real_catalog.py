@@ -495,7 +495,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "9. 💳 1-2-3 — 1%\n"
         "10. 💳 Движение — 1%\n"
         "11. 💳 Куфар — 1% баллами\n"
-        "12. 💳 Мткарта — 1% баллами\n"
+        "12. 💳 МТкарта — 1% баллами\n"
         "13. 💳 Социальная — 1%\n"
         "14. 💳 Яркая — 1%\n"
         "15. 💳 Cashalot — 0,5%\n"
@@ -648,7 +648,7 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
         "9. 💳 <b>1-2-3</b> — 1%\n"
         "10. 💳 <b>Движение</b> — 1%\n"
         "11. 💳 <b>Куфар</b> — 1% баллами\n"
-        "12. 💳 <b>Мткарта</b> — 1% баллами\n"
+        "12. 💳 <b>МТкарта</b> — 1% баллами\n"
         "13. 💳 <b>Социальная</b> — 1%\n"
         "14. 💳 <b>Яркая</b> — 1%\n"
         "15. 💳 <b>Cashalot</b> — 0,5%\n"
@@ -823,8 +823,8 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["zepter_card"].issuer == "Цептер Банк"
     assert cards["vitamin_d"].issuer == "Белинвестбанк"
     assert cards["oplati"].issuer == "Белинвестбанк"
-    assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"
-    assert cards["mtkarta"].name == "Мткарта"
+    assert cards["kufar"].issuer == "МТбанк / Visa / Kufar"
+    assert cards["mtkarta"].name == "МТкарта"
     assert cards["mtbank_social"].name == "Социальная"
     assert cards["kufar"].name == "Куфар"
     assert cards["yarkaya_karta"].name == "Яркая"
@@ -844,7 +844,7 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["reshenie_r_karta"].name == "R-карта"
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
-        assert cards[card_id].issuer == "МТБанк"
+        assert cards[card_id].issuer == "МТбанк"
 
 
 def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
@@ -964,7 +964,7 @@ def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() ->
     assert "50 BYN/мес." in vitamin and "200 баллов/мес." in vitamin
 
     kufar = format_matches("5411", (by_id["kufar"],), details=True)
-    assert "МТБанк" in kufar
+    assert "МТбанк" in kufar
     assert "Visa" not in kufar and "Kufar" not in kufar
 
     social = format_matches("5411", (by_id["mtbank_social"],), details=True)

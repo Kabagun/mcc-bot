@@ -1,7 +1,8 @@
 # MCC Moneyback Telegram Bot
 
 Telegram bot and local CLI for looking up cards by a four-digit merchant
-category code (MCC). Results are sorted by gross reward percentage. The bot
+category code (MCC), with a local merchant directory and moderated contributions.
+Results are sorted by gross reward percentage. The bot
 uses long polling, so it does not need a public HTTP endpoint. The layout keeps
 settings, the catalog domain, and Telegram handlers separate, following the
 concise patterns of [gippo-bot](https://github.com/Kabaye/gippo-bot).
@@ -20,7 +21,8 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and set `TELEGRAM_BOT_TOKEN`. The bot is public and answers every
+Edit `.env` and set `TELEGRAM_BOT_TOKEN` and `BOT_OWNER_TELEGRAM_ID` (the owner's
+positive Telegram **user** ID, not a group/chat ID or username). The bot answers every
 Telegram user. `python-dotenv` loads `.env` from the working directory before
 settings, while process environment variables take precedence.
 
@@ -41,13 +43,18 @@ Linux uses `.venv/bin/python` instead of the Windows path.
 
 ## Telegram usage
 
-The Telegram command menu contains `/start` and `/limits`. `/help` and `/mcc 5411`
-remain available when typed manually. `/limits` immediately lists
-the minimum eligible payment and monthly maximum for every card; it does not
-change how subsequent messages are interpreted. Send `5411` as a normal message
-to run an MCC lookup.
-Friendly forms such as `MCC 5411` and `mcc:5411` are accepted; other input
-receives a short Russian validation message.
+Only `/start` and `/limits` are supported commands. `/help` and `/mcc` have been
+removed. Send `5411` as a normal message for an MCC lookup; leading zeros such
+as `0742` are preserved. Digit-only input of another length gets a format hint.
+Other text, including `MCC 5411`, `Евроопт`, `А-100` and `21 век`, searches the
+merchant directory. Menu buttons and active form steps take precedence over search.
+`/limits` immediately lists the minimum eligible payment and maximum reward for
+every card; it does not change how subsequent messages are interpreted.
+
+Merchant lookup always shows MCC buttons first, even for a single known code.
+Choosing a code edits that message into the ranked card list, with in-place
+details, pagination and a return button. Physical shops and online apps are
+separate payment channels. Similar names are suggestions, never automatic merges.
 
 Each result message with matching cards has a `🏦 Банки и минимальный платёж`
 button. It edits that message to show bank names, minimum eligible payments,
@@ -61,14 +68,85 @@ All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,44%)`,
 and `1% + 3% баллами`. Both views keep the same layout and card order. Catalog
 text is escaped for Telegram HTML; the local CLI and `/limits` stay plain text.
 
-The bot stores only Telegram chat IDs and first/last-seen timestamps in
-`var/users.sqlite3`; message contents and user profiles are not retained. This
-registry supports operator broadcasts without changing MCC lookup state. Run a
+`var/users.sqlite3` stores Telegram chat IDs and first/last-seen timestamps for
+operator broadcasts. The separate merchant/community database also stores
+contributions, user IDs for permissions and attribution, drafts, decisions and
+audit history as described below. Run a
 broadcast from the configured server with:
 
 ```bash
 mcc-broadcast --message 'Бот обновлён. Выполните /start.'
 ```
+
+## Contributions and moderation
+
+The persistent private-chat keyboard is role-aware:
+
+- Everyone: `ℹ️ Информация по картам`.
+- Users: `➕ Предложить MCC магазина`, `👤 Мои предложения`.
+- Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
+
+Users choose a merchant (or explicitly create one), payment channel and MCC,
+attach a screenshot, review the draft, then submit it for approval. Subadmins
+may omit the screenshot and publish directly after confirmation. Name and
+duplicate reports need no screenshot. Forms support back/cancel and persist
+across restarts. Users can track or cancel unfinished proposals and request
+subadmin access using `🙋 Хочу помогать` in their proposals screen.
+
+Only the explicitly configured owner can grant/revoke roles. Permissions use
+Telegram user IDs and are checked at each sensitive action; screenshots and
+editing are private-chat only. Subadmins can edit merchants/aliases/MCCs,
+merge or archive merchants and inspect/revert history, but cannot change card
+reward rules. A 15-minute renewable review lease prevents overlapping reviews;
+final decisions and publication are atomic. A conflicting code requires an
+explicit choice to add another variant or replace the incorrect code. Duplicate
+confirmations add evidence, not duplicate facts. Reverts preserve independent
+evidence and reject stale structural reversions.
+
+Subadmins may opt into one daily pending-work digest at **20:00 Europe/Minsk**.
+Opt-in defaults off and does not control queue access. Empty queue or no
+subscribers means no messages. A durable daily delivery record prevents restart
+duplicates; uncertain sends are not automatically retried, so a rare digest may
+be missed. No backlog of previous days is sent.
+
+Screenshots are stored only as Telegram file references, not downloaded files.
+Users must redact names, balances, card/account details and unrelated operations.
+References expire five days after a final decision, cancellation or direct admin
+save; facts and history remain. Removing a reference does not erase copies
+already received in Telegram. Backups must be protected as sensitive data.
+
+## Merchant data import
+
+The one-shot importer uses publicly discovered sitemap merchant/network IDs,
+then the tannei.by API for separate online/offline network searches and each
+store's observed MCC history. It does not copy tannei's bank reward offers or
+infer branch MCCs from a network's aggregate list. Observation month precision
+and source links are retained; old observations are not marked as newly verified.
+
+Requests are sequential, at most one per second, with resumable database
+checkpoints, rate-limit handling and no authentication/captcha bypass. A blocked
+source stops the run. `limit`/`offset` pagination is not assumed; reported
+coverage is publicly discovered data, not a guarantee of the site's full internal
+database. Repeated imports do not duplicate facts or undo manual edits.
+No periodic source refresh runs in the bot, and Telegram searches never depend
+on tannei being available.
+
+```powershell
+# Full initial import, or continue an interrupted run without refetching completed work.
+.\.venv\Scripts\python.exe -m mcc_bot.import_stores --database var/stores.sqlite3 --resume
+# Read counters without network requests or database writes.
+.\.venv\Scripts\python.exe -m mcc_bot.import_stores --database var/stores.sqlite3 --status
+# Optional bounded publication after discovery; later --resume continues the remaining stores.
+.\.venv\Scripts\python.exe -m mcc_bot.import_stores --database var/stores.sqlite3 --resume --max-stores 10
+# Validate source responses in memory without writing the selected database.
+.\.venv\Scripts\python.exe -m mcc_bot.import_stores --dry-run --max-stores 3
+```
+
+`--max-stores` limits store processing, not sitemap/network discovery requests.
+Progress is emitted during the run and checkpoints remain in the selected
+database. The equivalent installed command is `mcc-import-stores`. A nonzero
+exit code reports source errors or blocked access; inspect the counters before
+continuing. Do not schedule this importer as a periodic bot job.
 
 ## Version 2 catalog contract
 
@@ -173,9 +251,11 @@ attribution and pinned source URL.
 | Variable | Required | Description |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | bot only | Token issued by BotFather |
+| `BOT_OWNER_TELEGRAM_ID` | bot only | Explicit positive Telegram user ID of the owner |
 | `MCC_CATALOG_PATH` | no | Optional external catalog override; otherwise bundled data |
 | `MCC_DESCRIPTIONS_PATH` | no | Optional external MCC map override; otherwise bundled data |
 | `MCC_USER_REGISTRY_PATH` | no | SQLite chat registry path; defaults to `var/users.sqlite3` |
+| `MCC_STORES_PATH` | no | Persistent merchant/community database; defaults to `var/stores.sqlite3` |
 | `LOG_LEVEL` | no | Python log level; defaults to `INFO` |
 
 Do not commit `.env`; it contains the Telegram token.
@@ -199,6 +279,15 @@ systemctl --user enable --now mcc-bot.service
 
 Check with `systemctl --user status mcc-bot.service` and
 `journalctl --user -u mcc-bot.service`. Never put the token in Git.
+
+For an update under the `apps` user, use the existing remote Git checkout and
+normal fetch/pull workflow, install the new package dependencies, and preserve
+both SQLite databases. Before updating, create consistent SQLite backups
+(SQLite backup API or stop the service before copying); copying a live main
+database file without its WAL is not a safe backup. Set the owner ID before the
+first start of this version. Confirm startup and bot health before announcing
+the update. Send one short Russian user-facing broadcast following `AGENTS.md`,
+including `/start` if the menu needs refreshing, and report failed deliveries.
 
 ## Tests and checks
 

@@ -22,9 +22,17 @@ from telegram.ext import (
 )
 
 from .catalog import CardCatalog, CatalogError, InvalidMccError, normalize_mcc
+from .community import CommunityService
+from .community_handlers import callback as community_callback
+from .community_handlers import handle_media as handle_community_media
+from .community_handlers import handle_text as handle_community_text
+from .community_handlers import show_menu
 from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
 from .formatting import format_limits, format_match_pages, split_message
+from .notifications import install_jobs
+from .store_handlers import handle_store_callback, search_stores
+from .stores import StoreRepository
 from .users import UserRegistry
 
 LOGGER = logging.getLogger(__name__)
@@ -50,7 +58,7 @@ async def _configure_bot_commands(application: Application) -> None:
 
     await application.bot.set_my_commands(
         [
-            BotCommand(command="start", description="Инструкция по MCC"),
+            BotCommand(command="start", description="Начало и меню"),
             BotCommand(command="limits", description="Лимиты по картам"),
         ]
     )
@@ -65,20 +73,9 @@ async def _reply(update: Update, text: str) -> None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/start`` with a short usage guide."""
+    """Show the current role-aware menu and short lookup instructions."""
 
-    await _reply(
-        update,
-        "Отправьте четырёхзначный MCC, чтобы увидеть карты с манибэком.\n"  # noqa: RUF001
-        "Пример: 5411 или /mcc 5411\n"
-        "Лимиты по картам: /limits",
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/help``."""
-
-    await start(update, context)
+    await show_menu(update, context)
 
 
 async def _lookup_and_reply(
@@ -169,23 +166,65 @@ async def toggle_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         LOGGER.info("MCC details message is no longer accessible")
 
 
-async def lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/mcc 5411``."""
-
-    raw_mcc = " ".join(context.args).strip()
-    if not raw_mcc:
-        await _reply(update, "Укажите четырёхзначный MCC после /mcc, например /mcc 5411.")
-        return
-    await _lookup_and_reply(update, context, raw_mcc)
-
-
 async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle a bare MCC sent as a normal text message."""
+    """Route menu/form input first, then bare four-digit MCCs or merchant names."""
 
     message = update.effective_message
     if message is None or not isinstance(message.text, str):
         return
-    await _lookup_and_reply(update, context, message.text)
+    if await handle_community_text(update, context):
+        return
+    value = message.text.strip()
+    if not value:
+        await unknown_command(update, context)
+    elif value.isdecimal():
+        if not value.isascii() or len(value) != 4:
+            await _reply(update, "MCC должен состоять из четырёх цифр, например 5411")
+        else:
+            await _lookup_and_reply(update, context, value)
+    else:
+        await search_stores(update, context, value)
+
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explain the two supported commands without interpreting obsolete syntax."""
+
+    await _reply(
+        update,
+        "Отправьте MCC из четырёх цифр (например, 5411) или название магазина.\n"
+        "Доступны /start — меню и /limits — информация по картам.",
+    )
+
+
+async def lookup_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pass screenshots only to an active contribution or clarification form."""
+
+    if not await handle_community_media(update, context):
+        await _reply(update, "Для отправки скриншота сначала нажмите «Предложить MCC магазина».")
+
+
+async def expired_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Acknowledge an unknown old button without applying another handler's action."""
+
+    if update.callback_query is not None:
+        try:
+            await update.callback_query.answer("Кнопка устарела. Откройте /start.")
+        except TelegramError:
+            LOGGER.info("Could not acknowledge an expired callback")
+
+
+async def report_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Report unexpected failures without logging Telegram identities or evidence."""
+
+    LOGGER.error("Unexpected bot error: %s", type(context.error).__name__)
+    if isinstance(update, Update) and update.effective_message is not None:
+        try:
+            await update.effective_message.reply_text(
+                "Не удалось завершить действие. Проверьте его результат в меню /start "  # noqa: RUF001
+                "и при необходимости повторите."
+            )
+        except TelegramError:
+            LOGGER.info("Could not deliver an error notice")
 
 
 async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,19 +254,30 @@ def build_application(settings: BotSettings) -> Application:
         raise SettingsError(str(exc)) from exc
     user_registry = UserRegistry(settings.user_registry_path)
     user_registry.initialize()
+    stores = StoreRepository(settings.stores_path)
+    stores.initialize()
+    community = CommunityService(stores, owner_id=settings.owner_telegram_id)
+    community.initialize()
     application = (
         ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
     )
     application.bot_data["catalog"] = catalog
     application.bot_data["descriptions"] = descriptions
     application.bot_data["user_registry"] = user_registry
+    application.bot_data["stores"] = stores
+    application.bot_data["community"] = community
     application.add_handler(TypeHandler(Update, remember_chat), group=-1)
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("mcc", lookup_command))
     application.add_handler(CommandHandler("limits", limits_command))
-    application.add_handler(CallbackQueryHandler(toggle_details))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
+    application.add_handler(CallbackQueryHandler(handle_store_callback, pattern=r"^store:"))
+    application.add_handler(CallbackQueryHandler(community_callback, pattern=r"^community:"))
+    application.add_handler(CallbackQueryHandler(expired_callback))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, lookup_media))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_text))
+    application.add_error_handler(report_error)
+    install_jobs(application)
     return application
 
 

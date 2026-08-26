@@ -135,6 +135,37 @@ def test_split_message_prefers_line_boundaries() -> None:
     assert chunks == ("header", "xxxxxxxxxx", "footer")
 
 
+@pytest.mark.parametrize("limit", [2, 3, 17, 3900])
+def test_split_message_counts_astral_characters_without_losing_text(limit):
+    text = "a😀я🚀" * 1200
+    chunks = split_message(text, max_length=limit)
+    assert "".join(chunks) == text
+    assert all(0 < len(chunk.encode("utf-16-le")) // 2 <= limit for chunk in chunks)
+
+
+def test_split_message_bounds_long_proposal_and_alias_lines():
+    name, comment, reason = "😀" * 160, "🚀" * 1000, "🌍" * 1000
+    text = f"Shop: {name}\nComment: {comment}\nClarification: {reason}"
+    chunks = split_message(text)
+    assert len(chunks) > 1
+    assert all(len(chunk.encode("utf-16-le")) // 2 <= 3900 for chunk in chunks)
+    assert "\n".join(chunks) == text
+    aliases = ", ".join([name] * 20)
+    assert "".join(split_message(aliases)) == aliases
+    assert all(len(chunk.encode("utf-16-le")) // 2 <= 3900 for chunk in split_message(aliases))
+
+
+@pytest.mark.parametrize("limit", [0, -1, 4097])
+def test_split_message_rejects_invalid_bounds(limit):
+    with pytest.raises(ValueError, match="length bound"):
+        split_message("text", max_length=limit)
+
+
+def test_split_message_rejects_bound_smaller_than_one_character():
+    with pytest.raises(ValueError, match="character"):
+        split_message("😀", max_length=1)
+
+
 def test_default_format_remains_exact_and_single_page_compact_is_identical(catalog_path) -> None:
     matches = CardCatalog.from_file(catalog_path).lookup("5411")
     descriptions = {"5411": "Продуктовые магазины"}
@@ -203,12 +234,12 @@ def test_details_keep_cash_and_points_terms_separate_and_select_effective_progra
 
 def test_details_show_bank_only_without_mutating_issuer(catalog_path) -> None:
     base = CardCatalog.from_file(catalog_path).lookup("5411")[0]
-    issuer = "МТБанк / Visa / Kufar"
+    issuer = "МТбанк / Visa / Kufar"
     match = replace(base, card=replace(base.card, issuer=issuer))
 
     rendered = format_matches("5411", (match,), details=True)
 
-    assert "\n   МТБанк\n" in rendered
+    assert "\n   МТбанк\n" in rendered
     assert "Visa" not in rendered
     assert "Kufar" not in rendered
     assert match.card.issuer == issuer

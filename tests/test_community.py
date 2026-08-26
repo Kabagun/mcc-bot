@@ -1,0 +1,442 @@
+"""State, authorization, transaction, concurrency and retention regressions."""
+
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from mcc_bot.community import (
+    LEASE_SECONDS,
+    MEDIA_RETENTION_SECONDS,
+    AccessDenied,
+    CommunityError,
+    CommunityService,
+    StaleAction,
+)
+from mcc_bot.stores import StoreRepository
+
+
+@pytest.fixture
+def community(tmp_path):
+    service = CommunityService(StoreRepository(tmp_path / "stores.sqlite3"), owner_id=1)
+    service.initialize()
+    service.set_role(1, 2, True)
+    service.set_role(1, 3, True)
+    return service
+
+
+def make_draft(service, user_id=10, *, kind="add_merchant", payload=None, media=True):
+    payload = payload or {"name": "Test Shop", "channel": "offline", "mcc": "5411"}
+    draft = service.begin(user_id, stage="evidence", data={"kind": kind, "payload": payload})
+    return service.advance(
+        user_id,
+        draft.id,
+        draft.version,
+        "preview",
+        draft.data,
+        media=("secret-file-token", "unique-photo") if media else None,
+    )
+
+
+def make_proposal(service, user_id=10, **kwargs):
+    draft = make_draft(service, user_id, **kwargs)
+    return service.submit(user_id, draft.id, draft.version)
+
+
+def test_owner_is_explicit_and_user_id_authority(community):
+    assert community.role(1) == "owner"
+    assert community.role(2) == "admin"
+    assert community.role(10) == "user"
+    no_owner = CommunityService(community.stores)
+    assert no_owner.role(1) == "user"
+    with pytest.raises(AccessDenied):
+        no_owner.set_role(1, 11, True)
+    with pytest.raises(AccessDenied):
+        community.role(-1)
+
+
+def test_role_requests_do_not_grant_or_subscribe(community):
+    community.request_role(10)
+    community.request_role(10)
+    assert community.role(10) == "user"
+    assert not community.digest_enabled(10)
+    with pytest.raises(AccessDenied):
+        community.set_role(2, 10, True)
+    with pytest.raises(AccessDenied):
+        community.role_candidates(10)
+    community.decline_role(1, 10, 0)
+    with pytest.raises(StaleAction):
+        community.decline_role(1, 10, 0)
+    community.request_role(10)
+    community.set_role(1, 10, True)
+    assert community.is_admin(10)
+
+
+def test_role_revoke_invalidates_review_draft_consent_and_regrant(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    draft = community.begin(2, privileged=True)
+    community.set_digest(2, True)
+    community.set_role(1, 2, False)
+    assert community.draft(2) is None
+    assert not community.digest_enabled(2)
+    with pytest.raises(AccessDenied):
+        community.review(2, proposal.id, claimed.version, "approved")
+    community.set_role(1, 2, True)
+    assert not community.digest_enabled(2)
+    with pytest.raises(StaleAction):
+        community.cancel_draft(2, draft.id, draft.version)
+    with pytest.raises(StaleAction):
+        community.review(2, proposal.id, claimed.version, "approved")
+    with pytest.raises(CommunityError):
+        community.set_role(1, 1, False)
+
+
+def test_draft_restart_and_duplicate_updates(community):
+    draft = community.begin(10)
+    moved = community.advance(10, draft.id, 1, "choose", {"name": "Shop"}, update_id=100)
+    reopened = CommunityService(community.stores, owner_id=1)
+    assert reopened.draft(10) == moved
+    with pytest.raises(StaleAction):
+        reopened.advance(10, moved.id, moved.version, "channel", moved.data, update_id=100)
+    assert reopened.draft(10).stage == "choose"
+    with pytest.raises(StaleAction):
+        community.advance(11, moved.id, moved.version, "preview", {})
+
+
+def test_screenshot_required_users_optional_admins(community):
+    draft = make_draft(community, media=False)
+    with pytest.raises(CommunityError, match="скриншот"):
+        community.submit(10, draft.id, draft.version)
+    draft = make_draft(community, 2, media=False)
+    saved = community.submit(2, draft.id, draft.version)
+    assert saved.status == "approved"
+    assert saved.audit_id is not None
+    assert len(community.stores.find_exact("Test Shop", "offline")) == 1
+
+
+def test_direct_save_repeated_callback_does_not_duplicate_fact(community):
+    draft = make_draft(community, 2)
+    saved = community.submit(2, draft.id, draft.version)
+    with pytest.raises(StaleAction):
+        community.submit(2, draft.id, draft.version)
+    assert len(community.stores.history()) == 1
+    assert community.proposal(2, saved.id).status == "approved"
+
+
+def test_photo_not_retained_in_draft_proposal_or_audit(community):
+    draft = make_draft(community, 2)
+    result = community.submit(2, draft.id, draft.version)
+    assert community.media_for(2, result.id) == "secret-file-token"
+    with community.stores.connection() as conn:
+        for table in ("community_drafts", "community_proposals", "store_audit", "store_evidence"):
+            assert "secret-file-token" not in str(
+                [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
+            )
+    community.expire_media(now=10**12)
+    assert community.media_for(2, result.id) is None
+    assert community.stores.list_mcc(1)[0].mcc == "5411"
+    assert community.stores.history()
+
+
+def test_screenshot_access_current_role_and_submitter_only(community):
+    proposal = make_proposal(community)
+    assert community.media_for(10, proposal.id)
+    assert community.media_for(2, proposal.id)
+    with pytest.raises(AccessDenied):
+        community.media_for(11, proposal.id)
+    community.set_role(1, 2, False)
+    with pytest.raises(AccessDenied):
+        community.media_for(2, proposal.id)
+
+
+def test_reject_requires_reason_and_expiry_is_five_days(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    with pytest.raises(CommunityError):
+        community.review(2, proposal.id, claimed.version, "rejected", now=101)
+    result = community.review(
+        2, proposal.id, claimed.version, "rejected", reason="Unreadable", now=101
+    )
+    assert result.reason == "Unreadable"
+    assert community.expire_media(now=101 + MEDIA_RETENTION_SECONDS - 1) == 0
+    assert community.expire_media(now=101 + MEDIA_RETENTION_SECONDS) == 1
+
+
+def test_claim_lease_renew_and_takeover_boundary(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    with pytest.raises(StaleAction):
+        community.claim(3, proposal.id, claimed.version, now=999)
+    renewed = community.claim(2, proposal.id, claimed.version, now=200)
+    assert renewed.lease_until == 200 + LEASE_SECONDS
+    taken = community.claim(3, proposal.id, renewed.version, now=200 + LEASE_SECONDS)
+    with pytest.raises(StaleAction):
+        community.review(2, proposal.id, renewed.version, "approved", now=1101)
+    assert (
+        community.review(3, proposal.id, taken.version, "approved", now=1101).status == "approved"
+    )
+
+
+def test_one_concurrent_reviewer_wins(community):
+    proposal = make_proposal(community)
+
+    def claim(actor):
+        try:
+            return community.claim(actor, proposal.id, proposal.version)
+        except StaleAction:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, (2, 3)))
+    assert sum(result is not None for result in results) == 1
+    winner = next(result for result in results if result)
+    result = community.review(winner.reviewer_id, proposal.id, winner.version, "approved")
+    assert result.status == "approved"
+    with pytest.raises(StaleAction):
+        community.review(winner.reviewer_id, proposal.id, winner.version, "approved")
+    assert len(community.stores.history()) == 1
+
+
+def test_publication_and_proposal_roll_back_together(community, monkeypatch):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    original = community.stores.apply_change
+
+    def crash(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("database failure after audit")
+
+    monkeypatch.setattr(community.stores, "apply_change", crash)
+    with pytest.raises(RuntimeError):
+        community.review(2, proposal.id, claimed.version, "approved")
+    assert community.proposal(2, proposal.id).status == "pending"
+    assert not community.stores.find_exact("Test Shop", "offline")
+    assert not community.stores.history()
+    monkeypatch.setattr(community.stores, "apply_change", original)
+    assert community.review(2, proposal.id, claimed.version, "approved").status == "approved"
+
+
+def test_cancel_own_pending_invalidates_claim(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    with pytest.raises(AccessDenied):
+        community.cancel(11, proposal.id, claimed.version)
+    result = community.cancel(10, proposal.id, claimed.version)
+    assert result.status == "cancelled"
+    with pytest.raises(StaleAction):
+        community.review(2, proposal.id, claimed.version, "approved")
+
+
+def test_clarification_response_is_versioned_and_reuses_original_evidence(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    asked = community.review(2, proposal.id, claimed.version, "clarification", reason="Which shop?")
+    assert not community.queue(3)
+    draft = community.respond(10, proposal.id, asked.version)
+    draft = community.advance(
+        10, draft.id, draft.version, "preview", {**draft.data, "comment": "Town centre"}
+    )
+    result = community.submit(10, draft.id, draft.version)
+    assert result.id == proposal.id
+    assert result.status == "pending"
+    assert result.comment == "Town centre"
+    assert community.media_for(10, result.id)
+    with pytest.raises(StaleAction):
+        community.respond(10, proposal.id, asked.version)
+
+
+def test_name_report_is_text_only_and_admin_editor_is_not_public(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Original", "channel": "offline"}, 1
+    )
+    proposal = make_proposal(
+        community,
+        kind="rename_merchant",
+        payload={"merchant_id": merchant.merchant_id, "name": "Fixed"},
+        media=False,
+    )
+    claimed = community.claim(3, proposal.id, proposal.version)
+    community.review(3, proposal.id, claimed.version, "approved")
+    assert community.stores.get(merchant.merchant_id).name == "Fixed"
+    draft = make_draft(
+        community,
+        kind="archive_merchant",
+        payload={"merchant_id": merchant.merchant_id},
+        media=False,
+    )
+    with pytest.raises(AccessDenied):
+        community.submit(10, draft.id, draft.version)
+
+
+def test_explicit_replace_and_independent_support_survives_undo(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Shop", "channel": "offline", "mcc": "5411"}, 1
+    )
+    payload = {"merchant_id": merchant.merchant_id, "mcc": "5812"}
+    proposal = make_proposal(community, kind="add_mcc", payload=payload)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    result = community.review(2, proposal.id, claimed.version, "approved", replace_old="5411")
+    assert [fact.mcc for fact in community.stores.list_mcc(merchant.merchant_id)] == ["5812"]
+    second = make_proposal(community, 11, kind="add_mcc", payload=payload)
+    claimed2 = community.claim(3, second.id, second.version)
+    community.review(3, second.id, claimed2.version, "approved")
+    community.stores.apply_change("revert", {"audit_id": result.audit_id}, 1)
+    assert "5812" in {fact.mcc for fact in community.stores.list_mcc(merchant.merchant_id)}
+
+
+def test_duplicate_new_merchant_race_is_not_silently_merged(community):
+    first = make_proposal(community)
+    second = make_proposal(community, 11)
+    a = community.claim(2, first.id, first.version)
+    b = community.claim(3, second.id, second.version)
+    community.review(2, first.id, a.version, "approved")
+    with pytest.raises(CommunityError, match="уже есть"):
+        community.review(3, second.id, b.version, "approved")
+    assert community.proposal(3, second.id).status == "pending"
+
+
+def test_payload_and_media_metadata_are_bounded(community):
+    with pytest.raises(CommunityError):
+        community.begin(10, data={"nested": {"file_id": "secret"}})
+    draft = community.begin(10)
+    with pytest.raises(CommunityError):
+        community.advance(10, draft.id, draft.version, "preview", {}, media=("x" * 513, "id"))
+    draft = make_draft(community, payload={"name": "Shop", "channel": "offline", "mcc": "not-mcc"})
+    with pytest.raises(CommunityError):
+        community.submit(10, draft.id, draft.version)
+
+
+def test_pending_input_quota(community):
+    for number in range(20):
+        make_proposal(
+            community, payload={"name": f"Shop {number}", "channel": "offline", "mcc": "5411"}
+        )
+    draft = make_draft(community)
+    with pytest.raises(CommunityError, match="20"):
+        community.submit(10, draft.id, draft.version)
+
+
+def test_direct_structural_preview_rejects_later_rename(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Shop", "channel": "offline"}, 1
+    )
+    draft = make_draft(
+        community,
+        2,
+        kind="rename_merchant",
+        media=False,
+        payload={"merchant_id": merchant.merchant_id, "name": "First preview"},
+    )
+    community.stores.apply_change(
+        "rename_merchant", {"merchant_id": merchant.merchant_id, "name": "Later edit"}, 3
+    )
+    with pytest.raises(StaleAction, match="изменились"):
+        community.submit(2, draft.id, draft.version)
+    assert community.stores.get(merchant.merchant_id).name == "Later edit"
+    assert not community.own_proposals(2)
+
+
+def test_two_structural_reviewers_cannot_silently_overwrite(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Shop", "channel": "offline"}, 1
+    )
+    a = make_proposal(
+        community,
+        kind="rename_merchant",
+        media=False,
+        payload={"merchant_id": merchant.merchant_id, "name": "First"},
+    )
+    b = make_proposal(
+        community,
+        11,
+        kind="rename_merchant",
+        media=False,
+        payload={"merchant_id": merchant.merchant_id, "name": "Second"},
+    )
+    a = community.claim(2, a.id, a.version)
+    b = community.claim(3, b.id, b.version)
+    community.review(2, a.id, a.version, "approved")
+    with pytest.raises(StaleAction):
+        community.review(3, b.id, b.version, "approved")
+    b = community.claim(3, b.id, b.version)
+    community.review(3, b.id, b.version, "approved")
+    assert community.stores.get(merchant.merchant_id).name == "Second"
+
+
+def test_merge_snapshot_checks_target_and_source(community):
+    first = community.stores.apply_change(
+        "add_merchant", {"name": "First", "channel": "offline"}, 1
+    )
+    second = community.stores.apply_change(
+        "add_merchant", {"name": "Second", "channel": "offline"}, 1
+    )
+    draft = make_draft(
+        community,
+        2,
+        kind="merge_merchant",
+        media=False,
+        payload={"merchant_id": first.merchant_id, "target_id": second.merchant_id},
+    )
+    community.stores.apply_change(
+        "aliases", {"merchant_id": second.merchant_id, "aliases": ["Other"]}, 3
+    )
+    with pytest.raises(StaleAction):
+        community.submit(2, draft.id, draft.version)
+    assert community.stores.get(first.merchant_id)
+
+
+def test_old_mcc_new_support_blocks_stale_replacement_but_not_additive_approval(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Shop", "channel": "offline", "mcc": "5411"}, 1
+    )
+    proposed = make_proposal(
+        community, kind="add_mcc", payload={"merchant_id": merchant.merchant_id, "mcc": "5812"}
+    )
+    claimed = community.claim(2, proposed.id, proposed.version)
+    community.stores.apply_change(
+        "add_mcc", {"merchant_id": merchant.merchant_id, "mcc": "5411"}, 3
+    )
+    with pytest.raises(StaleAction):
+        community.review(2, proposed.id, claimed.version, "approved", replace_old="5411")
+    # Adding an independent variant never overwrites the old support.
+    result = community.review(2, proposed.id, claimed.version, "approved")
+    assert result.status == "approved"
+    assert {fact.mcc for fact in community.stores.list_mcc(merchant.merchant_id)} == {
+        "5411",
+        "5812",
+    }
+
+
+def test_review_touch_keeps_original_snapshot_version_and_rejects_expired_or_foreign(community):
+    merchant = community.stores.apply_change(
+        "add_merchant", {"name": "Shop", "channel": "offline"}, 1
+    )
+    proposed = make_proposal(
+        community,
+        kind="rename_merchant",
+        media=False,
+        payload={"merchant_id": merchant.merchant_id, "name": "Preview"},
+    )
+    claimed = community.claim(2, proposed.id, proposed.version, now=100)
+    with community.stores.connection() as conn:
+        before = dict(conn.execute("SELECT * FROM community_review_snapshots").fetchone())
+    community.stores.apply_change(
+        "rename_merchant", {"merchant_id": merchant.merchant_id, "name": "Newer edit"}, 3
+    )
+    touched = community.touch_review(2, proposed.id, claimed.version, now=200)
+    assert touched.version == claimed.version
+    assert touched.lease_until == 1100
+    with community.stores.connection() as conn:
+        assert dict(conn.execute("SELECT * FROM community_review_snapshots").fetchone()) == before
+    with pytest.raises(StaleAction):
+        community.review(2, proposed.id, claimed.version, "approved", now=201)
+    with pytest.raises(StaleAction):
+        community.touch_review(3, proposed.id, claimed.version, now=201)
+    with pytest.raises(StaleAction):
+        community.touch_review(2, proposed.id, claimed.version - 1, now=201)
+    with pytest.raises(StaleAction):
+        community.touch_review(2, proposed.id, claimed.version, now=1100)
+    assert community.proposal(2, proposed.id).lease_until == 1100
+    community.set_role(1, 2, False)
+    with pytest.raises(AccessDenied):
+        community.touch_review(2, proposed.id, claimed.version, now=202)

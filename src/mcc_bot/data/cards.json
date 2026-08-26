@@ -4715,8 +4715,8 @@
     },
     {
       "id": "mtkarta",
-      "name": "Мткарта",
-      "issuer": "МТБанк",
+      "name": "МТкарта",
+      "issuer": "МТбанк",
       "emoji": "💳",
       "condition": {
         "kind": "max_connected_categories",
@@ -9215,7 +9215,7 @@
     {
       "id": "mtbank_social",
       "name": "Социальная",
-      "issuer": "МТБанк",
+      "issuer": "МТбанк",
       "emoji": "💳",
       "reward_programs": [
         {
@@ -9347,7 +9347,7 @@
     {
       "id": "shopper_mtbank",
       "name": "Шоппер",
-      "issuer": "МТБанк",
+      "issuer": "МТбанк",
       "emoji": "💳",
       "reward_programs": [
         {
@@ -9495,7 +9495,7 @@
     {
       "id": "cactus_mtbank",
       "name": "Кактус",
-      "issuer": "МТБанк",
+      "issuer": "МТбанк",
       "emoji": "💳",
       "condition": {
         "kind": "selected_category"
@@ -10268,7 +10268,7 @@
     {
       "id": "kufar",
       "name": "Куфар",
-      "issuer": "МТБанк / Visa / Kufar",
+      "issuer": "МТбанк / Visa / Kufar",
       "emoji": "💳",
       "condition": {
         "kind": "kufar_rules"

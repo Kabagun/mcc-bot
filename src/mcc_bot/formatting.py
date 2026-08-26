@@ -316,27 +316,46 @@ def format_match_pages(
 
 
 def split_message(message: str, *, max_length: int = SAFE_MESSAGE_LENGTH) -> tuple[str, ...]:
-    """Split long output at line boundaries accepted by Telegram."""
+    """Split plain text at line boundaries using Telegram's UTF-16 length bound.
 
-    if len(message) <= max_length:
+    Oversized individual lines split between Python characters, never between
+    an astral character's UTF-16 surrogate pair. Rich card markup uses the
+    separate whole-card paginator instead.
+    """
+
+    if not 0 < max_length <= MAX_TELEGRAM_MESSAGE_LENGTH:
+        raise ValueError("Invalid Telegram message length bound")
+    if _telegram_length(message) <= max_length:
         return (message,)
     chunks: list[str] = []
     current: list[str] = []
     current_length = 0
     for line in message.splitlines():
-        line_length = len(line) + (1 if current else 0)
+        units = _telegram_length(line)
+        line_length = units + (1 if current else 0)
         if current and current_length + line_length > max_length:
             chunks.append("\n".join(current))
             current = []
             current_length = 0
-            line_length = len(line)
-        if len(line) > max_length:
+            line_length = units
+        if units > max_length:
             if current:
                 chunks.append("\n".join(current))
                 current = []
                 current_length = 0
-            for offset in range(0, len(line), max_length):
-                chunks.append(line[offset : offset + max_length])
+            segment: list[str] = []
+            segment_length = 0
+            for character in line:
+                character_length = 2 if ord(character) > 0xFFFF else 1
+                if character_length > max_length:
+                    raise ValueError("A character exceeds the Telegram message length bound")
+                if segment_length + character_length > max_length:
+                    chunks.append("".join(segment))
+                    segment, segment_length = [], 0
+                segment.append(character)
+                segment_length += character_length
+            if segment:
+                chunks.append("".join(segment))
             continue
         current.append(line)
         current_length += line_length

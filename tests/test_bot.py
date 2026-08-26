@@ -9,23 +9,32 @@ import pytest
 from telegram import BotCommand
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, NetworkError
-from telegram.ext import CallbackQueryHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler
 
 from mcc_bot.bot import (
     _configure_bot_commands,
     build_application,
     limits_command,
-    lookup_command,
     lookup_text,
     remember_chat,
     start,
     toggle_details,
+    unknown_command,
 )
 from mcc_bot.catalog import CardCatalog
 from mcc_bot.config import BotSettings
 from mcc_bot.descriptions import DescriptionCatalog
 from mcc_bot.formatting import format_match_pages, format_matches
 from mcc_bot.users import UserRegistry
+
+
+@pytest.fixture(autouse=True)
+def isolate_community_dispatch(monkeypatch):
+    """Keep existing MCC unit tests independent of the separately tested form UI."""
+
+    handler = AsyncMock(return_value=False)
+    monkeypatch.setattr("mcc_bot.bot.handle_community_text", handler)
+    return handler
 
 
 def _context(catalog: CardCatalog) -> SimpleNamespace:
@@ -40,37 +49,64 @@ def _context(catalog: CardCatalog) -> SimpleNamespace:
     )
 
 
-def test_start_sends_russian_usage_instructions(catalog_path) -> None:
+def test_start_opens_role_aware_menu(catalog_path, monkeypatch) -> None:
     message = SimpleNamespace(reply_text=AsyncMock())
     update = SimpleNamespace(effective_message=message)
 
-    asyncio.run(start(update, _context(CardCatalog.from_file(catalog_path))))
+    menu = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.show_menu", menu)
+    context = _context(CardCatalog.from_file(catalog_path))
+    asyncio.run(start(update, context))
+    menu.assert_awaited_once_with(update, context)
 
-    message.reply_text.assert_awaited_once()
-    assert "четырёхзначный MCC" in message.reply_text.await_args.args[0]
-    assert "parse_mode" not in message.reply_text.await_args.kwargs
 
-
-def test_lookup_command_replies_with_sorted_russian_results(catalog_path) -> None:
-    message = SimpleNamespace(reply_text=AsyncMock())
+def test_bare_mcc_replies_with_sorted_russian_results(catalog_path) -> None:
+    message = SimpleNamespace(text="5411", reply_text=AsyncMock())
     update = SimpleNamespace(effective_message=message)
     context = _context(CardCatalog.from_file(catalog_path))
-    context.args = ["5411"]
-
-    asyncio.run(lookup_command(update, context))
+    asyncio.run(lookup_text(update, context))
 
     result = message.reply_text.await_args.args[0]
     assert result.index("Beta Card") < result.index("Alpha Card")
     assert "Продуктовые магазины" in result
 
 
-def test_text_lookup_accepts_mcc_prefix(catalog_path) -> None:
-    message = SimpleNamespace(text="MCC 5812", reply_text=AsyncMock())
+@pytest.mark.parametrize("text", ["MCC 5812", "MCC:5411", "Евроопт", "А-100", "21 век"])  # noqa: RUF001
+def test_non_numeric_text_routes_to_store_search(catalog_path, monkeypatch, text) -> None:
+    message = SimpleNamespace(text=text, reply_text=AsyncMock())
     update = SimpleNamespace(effective_message=message)
+    search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.search_stores", search)
+    context = _context(CardCatalog.from_file(catalog_path))
+    asyncio.run(lookup_text(update, context))
+    search.assert_awaited_once_with(update, context, text)
+    message.reply_text.assert_not_awaited()
 
-    asyncio.run(lookup_text(update, _context(CardCatalog.from_file(catalog_path))))
 
-    assert "Alpha Card" in message.reply_text.await_args.args[0]
+def test_active_form_consumes_numeric_text_before_lookup(catalog_path, isolate_community_dispatch):
+    isolate_community_dispatch.return_value = True
+    message = SimpleNamespace(text="5411", reply_text=AsyncMock())
+    asyncio.run(
+        lookup_text(
+            SimpleNamespace(effective_message=message),
+            _context(CardCatalog.from_file(catalog_path)),
+        )
+    )
+    message.reply_text.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", ["/mcc 5411", "/help", "/unknown"])
+def test_removed_commands_only_explain_supported_input(catalog_path, text):
+    message = SimpleNamespace(text=text, reply_text=AsyncMock())
+    asyncio.run(
+        unknown_command(
+            SimpleNamespace(effective_message=message),
+            _context(CardCatalog.from_file(catalog_path)),
+        )
+    )
+    result = message.reply_text.await_args.args[0]
+    assert "/start" in result and "/limits" in result
+    assert "Alpha Card" not in result and "Beta Card" not in result
 
 
 def test_limits_replies_immediately_and_does_not_change_number_lookup(catalog_path) -> None:
@@ -101,7 +137,7 @@ def test_command_menu_lists_start_and_limits_with_russian_descriptions() -> None
 
     set_commands.assert_awaited_once_with(
         [
-            BotCommand(command="start", description="Инструкция по MCC"),
+            BotCommand(command="start", description="Начало и меню"),
             BotCommand(command="limits", description="Лимиты по картам"),
         ]
     )
@@ -132,17 +168,14 @@ def _button(call):
     return call.kwargs["reply_markup"].inline_keyboard[0][0]
 
 
-@pytest.mark.parametrize(
-    ("handler", "raw_mcc"),
-    [(lookup_command, "5411"), (lookup_command, "MCC 5411"), (lookup_text, "MCC:5411")],
-)
-def test_all_lookup_paths_attach_details_button_with_normalized_mcc(catalog_path, handler, raw_mcc):
+@pytest.mark.parametrize("raw_mcc", ["5411", " 5411 "])
+def test_bare_lookup_attaches_details_button_with_normalized_mcc(catalog_path, raw_mcc):
     catalog = CardCatalog.from_file(catalog_path)
     context = _context(catalog)
     context.args = raw_mcc.split()
     message = SimpleNamespace(text=raw_mcc, reply_text=AsyncMock())
 
-    asyncio.run(handler(SimpleNamespace(effective_message=message), context))
+    asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
 
     message.reply_text.assert_awaited_once()
     button = _button(message.reply_text.await_args)
@@ -155,7 +188,7 @@ def test_all_lookup_paths_attach_details_button_with_normalized_mcc(catalog_path
     )
 
 
-@pytest.mark.parametrize("raw_mcc", ["123", "not an MCC", "9999"])
+@pytest.mark.parametrize("raw_mcc", ["123", "12345", "9999"])
 def test_invalid_or_empty_lookups_have_no_details_button(catalog_path, raw_mcc) -> None:
     message = SimpleNamespace(text=raw_mcc, reply_text=AsyncMock())
 
@@ -419,6 +452,8 @@ def test_application_registers_details_callback_handler(catalog_path, tmp_path) 
         catalog_path=catalog_path,
         descriptions_path=tmp_path / "descriptions.json",
         user_registry_path=tmp_path / "users.sqlite3",
+        stores_path=tmp_path / "stores.sqlite3",
+        owner_telegram_id=12345,
     )
     settings.descriptions_path.write_text('{"5411": "Продуктовые магазины"}', encoding="utf-8")
 
@@ -429,3 +464,16 @@ def test_application_registers_details_callback_handler(catalog_path, tmp_path) 
         isinstance(handler, CallbackQueryHandler) and handler.callback is toggle_details
         for handler in handlers
     )
+    commands = {
+        command
+        for handler in handlers
+        if isinstance(handler, CommandHandler)
+        for command in handler.commands
+    }
+    assert commands == {"start", "limits"}
+    patterns = {
+        handler.pattern.pattern
+        for handler in handlers
+        if isinstance(handler, CallbackQueryHandler) and handler.pattern
+    }
+    assert patterns == {"^mcc_details:", "^store:", "^community:"}
