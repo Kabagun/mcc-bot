@@ -17,8 +17,8 @@ def test_format_matches_renders_only_cards_and_rewards(catalog_path: Path, tmp_p
     rendered = format_matches("5411", matches, descriptions)
 
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
-    assert "1. 🅱️ Beta Card — 5% (4,61% после налога)" in rendered
-    assert "3. 🅰️ Alpha Card — 2,5% (2,44% после налога)" in rendered
+    assert "1. 🅱️ Beta Card — 5% (4,61%)" in rendered
+    assert "3. 🅰️ Alpha Card — 2,5% (2,44%)" in rendered
     assert "Beta Bank" not in rendered
     assert "Alpha Bank" not in rendered
     assert "мин. платёж" not in rendered
@@ -82,7 +82,7 @@ def test_format_moneyback_tax_and_points_exemption(tmp_path: Path) -> None:
     matches = CardCatalog.from_file(path).lookup("5411")
     by_kind = {match.components[0].kind: match for match in matches}
     assert format_moneyback(by_kind["points"]) == "3% баллами"
-    assert format_moneyback(by_kind["cash"]) == "3% (2,87% после налога)"
+    assert format_moneyback(by_kind["cash"]) == "3% (2,87%)"
 
 
 def test_format_matches_does_not_render_internal_conditions(tmp_path: Path) -> None:

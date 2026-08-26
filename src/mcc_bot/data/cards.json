@@ -5,7 +5,7 @@
       "id": "belveb_dvizhenie",
       "name": "Движение",
       "issuer": "Банк БелВЭБ",
-      "emoji": "⬛💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -4557,7 +4557,7 @@
       "id": "zepter_plus",
       "name": "Цептер PLUS",
       "issuer": "Цептер Банк",
-      "emoji": "🔴💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -4717,7 +4717,7 @@
       "id": "mtkarta",
       "name": "Мткарта",
       "issuer": "МТБанк",
-      "emoji": "🔵💳",
+      "emoji": "💳",
       "condition": {
         "kind": "max_connected_categories",
         "count": 3
@@ -9214,9 +9214,9 @@
     },
     {
       "id": "mtbank_social",
-      "name": "Социальная карта",
+      "name": "Социальная",
       "issuer": "МТБанк",
-      "emoji": "🔵💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -9227,7 +9227,7 @@
             "currency": "BYN"
           },
           "maximum_reward": {
-            "amount": 200,
+            "amount": 100,
             "unit": "currency",
             "currency": "BYN"
           },
@@ -9348,7 +9348,7 @@
       "id": "shopper_mtbank",
       "name": "Шоппер",
       "issuer": "МТБанк",
-      "emoji": "🔵💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -9496,7 +9496,7 @@
       "id": "cactus_mtbank",
       "name": "Кактус",
       "issuer": "МТБанк",
-      "emoji": "🔵💳",
+      "emoji": "💳",
       "condition": {
         "kind": "selected_category"
       },
@@ -9738,7 +9738,7 @@
       "id": "vitamin_d",
       "name": "Витамин Д",
       "issuer": "Белинвестбанк",
-      "emoji": "🟢💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -10267,9 +10267,9 @@
     },
     {
       "id": "kufar",
-      "name": "Куфар карта",
+      "name": "Куфар",
       "issuer": "МТБанк / Visa / Kufar",
-      "emoji": "🔵💳",
+      "emoji": "💳",
       "condition": {
         "kind": "kufar_rules"
       },
@@ -10343,7 +10343,7 @@
       "id": "zepter_card",
       "name": "Цептер Card",
       "issuer": "Цептер Банк",
-      "emoji": "🔴💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -10537,7 +10537,7 @@
       "id": "oplati",
       "name": "Оплати",
       "issuer": "Белинвестбанк",
-      "emoji": "🟢💳",
+      "emoji": "💳",
       "reward_limits": [
         {
           "amount": 20,
@@ -11655,7 +11655,7 @@
       "id": "paritet_combo",
       "name": "КОМБОкарта",
       "issuer": "Паритетбанк",
-      "emoji": "🟠💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -11726,7 +11726,7 @@
       "id": "dabrabyt_spraunaya",
       "name": "Спраўная",
       "issuer": "Банк Дабрабыт",
-      "emoji": "🟣💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12001,7 +12001,7 @@
       "id": "belarusbank_izi",
       "name": "Изи-карта",
       "issuer": "Беларусбанк",
-      "emoji": "🟩💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12065,14 +12065,14 @@
       "id": "bnb_1_2_3",
       "name": "1-2-3",
       "issuer": "БНБ-Банк",
-      "emoji": "🔷💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
           "kind": "cash",
           "tax_exempt": false,
           "minimum_payment": {
-            "amount": 0,
+            "amount": 10,
             "currency": "BYN"
           },
           "maximum_reward": {
@@ -12119,7 +12119,7 @@
       "id": "belgazprombank_cashalot",
       "name": "Cashalot",
       "issuer": "Белгазпромбанк",
-      "emoji": "🟦💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12182,7 +12182,7 @@
       "id": "statusbank_statuskarta",
       "name": "Статускарта",
       "issuer": "СтатусБанк",
-      "emoji": "🟥💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12243,7 +12243,7 @@
       "id": "reshenie_r_karta",
       "name": "R-карта",
       "issuer": "Банк Решение",
-      "emoji": "🟪💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",
@@ -12312,9 +12312,9 @@
     },
     {
       "id": "yarkaya_karta",
-      "name": "Яркая карта",
+      "name": "Яркая",
       "issuer": "Приорбанк",
-      "emoji": "🟡💳",
+      "emoji": "💳",
       "reward_programs": [
         {
           "id": "cash",

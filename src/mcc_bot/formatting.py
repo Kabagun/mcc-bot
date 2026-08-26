@@ -44,7 +44,7 @@ def _component_label(component: RewardComponent, *, show_kind: bool = False) -> 
     result = f"{value}%{kind_label}"
     if not component.tax_exempt and component.gross_value > PERCENT_TAX_THRESHOLD:
         net = _format_decimal(calculate_net_percent(component.gross_value), places=2)
-        result += f" ({net}% после налога)"
+        result += f" ({net}%)"
     return result
 
 

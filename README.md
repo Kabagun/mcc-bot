@@ -41,8 +41,8 @@ Linux uses `.venv/bin/python` instead of the Windows path.
 
 ## Telegram usage
 
-The Telegram command menu contains only `/start`. `/help`, `/mcc 5411`, and
-`/limits` remain available when typed manually. `/limits` immediately lists
+The Telegram command menu contains `/start` and `/limits`. `/help` and `/mcc 5411`
+remain available when typed manually. `/limits` immediately lists
 the minimum eligible payment and monthly maximum for every card; it does not
 change how subsequent messages are interpreted. Send `5411` as a normal message
 to run an MCC lookup.
@@ -135,7 +135,7 @@ dimensions before they can be compared.
 
 Percentage tax is applied to each component separately: the first 2 percentage
 points are tax-free and only the remainder is reduced by 13%. Thus 3% becomes
-`3% деньгами (2,87% после налога)` and a tax-exempt 3% points reward remains
+`3% (2,87%)` and a tax-exempt 3% points reward remains
 `3% баллами`. Points rewards are always marked with `баллами`. Display uses
 comma decimals and never prints raw catalog notes. For stacked cash and points
 programs, `/limits` renders their payment thresholds and maximums separately.

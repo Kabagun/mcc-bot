@@ -42,6 +42,7 @@ async def _configure_bot_commands(application: Application) -> None:
     await application.bot.set_my_commands(
         [
             BotCommand(command="start", description="Инструкция по MCC"),
+            BotCommand(command="limits", description="Лимиты по картам"),
         ]
     )
 

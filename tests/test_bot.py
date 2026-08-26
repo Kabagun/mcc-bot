@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from telegram import BotCommand
+
 from mcc_bot.bot import (
     _configure_bot_commands,
     limits_command,
@@ -80,14 +82,18 @@ def test_limits_replies_immediately_and_does_not_change_number_lookup(catalog_pa
     assert "Лимиты по картам" not in lookup_result
 
 
-def test_command_menu_lists_only_start() -> None:
+def test_command_menu_lists_start_and_limits_with_russian_descriptions() -> None:
     set_commands = AsyncMock()
     application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_commands))
 
     asyncio.run(_configure_bot_commands(application))
 
-    commands = set_commands.await_args.args[0]
-    assert [command.command for command in commands] == ["start"]
+    set_commands.assert_awaited_once_with(
+        [
+            BotCommand(command="start", description="Инструкция по MCC"),
+            BotCommand(command="limits", description="Лимиты по картам"),
+        ]
+    )
 
 
 def test_remember_chat_persists_effective_chat_id(catalog_path, tmp_path) -> None:

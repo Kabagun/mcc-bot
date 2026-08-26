@@ -467,7 +467,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
 
     shopper = next(match for match in matches if match.card.id == "shopper_mtbank")
     assert shopper.gross_percent == Decimal("2.5")
-    assert format_moneyback(shopper) == "2,5% (2,44% после налога)"
+    assert format_moneyback(shopper) == "2,5% (2,44%)"
     oplati = next(match for match in matches if match.card.id == "oplati")
     assert oplati.gross_percent == Decimal("3")
     assert oplati.components[0].kind == "cash"
@@ -484,22 +484,22 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
-        "1. 🟢💳 Витамин Д — 1% + 3% баллами\n"
-        "2. 🟢💳 Оплати — 3%\n"
-        "3. 🔵💳 Шоппер — 2,5% (2,44% после налога)\n"
-        "4. 🔴💳 Цептер Card — 2%\n"
-        "5. 🔴💳 Цептер PLUS — 2%\n"
-        "6. 🟪💳 R-карта — 1,5%\n"
-        "7. 🟠💳 КОМБОкарта — 1,2%\n"
-        "8. 🟣💳 Спраўная — 1,11%\n"
-        "9. 🔷💳 1-2-3 — 1%\n"
-        "10. ⬛💳 Движение — 1%\n"
-        "11. 🔵💳 Куфар карта — 1% баллами\n"
-        "12. 🔵💳 Мткарта — 1% баллами\n"
-        "13. 🔵💳 Социальная карта — 1%\n"
-        "14. 🟡💳 Яркая карта — 1%\n"
-        "15. 🟦💳 Cashalot — 0,5%\n"
-        "16. 🟥💳 Статускарта — 0,5%"
+        "1. 💳 Витамин Д — 1% + 3% баллами\n"
+        "2. 💳 Оплати — 3%\n"
+        "3. 💳 Шоппер — 2,5% (2,44%)\n"
+        "4. 💳 Цептер Card — 2%\n"
+        "5. 💳 Цептер PLUS — 2%\n"
+        "6. 💳 R-карта — 1,5%\n"
+        "7. 💳 КОМБОкарта — 1,2%\n"
+        "8. 💳 Спраўная — 1,11%\n"
+        "9. 💳 1-2-3 — 1%\n"
+        "10. 💳 Движение — 1%\n"
+        "11. 💳 Куфар — 1% баллами\n"
+        "12. 💳 Мткарта — 1% баллами\n"
+        "13. 💳 Социальная — 1%\n"
+        "14. 💳 Яркая — 1%\n"
+        "15. 💳 Cashalot — 0,5%\n"
+        "16. 💳 Статускарта — 0,5%"
     )
 
 
@@ -618,7 +618,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
     social = next(match for match in matches if match.card.id == "mtbank_social")
     assert social.gross_percent == Decimal("5")
     assert social.net_percent == Decimal("4.61")
-    assert format_moneyback(social) == "5% (4,61% после налога)"
+    assert format_moneyback(social) == "5% (4,61%)"
     assert next(match for match in matches if match.card.id == "mtkarta").card.condition.kind == (
         "max_connected_categories"
     )
@@ -626,7 +626,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
         match for match in matches if match.card.id == "cactus_mtbank"
     ).card.condition.kind == ("selected_category")
     rendered = format_matches("5912", matches, _descriptions())
-    assert "⬛💳 Движение — 5% (4,61% после налога)" in rendered
+    assert "💳 Движение — 5% (4,61%)" in rendered
     assert "подключённых категорий" not in rendered
     assert "выбранная категория" not in rendered
 
@@ -715,7 +715,7 @@ def test_real_catalog_izi_uses_two_percent_for_only_listed_mccs() -> None:
     assert format_moneyback(match) == "2%"
     assert all(match.card.id != "belarusbank_izi" for match in catalog.lookup("5411"))
     rendered = format_matches("5812", catalog.lookup("5812"), _descriptions())
-    assert "🟩💳 Изи-карта — 2%" in rendered
+    assert "💳 Изи-карта — 2%" in rendered
     assert "Беларусбанк" not in rendered
     assert "мин. платёж" not in rendered
 
@@ -763,24 +763,24 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["belveb_dvizhenie"].name == "Движение"
     assert cards["belveb_dvizhenie"].issuer == "Банк БелВЭБ"
     expected_markers = {
-        "belveb_dvizhenie": "⬛💳",
-        "zepter_plus": "🔴💳",
-        "mtkarta": "🔵💳",
-        "mtbank_social": "🔵💳",
-        "shopper_mtbank": "🔵💳",
-        "cactus_mtbank": "🔵💳",
-        "vitamin_d": "🟢💳",
-        "kufar": "🔵💳",
-        "zepter_card": "🔴💳",
-        "oplati": "🟢💳",
-        "paritet_combo": "🟠💳",
-        "dabrabyt_spraunaya": "🟣💳",
-        "belarusbank_izi": "🟩💳",
-        "bnb_1_2_3": "🔷💳",
-        "belgazprombank_cashalot": "🟦💳",
-        "statusbank_statuskarta": "🟥💳",
-        "reshenie_r_karta": "🟪💳",
-        "yarkaya_karta": "🟡💳",
+        "belveb_dvizhenie": "💳",
+        "zepter_plus": "💳",
+        "mtkarta": "💳",
+        "mtbank_social": "💳",
+        "shopper_mtbank": "💳",
+        "cactus_mtbank": "💳",
+        "vitamin_d": "💳",
+        "kufar": "💳",
+        "zepter_card": "💳",
+        "oplati": "💳",
+        "paritet_combo": "💳",
+        "dabrabyt_spraunaya": "💳",
+        "belarusbank_izi": "💳",
+        "bnb_1_2_3": "💳",
+        "belgazprombank_cashalot": "💳",
+        "statusbank_statuskarta": "💳",
+        "reshenie_r_karta": "💳",
+        "yarkaya_karta": "💳",
     }
     assert {card_id: cards[card_id].emoji for card_id in expected_markers} == expected_markers
     assert cards["zepter_plus"].issuer == "Цептер Банк"
@@ -790,6 +790,9 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["oplati"].issuer == "Белинвестбанк"
     assert cards["kufar"].issuer == "МТБанк / Visa / Kufar"
     assert cards["mtkarta"].name == "Мткарта"
+    assert cards["mtbank_social"].name == "Социальная"
+    assert cards["kufar"].name == "Куфар"
+    assert cards["yarkaya_karta"].name == "Яркая"
     assert cards["belgazprombank_cashalot"].name == "Cashalot"
     assert cards["belgazprombank_cashalot"].issuer == "Белгазпромбанк"
     assert cards["statusbank_statuskarta"].name == "Статускарта"
@@ -803,6 +806,7 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["paritet_combo"].name == "КОМБОкарта"
     assert cards["paritet_combo"].issuer == "Паритетбанк"
     assert cards["reshenie_r_karta"].issuer == "Банк Решение"
+    assert cards["reshenie_r_karta"].name == "R-карта"
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
         assert cards[card_id].issuer == "МТБанк"
@@ -819,7 +823,6 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("zepter_card", "cash"),
         ("oplati", "cash_tax_exempt"),
         ("oplati", "cash"),
-        ("bnb_1_2_3", "cash"),
         ("statusbank_statuskarta", "cash"),
         ("belarusbank_izi", "cash"),
     ):
@@ -834,7 +837,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("zepter_plus", "cash"): ("0", "100", "currency"),
         ("zepter_card", "cash"): ("0", "150", "currency"),
         ("mtkarta", "points"): ("10", "200", "points"),
-        ("mtbank_social", "cash"): ("0", "200", "currency"),
+        ("mtbank_social", "cash"): ("0", "100", "currency"),
         ("shopper_mtbank", "cash"): ("10", "30", "currency"),
         ("cactus_mtbank", "cash"): ("0", "300", "points"),
         ("vitamin_d", "cash"): ("10", "50", "currency"),
@@ -844,7 +847,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("dabrabyt_spraunaya", "cash"): ("0", "100", "currency"),
         ("paritet_combo", "cash"): ("5", "130", "currency"),
         ("belarusbank_izi", "cash"): ("0", "20", "currency"),
-        ("bnb_1_2_3", "cash"): ("0", "123", "currency"),
+        ("bnb_1_2_3", "cash"): ("10", "123", "currency"),
         ("statusbank_statuskarta", "cash"): ("0", "100", "currency"),
     }
     for (card_id, program_id), (minimum, maximum, unit) in expected.items():
@@ -867,18 +870,20 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     assert cashalot.maximum_reward is not None and cashalot.maximum_reward.unlimited
 
     rendered = format_limits(tuple(cards.values()))
+    assert "💳 1-2-3 — 💵 мин. платёж 10 BYN · макс. в месяц 123 BYN" in rendered
+    assert "💳 Социальная — 💵 мин. платёж 0 BYN · макс. в месяц 100 BYN" in rendered
     assert (
-        "🟢💳 Витамин Д — 💵 мин. платёж 10 BYN · макс. в месяц 50 BYN · "
+        "💳 Витамин Д — 💵 мин. платёж 10 BYN · макс. в месяц 50 BYN · "
         "⭐ мин. платёж 0 BYN · макс. в месяц 200 баллов"
     ) in rendered
-    assert ("🟠💳 КОМБОкарта — 💵 мин. платёж 5 BYN · макс. в месяц 130 BYN") in rendered
+    assert ("💳 КОМБОкарта — 💵 мин. платёж 5 BYN · макс. в месяц 130 BYN") in rendered
     oplati_line = next(line for line in rendered.splitlines() if "Оплати" in line)
     assert oplati_line.count("мин. платёж") == 1
     assert "месячный лимит не установлен" in oplati_line
     assert "лимит 20 BYN/7 дней" in oplati_line
     assert "лимит 20 BYN/операцию" in oplati_line
     assert (
-        "🔴💳 Цептер Card — 💵 мин. платёж 0 BYN · макс. в месяц 150 BYN / 50 USD / 50 EUR"
+        "💳 Цептер Card — 💵 мин. платёж 0 BYN · макс. в месяц 150 BYN / 50 USD / 50 EUR"
     ) in rendered
 
 
