@@ -48,6 +48,9 @@ removed. Send `5411` as a normal message for an MCC lookup; leading zeros such
 as `0742` are preserved. Digit-only input of another length gets a format hint.
 Other text, including `MCC 5411`, `Евроопт`, `А-100` and `21 век`, searches the
 merchant directory. Menu buttons and active form steps take precedence over search.
+Search also accepts Belarusian `і`/Russian `и` keyboard variants and conservative
+cross-script pronunciation such as `Green`/`грин`. These search keys never change
+source identity or automatically merge similar stores.
 `/limits` immediately lists the minimum eligible payment and maximum reward for
 every card; it does not change how subsequent messages are interpreted.
 

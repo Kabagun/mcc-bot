@@ -141,6 +141,34 @@ def normalize_store_name(value: str) -> str:
     return text.replace("euro", "evro")
 
 
+def _script(value: str) -> str | None:
+    folded = unicodedata.normalize("NFKD", value.casefold())
+    latin = any("a" <= char <= "z" for char in folded)
+    cyrillic = any("\u0400" <= char <= "\u052f" for char in folded)
+    if latin == cyrillic:
+        return None
+    return "latin" if latin else "cyrillic"
+
+
+def _relaxed_search_key(value: str) -> str:
+    """Return a conservative cross-script pronunciation key for search only."""
+
+    # English ``ee`` is commonly written as Cyrillic ``и`` in brand names:
+    # Green -> грин. Keep this separate from identity/duplicate normalization.
+    return normalize_store_name(value).replace("ee", "i")
+
+
+def _relaxed_cross_script_match(query: str, candidate: str, needle: str) -> bool:
+    query_script, candidate_script = _script(query), _script(candidate)
+    return (
+        len(needle) >= 4
+        and query_script is not None
+        and candidate_script is not None
+        and query_script != candidate_script
+        and _relaxed_search_key(query) == _relaxed_search_key(candidate)
+    )
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -329,18 +357,21 @@ class StoreRepository:
                     "SELECT * FROM store_merchants WHERE archived=0 ORDER BY name,id"
                 )
             )
-        exact, partial, suggestions = [], [], []
+        exact, transliterated, partial, suggestions = [], [], [], []
         for merchant in merchants:
-            keys = [normalize_store_name(name) for name in (merchant.name, *merchant.aliases)]
+            names = (merchant.name, *merchant.aliases)
+            keys = [normalize_store_name(name) for name in names]
             if needle in keys:
                 exact.append(merchant)
+            elif any(_relaxed_cross_script_match(query, name, needle) for name in names):
+                transliterated.append(merchant)
             elif any(needle in key for key in keys):
                 partial.append(merchant)
             elif len(needle) >= 3:
                 score = max(SequenceMatcher(None, needle, key).ratio() for key in keys)
                 if score >= 0.68:
                     suggestions.append((score, merchant))
-        matches = exact + partial
+        matches = exact + transliterated + partial
         fuzzy = tuple(
             item[1] for item in sorted(suggestions, key=lambda item: (-item[0], item[1].id))
         )

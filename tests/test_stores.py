@@ -49,6 +49,56 @@ def test_transliterated_aliases_search_without_merging(repository, name):
     assert first.merchant_id != second.merchant_id
 
 
+def test_cross_script_brand_pronunciation_is_search_only_and_ranked(repository):
+    green = add(repository, name="Green", mcc=None)
+    longer = add(repository, name="Green Market", mcc=None)
+
+    result = repository.search("грин")
+    assert [merchant.id for merchant in result.matches] == [green.merchant_id]
+    assert not result.suggestions
+    assert repository.find_exact("грин", "offline") == ()
+    assert longer.merchant_id not in {merchant.id for merchant in result.matches}
+
+    cyrillic = add(repository, name="Грин", mcc=None)
+    result = repository.search("грин")
+    assert [merchant.id for merchant in result.matches] == [
+        cyrillic.merchant_id,
+        green.merchant_id,
+    ]
+    assert [merchant.id for merchant in repository.search("Green").matches] == [
+        green.merchant_id,
+        cyrillic.merchant_id,
+        longer.merchant_id,
+    ]
+
+
+def test_relaxed_transliteration_does_not_cross_same_script_or_short_names(repository):
+    green = add(repository, name="Green", mcc=None)
+    grin = add(repository, name="Grin", mcc=None)
+    bee = add(repository, name="Bee", mcc=None)
+
+    result = repository.search("Grin")
+    assert [merchant.id for merchant in result.matches] == [grin.merchant_id]
+    assert green.merchant_id not in {merchant.id for merchant in result.matches}
+    assert bee.merchant_id not in {merchant.id for merchant in repository.search("би").matches}
+
+
+@pytest.mark.parametrize("query", ["Добрыя леки", "добрыя лекi", "DOBRYYA LEKI"])
+def test_belarusian_i_and_common_keyboard_spellings_share_one_key(repository, query):
+    merchant = add(repository, name="Добрыя лекі", mcc=None)
+    assert [item.id for item in repository.search(query).matches] == [merchant.merchant_id]
+
+
+def test_cross_script_pronunciation_applies_to_explicit_aliases(repository):
+    merchant = repository.apply_change(
+        "add_merchant",
+        {"name": "Other", "channel": "offline", "aliases": ["Green"]},
+        123,
+    )
+    assert [item.id for item in repository.search("грин").matches] == [merchant.merchant_id]
+    assert repository.find_exact("грин", "offline") == ()
+
+
 def test_fuzzy_suggestions_and_channels_are_distinct(repository):
     offline = add(repository)
     online = add(repository, channel="online")
