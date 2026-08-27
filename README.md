@@ -131,6 +131,12 @@ database. Repeated imports do not duplicate facts or undo manual edits.
 No periodic source refresh runs in the bot, and Telegram searches never depend
 on tannei being available.
 
+The dated source ledger, verified endpoints, collection method, snapshot
+counters and reproduction notes are documented in
+[docs/MERCHANT_DATA_SOURCE.md](docs/MERCHANT_DATA_SOURCE.md). The current
+snapshot was collected on 2026-08-26 and its source endpoints were rechecked on
+2026-08-27.
+
 ```powershell
 # Full initial import, or continue an interrupted run without refetching completed work.
 .\.venv\Scripts\python.exe -m mcc_bot.import_stores --database var/stores.sqlite3 --resume
