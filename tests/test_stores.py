@@ -151,6 +151,21 @@ def test_import_chain_identity_channel_idempotence_and_precision(repository):
         )
 
 
+def test_import_history_explains_visible_changes_without_evidence_metadata(repository):
+    imported = repository.import_store(source_metadata(), source_evidence())
+    entry = repository.history(imported.merchant_id)[0]
+    details = "\n".join(entry.details)
+    assert entry.kind == "import"
+    assert entry.actor_id == 0
+    assert "Добавлен магазин «Евроопт»" in details
+    assert "Добавлен MCC: 5411" in details
+    assert "Подтверждения tannei.by для MCC 5411: +1" in details
+    assert "Добавлены записи источника: 1" in details
+    assert "2022-06" not in details
+    assert "Groceries" not in details
+    assert "address" not in details
+
+
 def test_import_preserves_manual_name_alias_archive_and_duplicate_observations(repository):
     imported = repository.import_store(source_metadata(), source_evidence() * 2)
     merchant_id = imported.merchant_id

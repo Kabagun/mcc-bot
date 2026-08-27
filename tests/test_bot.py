@@ -22,9 +22,11 @@ from mcc_bot.bot import (
     unknown_command,
 )
 from mcc_bot.catalog import CardCatalog
+from mcc_bot.community import CommunityService
 from mcc_bot.config import BotSettings
 from mcc_bot.descriptions import DescriptionCatalog
 from mcc_bot.formatting import format_match_pages, format_matches
+from mcc_bot.stores import StoreRepository
 from mcc_bot.users import UserRegistry
 
 
@@ -153,6 +155,39 @@ def test_remember_chat_persists_effective_chat_id(catalog_path, tmp_path) -> Non
     asyncio.run(remember_chat(update, context))
 
     assert registry.chat_ids() == (12345,)
+
+
+def test_remember_chat_refreshes_only_known_role_identity(catalog_path, tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    community = CommunityService(StoreRepository(tmp_path / "stores.sqlite3"), owner_id=1)
+    community.initialize()
+    community.request_role(10, "old_name", "Old")
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data.update({"user_registry": registry, "community": community})
+    known = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=10),
+        effective_user=SimpleNamespace(
+            id=10, username="new_name", first_name="New", last_name="Helper"
+        ),
+    )
+    unknown = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=20),
+        effective_user=SimpleNamespace(
+            id=20, username="ordinary", first_name="Ordinary", last_name=None
+        ),
+    )
+
+    asyncio.run(remember_chat(known, context))
+    asyncio.run(remember_chat(unknown, context))
+
+    candidate = community.role_candidates(1)[0]
+    assert (candidate["username"], candidate["first_name"]) == ("new_name", "New")
+    with community.stores.connection() as connection:
+        assert (
+            connection.execute("SELECT 1 FROM community_role_profiles WHERE user_id=20").fetchone()
+            is None
+        )
 
 
 def _callback(data: object, *, accessible: bool = True) -> SimpleNamespace:

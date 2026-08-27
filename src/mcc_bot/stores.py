@@ -83,6 +83,7 @@ class AuditEntry:
     actor_id: int
     created_at: str
     reverted_by: int | None
+    details: tuple[str, ...]
 
 
 _CYRILLIC = dict(
@@ -413,12 +414,148 @@ class StoreRepository:
             with self.connection() as conn:
                 return self.history(merchant_id, limit=limit, offset=offset, connection=conn)
         rows = connection.execute(
-            """SELECT id,kind,merchant_id,actor_id,created_at,reverted_by
+            """SELECT id,kind,merchant_id,actor_id,created_at,reverted_by,changes_json
             FROM store_audit WHERE (? IS NULL OR merchant_id=?)
             ORDER BY id DESC LIMIT ? OFFSET ?""",
             (merchant_id, merchant_id, max(1, min(int(limit), 100)), offset),
         )
-        return tuple(AuditEntry(**dict(row)) for row in rows)
+        result = []
+        for row in rows:
+            values = dict(row)
+            values["details"] = self._audit_details(connection, values.pop("changes_json"))
+            result.append(AuditEntry(**values))
+        return tuple(result)
+
+    @staticmethod
+    def _audit_details(connection: sqlite3.Connection, changes_json: str) -> tuple[str, ...]:
+        """Summarize allowlisted audit fields without exposing raw evidence metadata."""
+
+        def clipped(value: Any, maximum: int = 80) -> str:
+            text = " ".join(str(value).split())
+            return text if len(text) <= maximum else text[: maximum - 1] + "…"
+
+        def aliases(raw: str | None) -> str:
+            try:
+                values = json.loads(raw or "[]")
+            except (TypeError, json.JSONDecodeError):
+                return "неизвестно"
+            if not values:
+                return "нет"
+            shown = [f"«{clipped(value, 40)}»" for value in values[:3]]
+            if len(values) > 3:
+                shown.append(f"ещё {len(values) - 3}")
+            return ", ".join(shown)
+
+        def listed(values: list[str]) -> str:
+            unique = list(dict.fromkeys(values))
+            shown = unique[:8]
+            suffix = f" и ещё {len(unique) - 8}" if len(unique) > 8 else ""
+            return ", ".join(shown) + suffix
+
+        try:
+            changes = json.loads(changes_json)
+        except (TypeError, json.JSONDecodeError):
+            changes = []
+        if not isinstance(changes, list):
+            changes = []
+        details: list[str] = []
+        added_mcc: list[str] = []
+        hidden_mcc: list[str] = []
+        restored_mcc: list[str] = []
+        evidence_added: dict[tuple[str, str], int] = {}
+        evidence_revoked: dict[tuple[str, str], int] = {}
+        source_added = 0
+        source_updated = 0
+
+        for edit in changes:
+            if not isinstance(edit, dict):
+                continue
+            table = edit.get("table")
+            before = edit.get("before")
+            after = edit.get("after")
+            if table == "store_merchants":
+                if before is None and after:
+                    channel = (
+                        "онлайн/приложение"
+                        if after.get("channel") == "online"
+                        else "обычный магазин"
+                    )
+                    details.append(
+                        f"Добавлен магазин «{clipped(after.get('name', ''))}» · {channel}."
+                    )
+                    continue
+                if not before or not after:
+                    continue
+                if before.get("name") != after.get("name"):
+                    details.append(
+                        f"Название: «{clipped(before.get('name', ''))}» → "
+                        f"«{clipped(after.get('name', ''))}»."
+                    )
+                if before.get("aliases_json") != after.get("aliases_json"):
+                    details.append(
+                        f"Другие названия: {aliases(before.get('aliases_json'))} → "
+                        f"{aliases(after.get('aliases_json'))}."
+                    )
+                if before.get("archived") != after.get("archived"):
+                    details.append(
+                        "Магазин убран из поиска."
+                        if after.get("archived")
+                        else "Магазин возвращён в поиск."
+                    )
+                if before.get("merged_into") != after.get("merged_into") and after.get(
+                    "merged_into"
+                ):
+                    target = connection.execute(
+                        "SELECT name FROM store_merchants WHERE id=?", (after["merged_into"],)
+                    ).fetchone()
+                    target_name = (
+                        f"«{clipped(target['name'])}»"
+                        if target is not None
+                        else f"записью №{after['merged_into']}"
+                    )
+                    details.append(f"Магазин объединён с {target_name}.")
+            elif table == "store_facts":
+                state = after or before or {}
+                mcc = str(state.get("mcc", ""))
+                if before is None and after:
+                    added_mcc.append(mcc)
+                elif before and after and before.get("archived") != after.get("archived"):
+                    (hidden_mcc if after.get("archived") else restored_mcc).append(mcc)
+            elif table == "store_evidence":
+                state = after or before or {}
+                fact = connection.execute(
+                    "SELECT mcc FROM store_facts WHERE id=?", (state.get("fact_id"),)
+                ).fetchone()
+                mcc = fact["mcc"] if fact is not None else "неизвестный MCC"
+                source = "tannei.by" if state.get("source") == "tannei" else "пользователь"
+                key = source, mcc
+                if before is None and after:
+                    evidence_added[key] = evidence_added.get(key, 0) + 1
+                elif before and after and not before.get("revoked") and after.get("revoked"):
+                    evidence_revoked[key] = evidence_revoked.get(key, 0) + 1
+            elif table == "store_sources":
+                if before is None and after:
+                    source_added += 1
+                elif before and after and before != after:
+                    source_updated += 1
+
+        if added_mcc:
+            details.append(f"Добавлен MCC: {listed(added_mcc)}.")
+        if hidden_mcc:
+            details.append(f"Убран из поиска MCC: {listed(hidden_mcc)}.")
+        if restored_mcc:
+            details.append(f"Возвращён MCC: {listed(restored_mcc)}.")
+        for (source, mcc), count in list(evidence_added.items())[:5]:
+            details.append(f"Подтверждения {source} для MCC {mcc}: +{count}.")
+        for (source, mcc), count in list(evidence_revoked.items())[:5]:
+            details.append(f"Отозваны подтверждения {source} для MCC {mcc}: {count}.")
+        if source_added:
+            details.append(f"Добавлены записи источника: {source_added}.")
+        if source_updated:
+            details.append(f"Обновлены записи источника: {source_updated}.")
+        if not details:
+            details.append("Обновлены служебные связи магазина без изменения видимых MCC.")
+        return tuple(clipped(detail, 220) for detail in details[:10])
 
     @staticmethod
     def _required(connection, merchant_id):

@@ -43,6 +43,9 @@ def update(
     photo=None,
     caption=None,
     document=None,
+    username="tester",
+    first_name="Test",
+    last_name="User",
 ):
     message = SimpleNamespace(
         text=text,
@@ -55,7 +58,9 @@ def update(
     )
     query = SimpleNamespace(data=data, answer=AsyncMock(), message=message) if data else None
     return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user),
+        effective_user=SimpleNamespace(
+            id=user, username=username, first_name=first_name, last_name=last_name
+        ),
         effective_chat=SimpleNamespace(id=user, type=chat_type),
         effective_message=message,
         callback_query=query,
@@ -69,8 +74,8 @@ def send(flow, text, user=10, **kwargs):
     return event
 
 
-def click(flow, action, user=10):
-    event = update(user, data="community:" + action)
+def click(flow, action, user=10, **kwargs):
+    event = update(user, data="community:" + action, **kwargs)
     asyncio.run(callback(event, flow))
     return event
 
@@ -258,10 +263,17 @@ def test_clarification_answer_and_cancel(flow):
 
 def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
     service = flow.application.bot_data["community"]
-    click(flow, "volunteer")
+    click(flow, "volunteer", username="alice_helper", first_name="Alice", last_name="Smith")
     roles = click(flow, "roles", 1)
-    assert any("Назначить" in button.text for button in all_buttons(roles))
-    assert any(button.text == "Отказать" for button in all_buttons(roles))
+    assert any(
+        "Заявка · @alice_helper · Alice Smith" in button.text for button in all_buttons(roles)
+    )
+    candidate = click(flow, "role_view:10:0", 1)
+    candidate_text = candidate.effective_message.reply_text.await_args.args[0]
+    assert "@alice_helper" in candidate_text
+    assert "Alice Smith" in candidate_text
+    assert "Telegram ID: 10" in candidate_text
+    assert any(button.text == "Назначить помощником" for button in all_buttons(candidate))
     click(flow, "role:10:0:1", 1)
     assert service.is_admin(10)
     assert flow.bot.send_message.await_args.kwargs["chat_id"] == 10
@@ -272,11 +284,19 @@ def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
     service.set_role(1, 10, True)
     click(flow, f"digest:1:{epoch}")
     assert not service.digest_enabled(10)
-    click(flow, "volunteer", 11)
+    click(flow, "volunteer", 11, username=None, first_name="Bob", last_name="NoUsername")
+    roles = click(flow, "roles", 1)
+    assert any("без @username · Bob NoUsername" in button.text for button in all_buttons(roles))
+    candidate = click(flow, "role_view:11:0", 1)
+    assert "без @username" in candidate.effective_message.reply_text.await_args.args[0]
     click(flow, "decline:11:0", 1)
     assert not service.is_admin(11)
     click(flow, "role:11:0:1", 1)
     assert not service.is_admin(11)
+    click(flow, "role:12:0:1", 1)
+    assert not service.is_admin(12)
+    management = click(flow, "manage", 1)
+    assert all("user ID" not in button.text for button in all_buttons(management))
 
 
 def test_media_bounds_document_rejection_privacy_and_unavailable_photo(flow):
@@ -353,7 +373,8 @@ def test_editor_archive_history_and_safe_undo(flow):
     service = flow.application.bot_data["community"]
     assert not service.stores.list_mcc(merchant_id)
     click(flow, f"edit:{merchant_id}", 2)
-    draft_click(flow, "history", 2)
+    history = draft_click(flow, "history", 2)
+    assert "Убран из поиска MCC: 5411" in history.effective_message.reply_text.await_args.args[0]
     last = service.stores.history(merchant_id)[0]
     draft_click(flow, f"undo:{last.id}", 2)
     draft_click(flow, "submit", 2)
@@ -442,6 +463,39 @@ def test_archived_store_is_recoverable_from_management_history(flow):
     draft_click(flow, f"undo:{audit_id}", 2)
     draft_click(flow, "submit", 2)
     assert service.stores.get(merchant_id)
+
+
+def test_history_shows_import_details_and_last_helper_identity(flow):
+    service = flow.application.bot_data["community"]
+    service.set_role(1, 2, False)
+    service.request_role(2, "helper_two", "Bob", "Helper")
+    service.set_role(1, 2, True, require_pending=True)
+    imported = service.stores.import_store(
+        {
+            "id": 123,
+            "network_id": 456,
+            "network_name": "Import Shop",
+            "name": "Import Shop",
+            "is_online": False,
+            "address": None,
+        },
+        [{"mcc": "5411", "payment_date": "2026-08", "merchant_type": "Groceries"}],
+    )
+    service.stores.apply_change("add_mcc", {"merchant_id": imported.merchant_id, "mcc": "5812"}, 2)
+
+    event = click(flow, f"history:{imported.merchant_id}", 2)
+    text = event.effective_message.reply_text.await_args.args[0]
+    assert "Импорт данных из tannei.by" in text
+    assert "Добавлен магазин «Import Shop»" in text
+    assert "Подтверждения tannei.by для MCC 5411: +1" in text
+    assert "Изменил: tannei.by · автоматический импорт" in text
+    assert "Изменил: @helper_two · Bob Helper · Telegram ID 2" in text
+    assert "2026-08" not in text
+    assert "Groceries" not in text
+    assert all(
+        not button.callback_data.endswith(f":undo:{imported.audit_id}")
+        for button in all_buttons(event)
+    )
 
 
 def test_recent_history_page_two_restores_an_older_archived_store(flow):

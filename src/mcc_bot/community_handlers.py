@@ -53,6 +53,7 @@ KINDS = {
     "archive_mcc": "Убрать ошибочный MCC",
     "revert": "Отменить изменение",
 }
+HISTORY_KINDS = {**KINDS, "import": "Импорт данных из tannei.by"}
 
 
 def _service(context: ContextTypes.DEFAULT_TYPE) -> CommunityService:
@@ -73,6 +74,31 @@ def _keyboard(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
             for row in rows
         ]
     )
+
+
+def _role_identity(candidate: dict[str, Any], *, compact: bool = False) -> str:
+    username = f"@{candidate['username']}" if candidate.get("username") else "без @username"
+    full_name = " ".join(
+        value for value in (candidate.get("first_name"), candidate.get("last_name")) if value
+    )
+    if compact:
+        identity = username if not full_name else f"{username} · {full_name}"
+        return identity if len(identity) <= 48 else identity[:47] + "…"
+    return (
+        f"{username}\nИмя в Telegram: {full_name or 'не указано'}\n"
+        f"Telegram ID: {candidate['user_id']}"
+    )
+
+
+def _audit_identity(actor: dict[str, Any]) -> str:
+    if actor.get("automated"):
+        return "tannei.by · автоматический импорт"
+    username = f"@{actor['username']}" if actor.get("username") else None
+    full_name = " ".join(
+        value for value in (actor.get("first_name"), actor.get("last_name")) if value
+    )
+    identity = " · ".join(value for value in (username, full_name) if value)
+    return f"{identity + ' · ' if identity else ''}Telegram ID {actor['user_id']}"
 
 
 def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup:
@@ -259,11 +285,16 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
         text = "Введите название магазина, который нужно оставить после объединения."
     elif stage == "history":
         offset = data.get("history_offset", 0)
+        merchant = service.stores.get(data["merchant_id"], include_archived=True)
         entries = service.stores.history(
             data["merchant_id"], limit=HISTORY_PAGE_SIZE + 1, offset=offset
         )
         page = entries[:HISTORY_PAGE_SIZE]
-        undo_ids = [entry.id for entry in page if not entry.reverted_by and entry.kind != "revert"]
+        undo_ids = [
+            entry.id
+            for entry in page
+            if not entry.reverted_by and entry.kind not in {"import", "revert"}
+        ]
         view = {
             "history_offset": offset,
             "history_ids": [entry.id for entry in page],
@@ -273,12 +304,19 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
         if any(data.get(key) != value for key, value in view.items()):
             data = {**data, **view}
             draft = service.advance(draft.user_id, draft.id, draft.version, stage, data)
+        channel = "онлайн/приложение" if merchant and merchant.channel == "online" else "обычный"
+        name = merchant.name if merchant else f"магазин №{data['merchant_id']}"
         text = (
-            f"История магазина · страница {offset // HISTORY_PAGE_SIZE + 1}. "
+            f"История «{name}» · {channel} · страница {offset // HISTORY_PAGE_SIZE + 1}.\n"
             "Отмена сохранит более поздние независимые подтверждения."
         )
         for entry in page:
-            text += f"\n№{entry.id}: {KINDS.get(entry.kind, entry.kind)}"
+            text += f"\n\n№{entry.id}: {HISTORY_KINDS.get(entry.kind, entry.kind)}"
+            for detail in entry.details:
+                text += f"\n• {detail}"
+            text += (
+                f"\nИзменил: {_audit_identity(service.audit_actor(draft.user_id, entry.actor_id))}"
+            )
             if entry.id in undo_ids:
                 rows.append([(f"Отменить изменение №{entry.id}", f"undo:{entry.id}")])
         if not page:
@@ -303,14 +341,6 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
     elif stage == "review_preview":
         text = "Проверьте сообщение автору:\n\n" + data["reason"]
         rows = [[("Отправить решение", "decision")]]
-    elif stage == "grant":
-        text = "Введите числовой Telegram user ID помощника. Роль может назначить только владелец."
-    elif stage == "grant_preview":
-        text = (
-            f"Дать пользователю {data['target_user_id']} "
-            "доступ к проверке и редактированию магазинов?"
-        )
-        rows = [[("Назначить помощником", "grant")]]
     else:
         raise CommunityError("Неизвестный шаг. Отмените действие и начните заново.")
     await _say(update, text, _draft_buttons(draft, rows))
@@ -400,7 +430,7 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
     enabled = service.digest_enabled(user_id)
     rows = [
         [("Редактировать магазин", "edit")],
-        [("Последние изменения / восстановление", "recent")],
+        [("Журнал изменений и восстановление", "recent")],
         [(MINE, "mine:0")],
         [
             (
@@ -410,7 +440,7 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
         ],
     ]
     if service.role(user_id) == "owner":
-        rows.append([("Помощники и заявки", "roles"), ("Назначить по user ID", "grant")])
+        rows.append([("Помощники и заявки", "roles")])
     await _say(
         update,
         "Управление магазинами. Сводка сообщает только число предложений и не содержит скриншотов.",
@@ -579,14 +609,6 @@ def _consume_text(
     elif stage == "reason":
         data["reason"] = clean_text(text)
         stage = "review_preview"
-    elif stage == "grant":
-        if service.role(draft.user_id) != "owner":
-            raise CommunityError("Только владелец может назначать помощников.")
-        if not re.fullmatch(r"[1-9][0-9]{0,15}", text):
-            raise CommunityError("Введите числовой Telegram user ID.")
-        data["target_user_id"] = int(text)
-        data["target_epoch"] = service.role_epoch(int(text))
-        stage = "grant_preview"
     elif stage in {"evidence", "response_evidence"}:
         raise CommunityError(
             "На этом шаге нужен скриншот. Комментарий можно добавить подписью к нему."
@@ -745,7 +767,7 @@ async def _dispatch_callback(
             rows.append(
                 [
                     (
-                        f"№{entry.id} · {name[:32]} · {KINDS.get(entry.kind, entry.kind)}",
+                        f"№{entry.id} · {name[:32]} · {HISTORY_KINDS.get(entry.kind, entry.kind)}",
                         f"history:{entry.merchant_id}",
                     )
                 ]
@@ -781,22 +803,34 @@ async def _dispatch_callback(
         service.set_digest(user_id, parts[1] == "1", expected_epoch=int(parts[2]))
         await _management(update, service, user_id)
     elif action == "volunteer":
-        service.request_role(user_id)
-        await _say(update, "Заявка отправлена владельцу. Доступ появится только после назначения.")
+        user = update.effective_user
+        service.request_role(
+            user_id,
+            getattr(user, "username", None),
+            getattr(user, "first_name", None),
+            getattr(user, "last_name", None),
+        )
+        username = getattr(user, "username", None)
+        identity = f"@{username}" if username else "вашим именем в Telegram"
+        await _say(
+            update,
+            f"Заявка от {identity} отправлена владельцу. "
+            "Доступ появится только после подтверждения.",
+        )
     elif action == "roles":
         offset = max(0, min(1000000, int(parts[1]))) if len(parts) > 1 else 0
         candidates = service.role_candidates(user_id)
         rows = []
         for item in candidates[offset : offset + 10]:
-            row = [
-                (
-                    f"{'Отозвать' if item['active'] else 'Назначить'} · {item['user_id']}",
-                    f"role:{item['user_id']}:{item['epoch']}:{int(not item['active'])}",
-                )
-            ]
-            if not item["active"]:
-                row.append(("Отказать", f"decline:{item['user_id']}:{item['epoch']}"))
-            rows.append(row)
+            state = "Помощник" if item["active"] else "Заявка"
+            rows.append(
+                [
+                    (
+                        f"{state} · {_role_identity(item, compact=True)}",
+                        f"role_view:{item['user_id']}:{item['epoch']}",
+                    )
+                ]
+            )
         if offset:
             rows.append([("⬅️ Назад", f"roles:{max(0, offset - 10)}")])
         if len(candidates) > offset + 10:
@@ -806,10 +840,41 @@ async def _dispatch_callback(
             "Помощники и заявки" if rows else "Заявок и помощников пока нет.",
             _keyboard(rows),
         )
+    elif action == "role_view":
+        target_id, epoch = int(parts[1]), int(parts[2])
+        candidate = next(
+            (
+                item
+                for item in service.role_candidates(user_id)
+                if item["user_id"] == target_id and item["epoch"] == epoch
+            ),
+            None,
+        )
+        if candidate is None:
+            raise StaleAction("Заявка или роль уже изменилась.")
+        state = "Действующий помощник" if candidate["active"] else "Заявка в помощники"
+        rows = [
+            [
+                (
+                    "Отозвать доступ" if candidate["active"] else "Назначить помощником",
+                    f"role:{target_id}:{epoch}:{int(not candidate['active'])}",
+                )
+            ]
+        ]
+        if not candidate["active"]:
+            rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
+        rows.append([("⬅️ К списку", "roles:0")])
+        await _say(update, f"{state}\n\n{_role_identity(candidate)}", _keyboard(rows))
     elif action == "role":
         if parts[3] not in {"0", "1"}:
             raise CommunityError("Некорректная роль.")
-        service.set_role(user_id, int(parts[1]), parts[3] == "1", expected_epoch=int(parts[2]))
+        service.set_role(
+            user_id,
+            int(parts[1]),
+            parts[3] == "1",
+            expected_epoch=int(parts[2]),
+            require_pending=parts[3] == "1",
+        )
         await _notify_role(
             context,
             service,
@@ -831,10 +896,6 @@ async def _dispatch_callback(
             "Ваша заявка в помощники пока не принята. Вы можете предлагать данные как обычно.",
         )
         await _say(update, "Заявка отклонена.")
-    elif action == "grant":
-        if service.role(user_id) != "owner":
-            raise CommunityError("Только владелец может менять роли.")
-        await _render_draft(update, service, service.begin(user_id, stage="grant", privileged=True))
     elif action == "edit":
         data = {"editing": True}
         stage = "edit_name"
@@ -886,19 +947,6 @@ async def _draft_callback(
         service.cancel_draft(draft.user_id, draft.id, draft.version)
         await _notify(context, proposal)
         await _say(update, "Решение сохранено.")
-        return
-    if action == "grant" and stage == "grant_preview":
-        service.set_role(
-            draft.user_id, data["target_user_id"], True, expected_epoch=data["target_epoch"]
-        )
-        service.cancel_draft(draft.user_id, draft.id, draft.version)
-        await _notify_role(
-            context,
-            service,
-            data["target_user_id"],
-            "Вы назначены помощником. Очередь и управление доступны в меню.",
-        )
-        await _say(update, "Помощник назначен. Вечерняя сводка пока выключена.")
         return
     if action == "back":
         history = data.get("back", [])

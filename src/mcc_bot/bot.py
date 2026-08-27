@@ -235,13 +235,22 @@ async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Persist the effective chat ID before processing a supported update."""
+    """Persist the chat and refresh known role identities before handling an update."""
 
     chat = update.effective_chat
     if chat is None:
         return
     registry: UserRegistry = context.application.bot_data["user_registry"]
     registry.remember(chat.id)
+    user = getattr(update, "effective_user", None)
+    community: CommunityService | None = context.application.bot_data.get("community")
+    if user is not None and community is not None:
+        community.refresh_role_profile(
+            user.id,
+            getattr(user, "username", None),
+            getattr(user, "first_name", None),
+            getattr(user, "last_name", None),
+        )
 
 
 def build_application(settings: BotSettings) -> Application:

@@ -70,8 +70,8 @@ text is escaped for Telegram HTML; the local CLI and `/limits` stay plain text.
 
 `var/users.sqlite3` stores Telegram chat IDs and first/last-seen timestamps for
 operator broadcasts. The separate merchant/community database also stores
-contributions, user IDs for permissions and attribution, drafts, decisions and
-audit history as described below. Run a
+contributions, user IDs for permissions and attribution, helper usernames and
+Telegram display names, drafts, decisions and audit history as described below. Run a
 broadcast from the configured server with:
 
 ```bash
@@ -91,13 +91,17 @@ attach a screenshot, review the draft, then submit it for approval. Subadmins
 may omit the screenshot and publish directly after confirmation. Name and
 duplicate reports need no screenshot. Forms support back/cancel and persist
 across restarts. Users can track or cancel unfinished proposals and request
-subadmin access using `🙋 Хочу помогать` in their proposals screen.
+subadmin access via `/start` → `👤 Мои предложения` → `🙋 Хочу помогать`.
 
-Only the explicitly configured owner can grant/revoke roles. Permissions use
-Telegram user IDs and are checked at each sensitive action; screenshots and
-editing are private-chat only. Subadmins can edit merchants/aliases/MCCs,
-merge or archive merchants and inspect/revert history, but cannot change card
-reward rules. A 15-minute renewable review lease prevents overlapping reviews;
+Only the explicitly configured owner can approve pending requests or revoke
+roles. The owner sees the applicant's `@username`, Telegram display name and
+stable user ID before approval. Permissions use Telegram user IDs—not mutable
+usernames—and are checked at each sensitive action; screenshots and editing are
+private-chat only. Subadmins can edit merchants/aliases/MCCs, merge or archive
+merchants and inspect/revert history, but cannot change card reward rules. The
+history shows what changed and attributes every publication to its stored user
+ID and last known helper identity; imports are labelled as tannei.by. A
+15-minute renewable review lease prevents overlapping reviews;
 final decisions and publication are atomic. A conflicting code requires an
 explicit choice to add another variant or replace the incorrect code. Duplicate
 confirmations add evidence, not duplicate facts. Reverts preserve independent

@@ -55,20 +55,73 @@ def test_owner_is_explicit_and_user_id_authority(community):
 
 
 def test_role_requests_do_not_grant_or_subscribe(community):
-    community.request_role(10)
-    community.request_role(10)
+    community.request_role(10, "candidate", "Alice", "Smith")
+    community.request_role(10, "candidate_new", "Alice", "Updated")
     assert community.role(10) == "user"
     assert not community.digest_enabled(10)
+    candidate = community.role_candidates(1)[0]
+    assert candidate["username"] == "candidate_new"
+    assert (candidate["first_name"], candidate["last_name"]) == ("Alice", "Updated")
     with pytest.raises(AccessDenied):
         community.set_role(2, 10, True)
     with pytest.raises(AccessDenied):
         community.role_candidates(10)
+    with pytest.raises(StaleAction):
+        community.set_role(1, 11, True, require_pending=True)
     community.decline_role(1, 10, 0)
     with pytest.raises(StaleAction):
         community.decline_role(1, 10, 0)
-    community.request_role(10)
-    community.set_role(1, 10, True)
+    community.request_role(10, None, "Alice")
+    community.set_role(1, 10, True, require_pending=True)
     assert community.is_admin(10)
+
+
+def test_role_profile_schema_is_additive_and_survives_restart(community):
+    with community.stores.transaction() as connection:
+        connection.execute("DROP TABLE community_role_profiles")
+    reopened = CommunityService(community.stores, owner_id=1)
+    reopened.initialize()
+    reopened.request_role(12, "helper_12", "Helper", "Twelve")
+    restarted = CommunityService(community.stores, owner_id=1)
+    restarted.initialize()
+    candidate = next(item for item in restarted.role_candidates(1) if item["user_id"] == 12)
+    assert candidate["username"] == "helper_12"
+    assert candidate["first_name"] == "Helper"
+
+
+def test_audit_actor_uses_stored_identity_and_stable_id(community):
+    community.request_role(10, "helper_name", "Alice", "Smith")
+    community.set_role(1, 10, True, require_pending=True)
+    actor = community.audit_actor(10, 10)
+    assert actor == {
+        "user_id": 10,
+        "username": "helper_name",
+        "first_name": "Alice",
+        "last_name": "Smith",
+        "automated": False,
+    }
+    assert community.audit_actor(10, 0)["automated"]
+    assert community.audit_actor(10, 999)["user_id"] == 999
+    with pytest.raises(AccessDenied):
+        community.audit_actor(11, 10)
+
+
+def test_role_profile_refresh_is_limited_and_tracks_latest_helper_username(community):
+    assert not community.refresh_role_profile(20, "ordinary", "Ordinary")
+    community.request_role(10, "candidate", "Alice")
+    assert community.refresh_role_profile(10, "candidate_new", "Alice", "Updated")
+    community.set_role(1, 10, True, require_pending=True)
+    assert community.refresh_role_profile(10, "helper_new", "Alice", "Helper")
+    assert community.refresh_role_profile(1, "owner_name", "Owner")
+    helper = community.audit_actor(1, 10)
+    owner = community.audit_actor(1, 1)
+    assert (helper["username"], helper["last_name"]) == ("helper_new", "Helper")
+    assert owner["username"] == "owner_name"
+    with community.stores.connection() as connection:
+        assert (
+            connection.execute("SELECT 1 FROM community_role_profiles WHERE user_id=20").fetchone()
+            is None
+        )
 
 
 def test_role_revoke_invalidates_review_draft_consent_and_regrant(community):

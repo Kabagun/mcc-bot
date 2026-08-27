@@ -90,6 +90,23 @@ def clean_text(value: str, *, maximum: int = MAX_COMMENT) -> str:
     return value
 
 
+def _identity_text(value: Any, *, maximum: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > maximum or any(ord(ch) < 32 for ch in value):
+        return None
+    return value
+
+
+def _telegram_username(value: Any) -> str | None:
+    value = _identity_text(value, maximum=32)
+    if value is None:
+        return None
+    value = value.removeprefix("@")
+    return value if re.fullmatch(r"[A-Za-z0-9_]{1,32}", value) else None
+
+
 def _safe_json(data: dict[str, Any]) -> str:
     # Whitelisting contribution payloads happens at publication. This guard also
     # prevents accidentally copying a Telegram photo object into a durable draft.
@@ -131,6 +148,9 @@ class CommunityService:
                 """CREATE TABLE IF NOT EXISTS community_role_requests (
                     user_id INTEGER PRIMARY KEY, status TEXT NOT NULL,
                     created_at REAL NOT NULL)""",
+                """CREATE TABLE IF NOT EXISTS community_role_profiles (
+                    user_id INTEGER PRIMARY KEY, username TEXT,
+                    first_name TEXT, last_name TEXT, updated_at REAL NOT NULL)""",
                 """CREATE TABLE IF NOT EXISTS community_role_events (
                     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
                     actor_id INTEGER NOT NULL, active INTEGER NOT NULL,
@@ -202,9 +222,15 @@ class CommunityService:
             raise AccessDenied("Это действие доступно только действующим помощникам.")
 
     def set_role(
-        self, actor_id: int, user_id: int, active: bool, *, expected_epoch: int | None = None
+        self,
+        actor_id: int,
+        user_id: int,
+        active: bool,
+        *,
+        expected_epoch: int | None = None,
+        require_pending: bool = False,
     ) -> None:
-        """Grant/revoke a helper as owner; invalidate drafts and reset digest consent."""
+        """Grant/revoke a helper as owner; optionally require a pending application."""
 
         with self.stores.transaction() as conn:
             if self._role(conn, actor_id)[0] != "owner":
@@ -214,6 +240,12 @@ class CommunityService:
                 raise CommunityError("Роль владельца задаётся настройкой бота.")
             if expected_epoch is not None and epoch != expected_epoch:
                 raise StaleAction("Роль уже изменилась. Откройте управление заново.")
+            if active and require_pending:
+                request = conn.execute(
+                    "SELECT status FROM community_role_requests WHERE user_id=?", (user_id,)
+                ).fetchone()
+                if request is None or request["status"] != "pending":
+                    raise StaleAction("Заявка уже рассмотрена или не существует.")
             if (role == "admin") == active:
                 return
             conn.execute(
@@ -238,17 +270,71 @@ class CommunityService:
                 ("granted" if active else "revoked", user_id),
             )
 
-    def request_role(self, user_id: int) -> None:
-        """Record one helper request without assigning a role or subscription."""
+    def request_role(
+        self,
+        user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None = None,
+    ) -> None:
+        """Record an applicant identity and request without granting permissions."""
 
         with self.stores.transaction() as conn:
             if self._role(conn, user_id)[0] != "user":
                 raise CommunityError("У вас уже есть доступ к очереди.")
+            now = time.time()
+            conn.execute(
+                """INSERT INTO community_role_profiles(
+                    user_id,username,first_name,last_name,updated_at) VALUES(?,?,?,?,?)
+                    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
+                    first_name=excluded.first_name,last_name=excluded.last_name,
+                    updated_at=excluded.updated_at""",
+                (
+                    user_id,
+                    _telegram_username(username),
+                    _identity_text(first_name, maximum=128),
+                    _identity_text(last_name, maximum=128),
+                    now,
+                ),
+            )
             conn.execute(
                 """INSERT INTO community_role_requests(user_id,status,created_at)
-                   VALUES(?,'pending',?) ON CONFLICT(user_id) DO UPDATE SET status='pending'""",
-                (user_id, time.time()),
+                   VALUES(?,'pending',?) ON CONFLICT(user_id) DO UPDATE SET
+                   status='pending',created_at=excluded.created_at""",
+                (user_id, now),
             )
+
+    def refresh_role_profile(
+        self,
+        user_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None = None,
+    ) -> bool:
+        """Refresh the last seen identity only for the owner, helpers, or applicants."""
+
+        with self.stores.transaction() as conn:
+            role = self._role(conn, user_id)[0]
+            request = conn.execute(
+                "SELECT status FROM community_role_requests WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if role not in {"owner", "admin"} and not (request and request["status"] == "pending"):
+                return False
+            conn.execute(
+                """INSERT INTO community_role_profiles(
+                    user_id,username,first_name,last_name,updated_at) VALUES(?,?,?,?,?)
+                    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,
+                    first_name=excluded.first_name,last_name=excluded.last_name,
+                    updated_at=excluded.updated_at""",
+                (
+                    user_id,
+                    _telegram_username(username),
+                    _identity_text(first_name, maximum=128),
+                    _identity_text(last_name, maximum=128),
+                    time.time(),
+                ),
+            )
+            return True
 
     def role_candidates(self, actor_id: int) -> tuple[dict[str, Any], ...]:
         """Return pending requests and active helper roles to the owner only."""
@@ -260,13 +346,43 @@ class CommunityService:
                 dict(row)
                 for row in conn.execute(
                     """SELECT ids.user_id,COALESCE(r.active,0) AS active,
-                   COALESCE(r.epoch,0) AS epoch FROM (
+                   COALESCE(r.epoch,0) AS epoch,q.status AS request_status,
+                   q.created_at,p.username,p.first_name,p.last_name FROM (
                    SELECT user_id FROM community_role_requests WHERE status='pending'
                    UNION SELECT user_id FROM community_roles WHERE active=1) ids
-                   LEFT JOIN community_roles r ON r.user_id=ids.user_id ORDER BY ids.user_id"""
+                   LEFT JOIN community_roles r ON r.user_id=ids.user_id
+                   LEFT JOIN community_role_requests q ON q.user_id=ids.user_id
+                   LEFT JOIN community_role_profiles p ON p.user_id=ids.user_id
+                   ORDER BY COALESCE(r.active,0),COALESCE(q.created_at,0),ids.user_id"""
                 )
                 if row["user_id"] != self.owner_id
             )
+
+    def audit_actor(self, viewer_id: int, actor_id: int) -> dict[str, Any]:
+        """Return a stored audit identity to an authorized helper or owner."""
+
+        with self.stores.connection() as conn:
+            self._require_admin(conn, viewer_id)
+            if actor_id == 0:
+                return {
+                    "user_id": 0,
+                    "username": None,
+                    "first_name": None,
+                    "last_name": None,
+                    "automated": True,
+                }
+            profile = conn.execute(
+                """SELECT username,first_name,last_name
+                   FROM community_role_profiles WHERE user_id=?""",
+                (actor_id,),
+            ).fetchone()
+            return {
+                "user_id": actor_id,
+                "username": profile["username"] if profile else None,
+                "first_name": profile["first_name"] if profile else None,
+                "last_name": profile["last_name"] if profile else None,
+                "automated": False,
+            }
 
     def decline_role(self, actor_id: int, user_id: int, expected_epoch: int) -> None:
         """Decline a still-pending helper request without changing any active role."""
