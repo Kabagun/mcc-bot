@@ -23,13 +23,13 @@ from telegram.ext import (
 
 from .catalog import CardCatalog, CatalogError, InvalidMccError, normalize_mcc
 from .community import CommunityService
+from .community_handlers import INFO, keyboard_for, show_menu
 from .community_handlers import callback as community_callback
 from .community_handlers import handle_media as handle_community_media
 from .community_handlers import handle_text as handle_community_text
-from .community_handlers import show_menu
 from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
-from .formatting import format_limits, format_match_pages, split_message
+from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
 from .store_handlers import handle_store_callback, search_stores
 from .stores import StoreRepository
@@ -39,7 +39,7 @@ LOGGER = logging.getLogger(__name__)
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 RESULT_TOO_LONG = (
     "Не удалось показать результат: данные одной карты или описание MCC слишком длинные. "  # noqa: RUF001
-    "Лимиты по картам: /limits"
+    f"Откройте /start и нажмите «{INFO}»."
 )
 
 
@@ -57,10 +57,7 @@ async def _configure_bot_commands(application: Application) -> None:
     """Expose the supported commands in Telegram's command menu."""
 
     await application.bot.set_my_commands(
-        [
-            BotCommand(command="start", description="Начало и меню"),
-            BotCommand(command="limits", description="Лимиты по картам"),
-        ]
+        [BotCommand(command="start", description="Начало и меню")]
     )
 
 
@@ -187,13 +184,26 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Explain the two supported commands without interpreting obsolete syntax."""
+    """Direct obsolete and unknown commands to the current menu."""
 
-    await _reply(
-        update,
+    text = (
         "Отправьте MCC из четырёх цифр (например, 5411) или название магазина.\n"
-        "Доступны /start — меню и /limits — информация по картам.",
+        f"Откройте /start и нажмите «{INFO}», чтобы посмотреть лимиты и условия карт."
     )
+    message = update.effective_message
+    service = context.application.bot_data.get("community")
+    user = getattr(update, "effective_user", None)
+    chat = getattr(update, "effective_chat", None)
+    if (
+        message is not None
+        and service is not None
+        and user is not None
+        and chat is not None
+        and chat.type == "private"
+    ):
+        await message.reply_text(text, reply_markup=keyboard_for(service, user.id))
+    else:
+        await _reply(update, text)
 
 
 async def lookup_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,13 +235,6 @@ async def report_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         except TelegramError:
             LOGGER.info("Could not deliver an error notice")
-
-
-async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/limits`` by returning all payment thresholds and monthly caps."""
-
-    catalog: CardCatalog = context.application.bot_data["catalog"]
-    await _reply(update, format_limits(catalog.cards))
 
 
 async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -277,7 +280,6 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["community"] = community
     application.add_handler(TypeHandler(Update, remember_chat), group=-1)
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("limits", limits_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
     application.add_handler(CallbackQueryHandler(handle_store_callback, pattern=r"^store:"))

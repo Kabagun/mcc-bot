@@ -1,4 +1,4 @@
-"""Merchant search and stateless, single-message MCC/card navigation."""
+"""Brand search and stateless, single-message MCC/card navigation."""
 
 # Russian copy and ordinary Unicode buttons are intentional.
 # ruff: noqa: RUF001
@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import logging
-import re
 import secrets
+from dataclasses import dataclass
 from html import escape
+from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -16,113 +17,233 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from .formatting import format_match_pages
-from .stores import Merchant, StoreRepository
+from .stores import StoreRepository, normalize_store_name
 
 LOGGER = logging.getLogger(__name__)
 _PAGE_SIZE = 8
-_CALLBACK = re.compile(
-    r"store:(show|cards|search):([A-Za-z0-9]+)(?::([0-9]+))?(?::([0-9]+))?(?::([01]))?"
-)
 _WARNING = "MCC может отличаться у разных касс и способов оплаты."
+_CHANNELS = ("offline", "online")
 
 
-def _header(merchant: Merchant) -> str:
-    channel = "онлайн / приложение" if merchant.channel == "online" else "магазины / сеть"
-    return f"🏪 <b>{escape(merchant.name)}</b> · {channel}"
+@dataclass(frozen=True)
+class _LegacyBrandFact:
+    channel: str
+    mcc: str
+    note: str
+    merchant_ids: tuple[int, ...]
+    evidence_count: int
 
 
-def _actions(context, merchant_id, user_id, *, private=True):
-    if not private:
-        return []
-    community = context.application.bot_data.get("community")
-    admin = community is not None and user_id is not None and community.is_admin(user_id)
-    action = "edit" if admin else "report"
-    label = "✏️ Редактировать магазин" if admin else "✏️ Дополнить или исправить"
-    return [[InlineKeyboardButton(label, callback_data=f"community:{action}:{merchant_id}")]]
+def _channel_label(channel: str, *, short: bool = False) -> str:
+    if channel == "online":
+        return "онлайн" if short else "🌐 Онлайн / приложение"
+    return "офлайн" if short else "🏬 Офлайн / магазины"
 
 
-def _card_callback(merchant_id, mcc, page, details):
-    return f"store:cards:{merchant_id}:{mcc}:{page}:{int(details)}"
+def _get_brand(repository: StoreRepository, brand_id: int, *, include_archived: bool = False):
+    getter = getattr(repository, "get_brand", None)
+    if getter is not None:
+        return getter(brand_id, include_archived=include_archived)
+    return repository.get(brand_id, include_archived=include_archived)
 
 
-def _merchant_view(repository, merchant, page, context, user_id, *, private=True):
-    facts = repository.list_mcc(merchant.id)
-    descriptions = context.application.bot_data["descriptions"]
-    count = max(1, (len(facts) + _PAGE_SIZE - 1) // _PAGE_SIZE)
-    page = min(page, count - 1)
-    text = (
-        _header(merchant)
-        + "\n\n"
-        + ("Выберите MCC, чтобы увидеть карты с манибэком." if facts else "MCC пока не добавлен.")
+def _brand_for_merchant(repository: StoreRepository, merchant_id: int):
+    resolver = getattr(repository, "brand_for_merchant", None)
+    if resolver is not None:
+        return resolver(merchant_id)
+    return repository.get(merchant_id)
+
+
+def _brand_channels(repository: StoreRepository, brand_id: int) -> dict[str, tuple[Any, ...]]:
+    getter = getattr(repository, "list_brand_channels", None)
+    if getter is not None:
+        return {key: tuple(value) for key, value in getter(brand_id).items() if value}
+    merchant = repository.get(brand_id)
+    return {merchant.channel: (merchant,)} if merchant else {}
+
+
+def _brand_facts(repository: StoreRepository, brand_id: int, channel: str):
+    getter = getattr(repository, "list_brand_mcc", None)
+    if getter is not None:
+        return getter(brand_id, channel=channel)
+    merchant = repository.get(brand_id)
+    if merchant is None or merchant.channel != channel:
+        return ()
+    return tuple(
+        _LegacyBrandFact(
+            channel,
+            fact.mcc,
+            getattr(fact, "note", ""),
+            (merchant.id,),
+            fact.evidence_count,
+        )
+        for fact in repository.list_mcc(merchant.id)
     )
-    text += f"\n<i>{_WARNING}</i>"
-    rows = [
-        [
-            InlineKeyboardButton(
-                f"MCC {fact.mcc} — {descriptions.get(fact.mcc) or 'описание не найдено'}",
-                callback_data=_card_callback(merchant.id, fact.mcc, 0, False),
-            )
-        ]
-        for fact in facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+
+
+def _header(brand, channel: str | None = None) -> str:
+    result = f"🏪 <b>{escape(brand.name)}</b>"
+    return result if channel is None else result + " · " + _channel_label(channel, short=True)
+
+
+def _is_admin(context, user_id: int | None) -> bool:
+    community = context.application.bot_data.get("community")
+    return community is not None and user_id is not None and community.is_admin(user_id)
+
+
+def _card_callback(brand_id: int, channel: str, mcc: str, page: int, details: bool) -> str:
+    return f"store:cards:{brand_id}:{channel}:{mcc}:{page}:{int(details)}"
+
+
+def _fact_label(fact, descriptions) -> str:
+    note = getattr(fact, "note", "")
+    if note:
+        return f"MCC {fact.mcc} · {note}"
+    description = descriptions.get(fact.mcc) or "описание не найдено"
+    return f"MCC {fact.mcc} — {description}"
+
+
+def _brand_view(repository, brand, page, context, user_id, *, private=True):
+    channels = _brand_channels(repository, brand.id)
+    observed = [channel for channel in _CHANNELS if channels.get(channel)]
+    descriptions = context.application.bot_data["descriptions"]
+    grouped = [
+        (channel, tuple(_brand_facts(repository, brand.id, channel))) for channel in observed
     ]
+    flat = [(channel, fact) for channel, facts in grouped for fact in facts]
+    count = max(1, (len(flat) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    page = min(max(0, page), count - 1)
+    shown = flat[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+    shown_channels = {channel for channel, _ in shown}
+    if not flat:
+        shown_channels = set(observed)
+
+    text = _header(brand)
+    rows: list[list[InlineKeyboardButton]] = []
+    for channel in observed:
+        if channel not in shown_channels:
+            continue
+        facts = [fact for fact_channel, fact in shown if fact_channel == channel]
+        all_facts = dict((fact.mcc, fact) for fact in _brand_facts(repository, brand.id, channel))
+        text += "\n\n<b>" + _channel_label(channel) + "</b>"
+        if facts:
+            for fact in facts:
+                note = getattr(fact, "note", "")
+                text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            _fact_label(fact, descriptions),
+                            callback_data=_card_callback(brand.id, channel, fact.mcc, 0, False),
+                        )
+                    ]
+                )
+        elif not all_facts:
+            text += "\nMCC пока не добавлен."
+        if private:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "➕ Добавить или подтвердить MCC",
+                        callback_data=f"community:start:{brand.id}:{channel}",
+                    )
+                ]
+            )
+    if not observed:
+        text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
+        if private:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "➕ Добавить или подтвердить MCC",
+                        callback_data=f"community:start:{brand.id}",
+                    )
+                ]
+            )
+    text += f"\n\n<i>{_WARNING}</i>"
+
     navigation = []
     if page:
         navigation.append(
-            InlineKeyboardButton("←", callback_data=f"store:show:{merchant.id}:{page - 1}")
+            InlineKeyboardButton("←", callback_data=f"store:show:{brand.id}:{page - 1}")
         )
     if count > 1:
         navigation.append(
             InlineKeyboardButton(
-                f"{page + 1}/{count}", callback_data=f"store:show:{merchant.id}:{page}"
+                f"{page + 1}/{count}", callback_data=f"store:show:{brand.id}:{page}"
             )
         )
     if page + 1 < count:
         navigation.append(
-            InlineKeyboardButton("→", callback_data=f"store:show:{merchant.id}:{page + 1}")
+            InlineKeyboardButton("→", callback_data=f"store:show:{brand.id}:{page + 1}")
         )
     if navigation:
         rows.append(navigation)
-    rows.extend(_actions(context, merchant.id, user_id, private=private))
+    if private and _is_admin(context, user_id):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "✏️ Редактировать бренд", callback_data=f"community:edit:{brand.id}"
+                )
+            ]
+        )
     return text, InlineKeyboardMarkup(rows)
 
 
+def _search_entities(repository: StoreRepository, query: str):
+    result = repository.search(query, limit=100)
+    matches = tuple(result.matches)
+    exact = tuple(
+        item
+        for item in matches
+        if normalize_store_name(query)
+        in {normalize_store_name(value) for value in (item.name, *item.aliases)}
+    )
+    # Compatibility with repositories that used to mix exact and partial rows.
+    return (exact or matches), tuple(result.suggestions)
+
+
 def _search_view(repository, query, page, token):
-    result = repository.search(query, limit=_PAGE_SIZE, offset=page * _PAGE_SIZE)
-    merchants = result.matches or result.suggestions
-    if result.matches:
-        text = f"Магазины по запросу <b>{escape(query)}</b>. Выберите магазин:"
-    elif merchants:
+    matches, suggestions = _search_entities(repository, query)
+    entities = matches or suggestions
+    total = len(entities)
+    page = min(max(0, page), max(0, (total - 1) // _PAGE_SIZE))
+    shown = entities[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+    if matches:
+        text = f"Бренды по запросу <b>{escape(query)}</b>. Выберите бренд:"
+    elif suggestions:
         text = f"Точных совпадений для <b>{escape(query)}</b> нет. Возможно, вы имели в виду:"
     else:
-        text = f"Магазин <b>{escape(query)}</b> не найден. Можно добавить его вместе с MCC."
+        text = f"Бренд <b>{escape(query)}</b> не найден. Можно добавить его вместе с MCC."
     rows = [
-        [
-            InlineKeyboardButton(
-                f"{merchant.name} · {'онлайн' if merchant.channel == 'online' else 'магазины'}",
-                callback_data=f"store:show:{merchant.id}:0",
-            )
-        ]
-        for merchant in merchants
+        [InlineKeyboardButton(entity.name, callback_data=f"store:show:{entity.id}:0")]
+        for entity in shown
     ]
     navigation = []
     if page:
         navigation.append(
             InlineKeyboardButton("←", callback_data=f"store:search:{token}:{page - 1}")
         )
-    if (page + 1) * _PAGE_SIZE < result.total:
+    if (page + 1) * _PAGE_SIZE < total:
         navigation.append(
             InlineKeyboardButton("→", callback_data=f"store:search:{token}:{page + 1}")
         )
     if navigation:
         rows.append(navigation)
-    rows.append([InlineKeyboardButton("➕ Добавить магазин", callback_data="community:start")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "➕ Добавить новый бренд", callback_data=f"community:start:0:{token}"
+            )
+        ]
+    )
     return text, InlineKeyboardMarkup(rows)
 
 
 async def search_stores(
     update: Update, context: ContextTypes.DEFAULT_TYPE, query: str | None = None
 ) -> None:
-    """Search a supplied merchant name or a normal text message."""
+    """Search a supplied brand name or start a prefilled new-brand contribution."""
 
     message = update.effective_message
     if message is None:
@@ -133,18 +254,29 @@ async def search_stores(
             query = ""
     query = query.strip()
     if not query or len(query) > 180:
-        await message.reply_text("Укажите название магазина, например: Евроопт.")
+        await message.reply_text("Укажите название бренда, например: Евроопт.")
         return
     repository: StoreRepository = context.application.bot_data["stores"]
-    result = repository.search(query, limit=_PAGE_SIZE)
-    if len(result.matches) == 1 and result.total == 1:
-        text, keyboard = _merchant_view(
+    matches, suggestions = _search_entities(repository, query)
+    private = bool(update.effective_chat and update.effective_chat.type == "private")
+    if (
+        not matches
+        and not suggestions
+        and private
+        and context.application.bot_data.get("community")
+    ):
+        from .community_handlers import begin_contribution
+
+        await begin_contribution(update, context, name=query)
+        return
+    if len(matches) == 1:
+        text, keyboard = _brand_view(
             repository,
-            result.matches[0],
+            matches[0],
             0,
             context,
             update.effective_user.id if update.effective_user else None,
-            private=bool(update.effective_chat and update.effective_chat.type == "private"),
+            private=private,
         )
     else:
         token = secrets.token_hex(4)
@@ -156,8 +288,15 @@ async def search_stores(
     await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+def _parse_bounded_int(value: str, maximum: int = 10000) -> int | None:
+    if not value.isascii() or not value.isdecimal() or len(value) > 12:
+        return None
+    result = int(value)
+    return result if 0 <= result <= maximum else None
+
+
 async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Edit the originating merchant message; invalid/expired callbacks are inert."""
+    """Edit the originating brand message; invalid and expired callbacks are inert."""
 
     callback = update.callback_query
     if callback is None:
@@ -173,118 +312,131 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
         or not callback.message.is_accessible
     ):
         return
-    match = _CALLBACK.fullmatch(callback.data)
-    if match is None:
+    parts = callback.data.split(":")
+    if len(parts) < 2 or parts[0] != "store":
         return
-    kind, identifier, raw_mcc_or_page, raw_page, raw_details = match.groups()
     repository: StoreRepository = context.application.bot_data["stores"]
-    if kind == "search":
-        if raw_page is not None or raw_details is not None or raw_mcc_or_page is None:
+    kind = parts[1]
+    if kind == "search" and len(parts) == 4:
+        page = _parse_bounded_int(parts[3])
+        query = context.user_data.get("store_searches", {}).get(parts[2])
+        if query is None or page is None:
             return
-        query = context.user_data.get("store_searches", {}).get(identifier)
-        if query is None or int(raw_mcc_or_page) > 10000:
+        text, keyboard = _search_view(repository, query, page, parts[2])
+    elif kind == "show" and len(parts) == 4:
+        brand_id, page = _parse_bounded_int(parts[2], 10**12), _parse_bounded_int(parts[3])
+        if brand_id is None or not brand_id or page is None:
             return
-        text, keyboard = _search_view(repository, query, int(raw_mcc_or_page), identifier)
-    else:
-        if not identifier.isdigit() or len(identifier) > 12:
-            return
-        merchant = repository.get(int(identifier))
-        if merchant is None:
-            text, keyboard = "Магазин изменён или архивирован. Повторите поиск по названию.", None
-        elif kind == "show":
-            if raw_page is not None or raw_details is not None or raw_mcc_or_page is None:
-                return
-            text, keyboard = _merchant_view(
+        brand = _get_brand(repository, brand_id)
+        if brand is None:
+            text, keyboard = "Бренд изменён или архивирован. Повторите поиск по названию.", None
+        else:
+            text, keyboard = _brand_view(
                 repository,
-                merchant,
-                int(raw_mcc_or_page),
+                brand,
+                page,
                 context,
                 update.effective_user.id if update.effective_user else None,
                 private=bool(update.effective_chat and update.effective_chat.type == "private"),
             )
+    elif kind == "cards" and len(parts) in {6, 7}:
+        if len(parts) == 7:
+            brand_id = _parse_bounded_int(parts[2], 10**12)
+            channel, mcc, raw_page, raw_details = parts[3:]
+            brand = _get_brand(repository, brand_id) if brand_id else None
         else:
-            if (
-                raw_mcc_or_page is None
-                or len(raw_mcc_or_page) != 4
-                or raw_page is None
-                or raw_details is None
-                or int(raw_page) > 10000
-            ):
+            merchant_id = _parse_bounded_int(parts[2], 10**12)
+            merchant = repository.get(merchant_id) if merchant_id else None
+            brand = _brand_for_merchant(repository, merchant_id) if merchant_id else None
+            brand_id = brand.id if brand else None
+            channel = merchant.channel if merchant else ""
+            mcc, raw_page, raw_details = parts[3:]
+        page_index = _parse_bounded_int(raw_page)
+        if (
+            brand is None
+            or brand_id is None
+            or channel not in _CHANNELS
+            or len(mcc) != 4
+            or not mcc.isascii()
+            or not mcc.isdecimal()
+            or page_index is None
+            or raw_details not in {"0", "1"}
+        ):
+            return
+        facts = {fact.mcc: fact for fact in _brand_facts(repository, brand_id, channel)}
+        if mcc not in facts:
+            return
+        catalog = context.application.bot_data["catalog"]
+        prefix = _header(brand, channel) + f"\n<i>{_WARNING}</i>\n\n"
+        try:
+            pages = format_match_pages(
+                mcc,
+                catalog.lookup(mcc),
+                context.application.bot_data["descriptions"],
+                html=True,
+                max_length=3900 - len(prefix.encode("utf-16-le")) // 2,
+            )
+        except ValueError:
+            text = (
+                prefix + "Не удалось показать карты: запись слишком длинная. "
+                "Откройте информацию по картам через /start."
+            )
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("← К бренду", callback_data=f"store:show:{brand_id}:0")]]
+            )
+        else:
+            if page_index >= len(pages):
                 return
-            mcc, page_index, details = raw_mcc_or_page, int(raw_page), raw_details == "1"
-            if mcc not in {fact.mcc for fact in repository.list_mcc(merchant.id)}:
-                return
-            catalog = context.application.bot_data["catalog"]
-            prefix = _header(merchant) + f"\n<i>{_WARNING}</i>\n\n"
-            try:
-                pages = format_match_pages(
-                    mcc,
-                    catalog.lookup(mcc),
-                    context.application.bot_data["descriptions"],
-                    html=True,
-                    max_length=3900 - len(prefix.encode("utf-16-le")) // 2,
-                )
-            except ValueError:
-                text = prefix + "Не удалось показать карты: запись слишком длинная. Лимиты: /limits"
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "← MCC магазина", callback_data=f"store:show:{merchant.id}:0"
-                            )
-                        ]
-                    ]
-                )
-            else:
-                if page_index >= len(pages):
-                    return
-                text = prefix + (
-                    pages[page_index].expanded if details else pages[page_index].compact
-                )
-                rows = [
-                    [
-                        InlineKeyboardButton(
-                            "Скрыть подробности" if details else "🏦 Банки и минимальный платёж",
-                            callback_data=_card_callback(merchant.id, mcc, page_index, not details),
-                        )
-                    ]
+            details = raw_details == "1"
+            text = prefix + (pages[page_index].expanded if details else pages[page_index].compact)
+            rows = [
+                [
+                    InlineKeyboardButton(
+                        "Скрыть подробности" if details else "🏦 Банки и минимальный платёж",
+                        callback_data=_card_callback(
+                            brand_id, channel, mcc, page_index, not details
+                        ),
+                    )
                 ]
-                navigation = []
-                if page_index:
-                    navigation.append(
-                        InlineKeyboardButton(
-                            "←",
-                            callback_data=_card_callback(merchant.id, mcc, page_index - 1, details),
-                        )
+            ]
+            navigation = []
+            if page_index:
+                navigation.append(
+                    InlineKeyboardButton(
+                        "←",
+                        callback_data=_card_callback(
+                            brand_id, channel, mcc, page_index - 1, details
+                        ),
                     )
-                if len(pages) > 1:
-                    navigation.append(
-                        InlineKeyboardButton(
-                            f"{page_index + 1}/{len(pages)}",
-                            callback_data=_card_callback(merchant.id, mcc, page_index, details),
-                        )
-                    )
-                if page_index + 1 < len(pages):
-                    navigation.append(
-                        InlineKeyboardButton(
-                            "→",
-                            callback_data=_card_callback(merchant.id, mcc, page_index + 1, details),
-                        )
-                    )
-                if navigation:
-                    rows.append(navigation)
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            "← MCC магазина", callback_data=f"store:show:{merchant.id}:0"
-                        )
-                    ]
                 )
-                keyboard = InlineKeyboardMarkup(rows)
+            if len(pages) > 1:
+                navigation.append(
+                    InlineKeyboardButton(
+                        f"{page_index + 1}/{len(pages)}",
+                        callback_data=_card_callback(brand_id, channel, mcc, page_index, details),
+                    )
+                )
+            if page_index + 1 < len(pages):
+                navigation.append(
+                    InlineKeyboardButton(
+                        "→",
+                        callback_data=_card_callback(
+                            brand_id, channel, mcc, page_index + 1, details
+                        ),
+                    )
+                )
+            if navigation:
+                rows.append(navigation)
+            rows.append(
+                [InlineKeyboardButton("← К бренду", callback_data=f"store:show:{brand_id}:0")]
+            )
+            keyboard = InlineKeyboardMarkup(rows)
+    else:
+        return
     try:
         await callback.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     except BadRequest as exc:
         if "message is not modified" not in str(exc).casefold():
-            LOGGER.info("Could not edit merchant message")
+            LOGGER.info("Could not edit brand message")
     except (TelegramError, TypeError):
-        LOGGER.info("Merchant message is no longer accessible")
+        LOGGER.info("Brand message is no longer accessible")

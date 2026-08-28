@@ -43,21 +43,31 @@ Linux uses `.venv/bin/python` instead of the Windows path.
 
 ## Telegram usage
 
-Only `/start` and `/limits` are supported commands. `/help` and `/mcc` have been
-removed. Send `5411` as a normal message for an MCC lookup; leading zeros such
+Only `/start` is registered as a Telegram command. Card limits remain available
+through the `ℹ️ Информация по картам` menu button. `/help` and `/mcc` are not part
+of the command menu. Send `5411` as a normal message for an MCC lookup; leading
+zeros such
 as `0742` are preserved. Digit-only input of another length gets a format hint.
 Other text, including `MCC 5411`, `Евроопт`, `А-100` and `21 век`, searches the
 merchant directory. Menu buttons and active form steps take precedence over search.
 Search also accepts Belarusian `і`/Russian `и` keyboard variants and conservative
 cross-script pronunciation such as `Green`/`грин`. These search keys never change
 source identity or automatically merge similar stores.
-`/limits` immediately lists the minimum eligible payment and maximum reward for
-every card; it does not change how subsequent messages are interpreted.
+The information button immediately lists the minimum eligible payment and maximum
+reward for every card; it does not change how subsequent messages are interpreted.
 
 Merchant lookup always shows MCC buttons first, even for a single known code.
 Choosing a code edits that message into the ranked card list, with in-place
-details, pagination and a return button. Physical shops and online apps are
-separate payment channels. Similar names are suggestions, never automatic merges.
+details, pagination and a return button. Search results are canonical brands:
+official names and aliases open one card, while confirmed physical-shop and
+online-payment variants are grouped into separate sections inside it. Empty
+sections are not shown. Similar names are suggestions, never automatic merges,
+and imported source records keep their exact source identities.
+
+An MCC belongs to one confirmed payment channel and may have a short public note,
+for example `MCC 5411 · Оплата товаров на Европочте`. The reviewer-only comment is
+stored separately and is never displayed on the public brand card. A screenshot
+is optional; proposals without one are explicitly marked for reviewers.
 
 Each result message with matching cards has a `🏦 Банки и минимальный платёж`
 button. It edits that message to show bank names, minimum eligible payments,
@@ -69,7 +79,7 @@ each with its own button, so opening details does not send additional messages.
 MCC replies use bold headings and card names, and italic bank names.
 All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,44%)`,
 and `1% + 3% баллами`. Both views keep the same layout and card order. Catalog
-text is escaped for Telegram HTML; the local CLI and `/limits` stay plain text.
+text is escaped for Telegram HTML; the local CLI and information view stay plain text.
 
 `var/users.sqlite3` stores Telegram chat IDs and first/last-seen timestamps for
 operator broadcasts. The separate merchant/community database also stores
@@ -213,8 +223,8 @@ explicit unlimited monthly cap such as
 `{"unlimited": true, "unit": "currency", "currency": "BYN"}`. These terms
 are validated catalog metadata. MCC-only lookup does not filter by transaction
 amount. MCC lookup starts compact, with card names and rewards; its detail button
-shows the matching programs' payment thresholds and caps. The separate `/limits`
-command renders minimum eligible payments and maximum rewards for all cards.
+shows the matching programs' payment thresholds and caps. The information button
+renders minimum eligible payments and maximum rewards for all cards.
 Missing maximums are shown explicitly as unspecified.
 
 `maximum_reward_alternatives` stores additional account-currency caps when one
@@ -225,8 +235,8 @@ domestic offer because a four-digit MCC contains no country information; the
 foreign rate remains available as validated catalog metadata.
 
 Card-level `reward_limits` stores exact non-monthly restrictions such as a
-weekly or per-transaction cap. `/limits` shows these alongside the monthly
-maximum instead of converting them into an inaccurate monthly estimate.
+weekly or per-transaction cap. The information view shows these alongside the
+monthly maximum instead of converting them into an inaccurate monthly estimate.
 `monthly_maximum_not_defined: true` distinguishes an officially absent monthly
 cap from catalog data that is still unknown.
 Оплати has a 3 BYN minimum payment and a 20 BYN weekly reward cap, with no
@@ -244,7 +254,8 @@ points are tax-free and only the remainder is reduced by 13%. Thus 3% becomes
 `3% (2,87%)` and a tax-exempt 3% points reward remains
 `3% баллами`. Points rewards are always marked with `баллами`. Display uses
 comma decimals and never prints raw catalog notes. For stacked cash and points
-programs, `/limits` renders their payment thresholds and maximums separately.
+programs, the information view renders their payment thresholds and maximums
+separately.
 Typed conditions remain in the catalog for validation and future filtering, but
 the user-facing answer does not render those internal conditions or raw notes.
 
@@ -301,6 +312,17 @@ database file without its WAL is not a safe backup. Set the owner ID before the
 first start of this version. Confirm startup and bot health before announcing
 the update. Send one short Russian user-facing broadcast following `AGENTS.md`,
 including `/start` if the menu needs refreshing, and report failed deliveries.
+
+The reviewed merchant table supplied on 2026-08-28 is applied through the
+repository as one transaction after the code migration:
+
+```bash
+mcc-apply-curated-stores-20260828 --database /srv/bots/mcc-bot/var/stores.sqlite3
+```
+
+The command reads the audit actor from `BOT_OWNER_TELEGRAM_ID`, validates the
+expected source rows before changing anything, and is safe to run again. Its
+evidence keys are derived from each source image hash and visual row number.
 
 ## Tests and checks
 

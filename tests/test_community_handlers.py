@@ -1,5 +1,8 @@
 """Telegram-visible workflow tests with real state and mocked network calls."""
 
+# Russian UI copy and ordinary Unicode buttons are intentional.
+# ruff: noqa: RUF001
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -106,9 +109,9 @@ def merchant(flow, name="Shop", mcc="5411"):
 def proposal_flow(flow, *, user=10):
     send(flow, SUGGEST, user)
     send(flow, "New shop", user)
-    draft_click(flow, "new", user)
     draft_click(flow, "channel:offline", user)
     send(flow, "5411", user)
+    draft_click(flow, "preview:evidence", user)
     screenshot(flow, user)
     draft_click(flow, "submit", user)
     return flow.application.bot_data["community"].own_proposals(user)[0]
@@ -141,25 +144,26 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     current = service.draft(10)
     event = update()
     asyncio.run(show_menu(event, flow))
-    assert (
-        "четырёхзначный MCC или название магазина"
-        in event.effective_message.reply_text.await_args_list[0].args[0]
+    assert any(
+        "четырёхзначный MCC или название магазина" in call.args[0]
+        for call in event.effective_message.reply_text.await_args_list
     )
     assert service.draft(10) == current
     assert any(button.text == "Продолжить" for button in all_buttons(event))
 
 
-def test_user_flow_requires_screenshot_preview_and_submit(flow):
+def test_user_flow_allows_no_screenshot_preview_and_submit(flow):
     send(flow, SUGGEST)
     send(flow, "New shop")
-    draft_click(flow, "new")
     draft_click(flow, "channel:offline")
     send(flow, "5411")
     service = flow.application.bot_data["community"]
-    blocked = draft_click(flow, "skip")
-    assert "скриншот" in blocked.effective_message.reply_text.await_args.args[0]
-    assert service.draft(10).stage == "evidence"
-    preview = screenshot(flow)
+    draft_click(flow, "preview:note")
+    send(flow, "У кассы")
+    assert service.draft(10).data["payload"]["note"] == "У кассы"
+    draft_click(flow, "preview:evidence")
+    preview = draft_click(flow, "skip")
+    assert "Без скриншота" in preview.effective_message.reply_text.await_args.args[0]
     assert any(button.text == "Отправить на проверку" for button in all_buttons(preview))
     draft = service.draft(10)
     action = f"d:{draft.id}:{draft.version}:submit"
@@ -172,10 +176,9 @@ def test_user_flow_requires_screenshot_preview_and_submit(flow):
 def test_admin_direct_save_optional_screenshot(flow):
     send(flow, ADD, 2)
     send(flow, "Trusted shop", 2)
-    draft_click(flow, "new", 2)
     draft_click(flow, "channel:online", 2)
     send(flow, "5812", 2)
-    draft_click(flow, "skip", 2)
+    draft_click(flow, "preview:comment", 2)
     event = draft_click(flow, "skip", 2)
     assert any(button.text == "Сохранить в базу" for button in all_buttons(event))
     draft_click(flow, "submit", 2)
@@ -186,9 +189,11 @@ def test_admin_direct_save_optional_screenshot(flow):
 
 def test_context_preselection_and_global_button_starts_from_scratch(flow):
     merchant_id = merchant(flow)
-    click(flow, f"start:{merchant_id}")
     service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"start:{brand_id}:offline")
     assert service.draft(10).data["merchant_id"] == merchant_id
+    assert service.draft(10).stage == "mcc"
     send(flow, SUGGEST)
     assert service.draft(10).stage == "name"
     assert "merchant_id" not in service.draft(10).data
@@ -218,11 +223,12 @@ def test_user_cannot_borrow_another_draft_callback(flow):
 
 def test_revoked_reviewer_stale_preview_cannot_save(flow):
     merchant_id = merchant(flow)
-    click(flow, f"edit:{merchant_id}", 2)
-    draft_click(flow, "operation:rename_merchant", 2)
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"edit:{brand_id}", 2)
+    draft_click(flow, "operation:rename_brand", 2)
     send(flow, "Changed name", 2)
     draft_click(flow, "skip", 2)
-    service = flow.application.bot_data["community"]
     draft = service.draft(2)
     service.set_role(1, 2, False)
     click(flow, f"d:{draft.id}:{draft.version}:submit", 2)
@@ -302,9 +308,9 @@ def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
 def test_media_bounds_document_rejection_privacy_and_unavailable_photo(flow):
     send(flow, SUGGEST)
     send(flow, "Shop")
-    draft_click(flow, "new")
     draft_click(flow, "channel:offline")
     send(flow, "5411")
+    draft_click(flow, "preview:evidence")
     event = screenshot(flow, size=11 * 1024 * 1024)
     assert "10 МБ" in event.effective_message.reply_text.await_args.args[0]
     event = update(document=SimpleNamespace(mime_type="image/png", file_id="doc", file_size=100))
@@ -322,57 +328,49 @@ def test_media_bounds_document_rejection_privacy_and_unavailable_photo(flow):
     assert "недоступен" in event.effective_message.reply_text.await_args.args[0]
 
 
-@pytest.mark.parametrize(
-    "operation", ["add_mcc", "replace_mcc", "rename_merchant", "merge_merchant"]
-)
-def test_unified_report_contains_and_opens_each_operation(flow, operation):
+def test_public_brand_report_only_offers_add_or_confirm_mcc(flow):
     merchant_id = merchant(flow)
-    event = click(flow, f"report:{merchant_id}")
-    assert (
-        len([button for button in all_buttons(event) if "operation:" in button.callback_data]) == 4
-    )
-    draft_click(flow, "operation:" + operation)
     service = flow.application.bot_data["community"]
-    assert service.draft(10).data["kind"] == operation
-    if operation == "replace_mcc":
-        draft_click(flow, "old:5411")
-        send(flow, "5812")
-        screenshot(flow)
-        draft_click(flow, "submit")
-        proposal = service.own_proposals(10)[0]
-        assert proposal.kind == "replace_mcc"
-        assert proposal.payload == {"merchant_id": merchant_id, "old_mcc": "5411", "mcc": "5812"}
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    event = click(flow, f"report:{brand_id}")
+    operations = [button for button in all_buttons(event) if "operation:" in button.callback_data]
+    assert [button.text for button in operations] == ["Добавить или подтвердить MCC"]
+    draft_click(flow, "operation:add_mcc")
+    assert service.draft(10).data["kind"] == "add_mcc"
 
 
 @pytest.mark.parametrize(
     "operation,value,expected",
     [
-        ("rename_merchant", "New name", "New name"),
-        ("aliases", "Alias one, Alias two", ("Alias one", "Alias two")),
+        ("rename_brand", "New name", "New name"),
+        ("brand_aliases", "Alias one, Alias two", ("Alias one", "Alias two")),
     ],
 )
 def test_editor_name_and_alias_changes_require_preview(flow, operation, value, expected):
     merchant_id = merchant(flow)
-    click(flow, f"edit:{merchant_id}", 2)
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"edit:{brand_id}", 2)
     draft_click(flow, "operation:" + operation, 2)
     send(flow, value, 2)
     draft_click(flow, "skip", 2)
-    service = flow.application.bot_data["community"]
-    assert service.stores.get(merchant_id).name == "Shop"
+    assert service.stores.get_brand(brand_id).name == "Shop"
     draft_click(flow, "submit", 2)
-    result = service.stores.get(merchant_id)
-    assert (result.name if operation == "rename_merchant" else result.aliases) == expected
+    result = service.stores.get_brand(brand_id)
+    assert (result.name if operation == "rename_brand" else result.aliases) == expected
 
 
 def test_editor_archive_history_and_safe_undo(flow):
     merchant_id = merchant(flow)
-    click(flow, f"edit:{merchant_id}", 2)
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"edit:{brand_id}", 2)
     draft_click(flow, "operation:archive_mcc", 2)
+    draft_click(flow, "fact_channel:offline", 2)
     draft_click(flow, "old:5411", 2)
     draft_click(flow, "submit", 2)
-    service = flow.application.bot_data["community"]
     assert not service.stores.list_mcc(merchant_id)
-    click(flow, f"edit:{merchant_id}", 2)
+    click(flow, f"edit:{brand_id}", 2)
     history = draft_click(flow, "history", 2)
     assert "Убран из поиска MCC: 5411" in history.effective_message.reply_text.await_args.args[0]
     last = service.stores.history(merchant_id)[0]
@@ -381,20 +379,26 @@ def test_editor_archive_history_and_safe_undo(flow):
     assert service.stores.list_mcc(merchant_id)[0].mcc == "5411"
 
 
-def test_editor_merge_and_archive_store(flow):
+def test_editor_merge_brands_and_archive_channel(flow):
     source = merchant(flow, "Source")
     target = merchant(flow, "Target", "5812")
-    click(flow, f"edit:{source}", 2)
-    draft_click(flow, "operation:merge_merchant", 2)
+    service = flow.application.bot_data["community"]
+    source_brand = service.stores.brand_for_merchant(source).id
+    target_brand = service.stores.brand_for_merchant(target).id
+    click(flow, f"edit:{source_brand}", 2)
+    draft_click(flow, "operation:merge_brand", 2)
     send(flow, "Target", 2)
-    draft_click(flow, f"select:{target}", 2)
+    draft_click(flow, f"select:{target_brand}", 2)
     draft_click(flow, "skip", 2)
     draft_click(flow, "submit", 2)
-    service = flow.application.bot_data["community"]
-    assert not service.stores.get(source)
-    assert {item.mcc for item in service.stores.list_mcc(target)} == {"5411", "5812"}
-    click(flow, f"edit:{target}", 2)
-    draft_click(flow, "operation:archive_merchant", 2)
+    assert not service.stores.get_brand(source_brand)
+    assert {item.mcc for item in service.stores.list_brand_mcc(target_brand)} == {
+        "5411",
+        "5812",
+    }
+    click(flow, f"edit:{target_brand}", 2)
+    draft_click(flow, "operation:channels", 2)
+    draft_click(flow, f"archive_member:{target}", 2)
     draft_click(flow, "submit", 2)
     assert not service.stores.get(target)
 
@@ -420,45 +424,50 @@ def test_callback_numeric_ids_are_bounded_before_sqlite(flow, action):
 
 def test_channel_back_navigation_restores_existing_merchant(flow):
     merchant_id = merchant(flow)
-    click(flow, f"start:{merchant_id}")
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"start:{brand_id}")
     draft_click(flow, "channel:online")
     draft_click(flow, "back")
     draft_click(flow, "channel:offline")
     send(flow, "5812")
+    draft_click(flow, "preview:evidence")
     screenshot(flow)
-    service = flow.application.bot_data["community"]
     draft = service.draft(10)
     assert draft.data["kind"] == "add_mcc"
-    assert draft.data["payload"] == {"merchant_id": merchant_id, "mcc": "5812"}
+    assert draft.data["payload"] == {"merchant_id": merchant_id, "mcc": "5812", "note": ""}
 
 
 def test_back_out_of_report_starts_new_contribution_without_stale_state(flow):
     merchant_id = merchant(flow)
-    click(flow, f"report:{merchant_id}")
-    draft_click(flow, "operation:replace_mcc")
-    draft_click(flow, "old:5411")
-    for _ in range(3):
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"report:{brand_id}")
+    draft_click(flow, "operation:add_mcc")
+    for _ in range(2):
         draft_click(flow, "back")
     send(flow, "New merchant")
-    draft_click(flow, "new")
     draft_click(flow, "channel:offline")
     send(flow, "5812")
+    draft_click(flow, "preview:evidence")
     screenshot(flow)
     assert flow.application.bot_data["community"].draft(10).data["kind"] == "add_merchant"
 
 
 def test_archived_store_is_recoverable_from_management_history(flow):
     merchant_id = merchant(flow)
-    click(flow, f"edit:{merchant_id}", 2)
-    draft_click(flow, "operation:archive_merchant", 2)
-    draft_click(flow, "submit", 2)
     service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"edit:{brand_id}", 2)
+    draft_click(flow, "operation:channels", 2)
+    draft_click(flow, f"archive_member:{merchant_id}", 2)
+    draft_click(flow, "submit", 2)
     assert service.stores.get(merchant_id) is None
     event = click(flow, "recent", 2)
     assert any(
-        button.callback_data == f"community:history:{merchant_id}" for button in all_buttons(event)
+        button.callback_data == f"community:history:{brand_id}" for button in all_buttons(event)
     )
-    click(flow, f"history:{merchant_id}", 2)
+    click(flow, f"history:{brand_id}", 2)
     audit_id = service.stores.history(merchant_id)[0].id
     draft_click(flow, f"undo:{audit_id}", 2)
     draft_click(flow, "submit", 2)
@@ -607,9 +616,10 @@ def test_replace_and_owned_screenshot_extend_but_other_reviewer_does_not(flow, m
     service = flow.application.bot_data["community"]
     service.set_role(1, 3, True)
     merchant_id = merchant(flow)
-    click(flow, f"start:{merchant_id}")
-    draft_click(flow, "channel:offline")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"start:{brand_id}:offline")
     send(flow, "5812")
+    draft_click(flow, "preview:evidence")
     screenshot(flow)
     draft_click(flow, "submit")
     proposal = service.own_proposals(10)[0]

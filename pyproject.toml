@@ -27,6 +27,7 @@ mcc-bot = "mcc_bot.bot:main"
 mcc-check = "mcc_bot.cli:main"
 mcc-broadcast = "mcc_bot.broadcast:main"
 mcc-import-stores = "mcc_bot.import_stores:main"
+mcc-apply-curated-stores-20260828 = "mcc_bot.curated_stores_20260828:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcc_bot"]

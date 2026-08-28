@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from mcc_bot.stores import StaleChangeError, StoreError, StoreRepository, normalize_store_name
@@ -61,15 +63,8 @@ def test_cross_script_brand_pronunciation_is_search_only_and_ranked(repository):
 
     cyrillic = add(repository, name="Грин", mcc=None)
     result = repository.search("грин")
-    assert [merchant.id for merchant in result.matches] == [
-        cyrillic.merchant_id,
-        green.merchant_id,
-    ]
-    assert [merchant.id for merchant in repository.search("Green").matches] == [
-        green.merchant_id,
-        cyrillic.merchant_id,
-        longer.merchant_id,
-    ]
+    assert [brand.id for brand in result.matches] == [cyrillic.brand_id]
+    assert [brand.id for brand in repository.search("Green").matches] == [green.brand_id]
 
 
 def test_relaxed_transliteration_does_not_cross_same_script_or_short_names(repository):
@@ -370,3 +365,330 @@ def test_history_filtered_pagination_shares_transaction_and_keeps_limit_clamp(re
 def test_history_rejects_noninteger_offsets(repository, offset):
     with pytest.raises(StoreError):
         repository.history(offset=offset)
+
+
+def test_additive_brand_migration_is_idempotent_and_preserves_every_legacy_id(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE store_merchants (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, channel TEXT NOT NULL,
+          aliases_json TEXT NOT NULL DEFAULT '[]', archived INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL DEFAULT 1, merged_into INTEGER, source_identity TEXT UNIQUE
+        );
+        CREATE TABLE store_facts (
+          id INTEGER PRIMARY KEY, merchant_id INTEGER NOT NULL, mcc TEXT NOT NULL,
+          archived INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(merchant_id,mcc)
+        );
+        CREATE TABLE store_evidence (
+          id INTEGER PRIMARY KEY, fact_id INTEGER NOT NULL, source TEXT NOT NULL,
+          source_key TEXT NOT NULL, details_json TEXT NOT NULL,
+          revoked INTEGER NOT NULL DEFAULT 0, UNIQUE(source,source_key)
+        );
+        CREATE TABLE store_sources (
+          id INTEGER PRIMARY KEY, source TEXT NOT NULL, store_id TEXT NOT NULL,
+          merchant_id INTEGER NOT NULL, network_id TEXT, metadata_json TEXT NOT NULL,
+          UNIQUE(source,store_id)
+        );
+        CREATE TABLE store_audit (
+          id INTEGER PRIMARY KEY, kind TEXT NOT NULL, merchant_id INTEGER NOT NULL,
+          actor_id INTEGER NOT NULL, changes_json TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reverted_by INTEGER
+        );
+        INSERT INTO store_merchants(id,name,channel,aliases_json,revision)
+          VALUES(17,'Legacy','offline','["Old"]',4);
+        INSERT INTO store_facts(id,merchant_id,mcc,revision) VALUES(41,17,'5411',3);
+        INSERT INTO store_evidence(id,fact_id,source,source_key,details_json)
+          VALUES(53,41,'legacy','key','{}');
+        INSERT INTO store_sources(id,source,store_id,merchant_id,metadata_json)
+          VALUES(61,'legacy','store',17,'{}');
+        INSERT INTO store_audit(id,kind,merchant_id,actor_id,changes_json)
+          VALUES(71,'legacy',17,987,'[]');
+        """
+    )
+    connection.close()
+
+    repository = StoreRepository(path)
+    repository.initialize()
+    repository.initialize()
+
+    with repository.connection() as connection:
+        assert connection.execute("SELECT id FROM store_merchants").fetchall()[0][0] == 17
+        assert tuple(connection.execute("SELECT id,note FROM store_facts").fetchone()) == (41, "")
+        assert connection.execute("SELECT id FROM store_evidence").fetchall()[0][0] == 53
+        assert connection.execute("SELECT id FROM store_sources").fetchall()[0][0] == 61
+        assert tuple(connection.execute("SELECT id,actor_id FROM store_audit").fetchone()) == (
+            71,
+            987,
+        )
+        assert tuple(connection.execute("SELECT id,name FROM store_brands").fetchone()) == (
+            17,
+            "Legacy",
+        )
+        assert tuple(
+            connection.execute("SELECT brand_id,merchant_id FROM store_brand_members").fetchone()
+        ) == (17, 17)
+        assert (
+            connection.execute("SELECT brand_id FROM store_audit WHERE id=71").fetchone()[0] == 17
+        )
+
+
+def test_brand_search_uses_first_nonempty_tier_and_exact_alias(repository):
+    mila = add(repository, name="Мила", mcc=None)
+    milavitsa = add(repository, name="Милавица", mcc=None)
+    repository.apply_change(
+        "brand_aliases", {"brand_id": mila.brand_id, "aliases": ["Mila Shop"]}, 5
+    )
+
+    assert [brand.id for brand in repository.search("мила").matches] == [mila.brand_id]
+    assert milavitsa.brand_id not in {brand.id for brand in repository.search("мила").matches}
+    assert [brand.id for brand in repository.search("Mila Shop").matches] == [mila.brand_id]
+
+
+def test_brand_groups_members_and_keeps_same_mcc_separate_between_channels(repository):
+    offline = add(repository, name="Brand", channel="offline", mcc=None)
+    online = repository.apply_change(
+        "add_merchant",
+        {"name": "Brand app", "channel": "online", "brand_id": offline.brand_id},
+        2,
+    )
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": offline.merchant_id, "mcc": "5411", "note": "касса"},
+        3,
+    )
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": online.merchant_id, "mcc": "5411", "note": "приложение"},
+        4,
+    )
+
+    assert repository.list_brand_channels(offline.brand_id) == {
+        "offline": (repository.get(offline.merchant_id),),
+        "online": (repository.get(online.merchant_id),),
+    }
+    grouped = repository.list_brand_mcc(offline.brand_id)
+    assert [(item.channel, item.mcc, item.note) for item in grouped] == [
+        ("offline", "5411", "касса"),
+        ("online", "5411", "приложение"),
+    ]
+
+
+def test_add_member_harmonizes_note_after_inserting_its_fact(repository):
+    target = add(repository, name="Brand", mcc=None)
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": target.merchant_id, "mcc": "5411", "note": "первая"},
+        1,
+    )
+
+    with pytest.raises(StoreError, match="выберите одно вручную"):
+        repository.apply_change(
+            "add_merchant",
+            {
+                "name": "Conflicting branch",
+                "channel": "offline",
+                "brand_id": target.brand_id,
+                "mcc": "5411",
+                "note": "другая",
+            },
+            2,
+        )
+    assert repository.find_exact("Conflicting branch", "offline") == ()
+
+    adopted = repository.apply_change(
+        "add_merchant",
+        {
+            "name": "Matching branch",
+            "channel": "offline",
+            "brand_id": target.brand_id,
+            "mcc": "5411",
+        },
+        3,
+    )
+    assert repository.list_mcc(adopted.merchant_id)[0].note == "первая"
+
+
+def test_brand_search_ignores_names_of_archived_members(repository):
+    active = add(repository, name="Canonical", mcc=None)
+    obsolete = repository.apply_change(
+        "add_merchant",
+        {"name": "Obsolete branch", "channel": "online", "brand_id": active.brand_id},
+        1,
+    )
+    repository.apply_change("archive_merchant", {"merchant_id": obsolete.merchant_id}, actor_id=2)
+
+    assert repository.search("Canonical").matches[0].id == active.brand_id
+    assert repository.search("Obsolete branch").matches == ()
+
+
+def test_brand_merge_adopts_note_and_conflicting_notes_require_manual_edit(repository):
+    target = add(repository, name="Target", mcc=None)
+    source = add(repository, name="Source", mcc=None)
+    repository.apply_change("add_mcc", {"merchant_id": target.merchant_id, "mcc": "5411"}, 1)
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": source.merchant_id, "mcc": "5411", "note": "продукты"},
+        2,
+    )
+    repository.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, 3
+    )
+    assert repository.list_mcc(target.merchant_id)[0].note == "продукты"
+    assert repository.list_brand_mcc(target.brand_id)[0].merchant_ids == (
+        target.merchant_id,
+        source.merchant_id,
+    )
+
+    conflict = add(repository, name="Conflict", mcc=None)
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": conflict.merchant_id, "mcc": "5411", "note": "супермаркет"},
+        4,
+    )
+    with pytest.raises(StoreError, match="выберите одно вручную"):
+        repository.apply_change(
+            "merge_brand", {"brand_id": conflict.brand_id, "target_id": target.brand_id}, 5
+        )
+    assert repository.brand_for_merchant(conflict.merchant_id).id == conflict.brand_id
+
+    repository.apply_change(
+        "edit_mcc_note",
+        {"merchant_id": conflict.merchant_id, "mcc": "5411", "note": "продукты"},
+        6,
+    )
+    repository.apply_change(
+        "merge_brand", {"brand_id": conflict.brand_id, "target_id": target.brand_id}, 7
+    )
+    assert repository.list_brand_mcc(target.brand_id)[0].note == "продукты"
+
+
+def test_note_validation_replace_and_audited_group_edit(repository):
+    merchant = add(repository, mcc=None)
+    with pytest.raises(StoreError, match="48"):
+        repository.apply_change(
+            "add_mcc",
+            {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "x" * 49},
+            1,
+        )
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "old"},
+        2,
+    )
+    edit = repository.apply_change(
+        "edit_mcc_note",
+        {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "new"},
+        77,
+    )
+    assert repository.list_mcc(merchant.merchant_id)[0].note == "new"
+    entry = repository.history(merchant.merchant_id)[0]
+    assert entry.id == edit.audit_id
+    assert entry.actor_id == 77
+    assert "Примечание MCC 5411" in "\n".join(entry.details)
+    repository.apply_change(
+        "replace_mcc",
+        {
+            "merchant_id": merchant.merchant_id,
+            "old_mcc": "5411",
+            "mcc": "5812",
+            "note": "restaurant",
+        },
+        3,
+    )
+    assert repository.list_mcc(merchant.merchant_id)[0].note == "restaurant"
+
+
+def test_merchant_merge_reconciles_brand_and_brand_history_preserves_actors(repository):
+    source = repository.apply_change("add_merchant", {"name": "Duplicate"}, 11)
+    target = repository.apply_change("add_merchant", {"name": "Canonical"}, 22)
+    repository.apply_change(
+        "rename_merchant", {"merchant_id": source.merchant_id, "name": "Duplicate old"}, 33
+    )
+    repository.apply_change(
+        "merge_merchant",
+        {"merchant_id": source.merchant_id, "target_id": target.merchant_id},
+        44,
+    )
+
+    assert repository.get(source.merchant_id) is None
+    assert repository.brand_for_merchant(source.merchant_id).id == target.brand_id
+    assert repository.get_brand(source.brand_id) is None
+    assert repository.get_brand(source.brand_id, include_archived=True).archived
+    assert {entry.actor_id for entry in repository.brand_history(target.brand_id)} >= {
+        11,
+        22,
+        33,
+        44,
+    }
+
+
+def test_curated_confirmation_is_transactional_deterministic_and_idempotent(repository):
+    first = add(repository, name="First", mcc=None)
+    second = add(repository, name="Second", mcc=None)
+    key = "a" * 64 + ":7"
+    evidence = {"image_sha256": "a" * 64, "row_number": 7}
+
+    added = repository.confirm_mcc(
+        first.merchant_id,
+        "5411",
+        actor_id=500,
+        source="curated-image",
+        source_key=key,
+        evidence=evidence,
+        note="grocery",
+    )
+    assert added.audit_id
+    assert (
+        repository.confirm_mcc(
+            first.merchant_id,
+            "5411",
+            actor_id=500,
+            source="curated-image",
+            source_key=key,
+            evidence=evidence,
+            note="grocery",
+        ).audit_id
+        == 0
+    )
+    before = repository.history()
+    with pytest.raises(StoreError), repository.transaction() as connection:
+        repository.confirm_mcc(
+            second.merchant_id,
+            "5812",
+            actor_id=500,
+            source="curated-image",
+            source_key="b" * 64 + ":1",
+            connection=connection,
+        )
+        repository.confirm_mcc(
+            second.merchant_id,
+            "5999",
+            actor_id=500,
+            source="curated-image",
+            source_key=key,
+            connection=connection,
+        )
+    assert not repository.list_mcc(second.merchant_id)
+    assert repository.history() == before
+
+
+def test_import_keeps_strict_source_brands_despite_similar_names(repository):
+    first = repository.import_store(source_metadata(store_id=1, network_id=10), source_evidence())
+    second_metadata = source_metadata(store_id=2, network_id=20)
+    second_metadata["network_name"] = "EURO OPT"
+    second = repository.import_store(second_metadata, source_evidence())
+
+    assert first.merchant_id != second.merchant_id
+    assert first.brand_id != second.brand_id
+    assert len(repository.search("Euroopt").matches) == 2
+    with repository.connection() as connection:
+        links = connection.execute(
+            "SELECT store_id,merchant_id,network_id FROM store_sources ORDER BY id"
+        ).fetchall()
+        assert [tuple(row) for row in links] == [
+            ("1", first.merchant_id, "10"),
+            ("2", second.merchant_id, "20"),
+        ]

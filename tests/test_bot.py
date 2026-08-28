@@ -14,7 +14,6 @@ from telegram.ext import CallbackQueryHandler, CommandHandler
 from mcc_bot.bot import (
     _configure_bot_commands,
     build_application,
-    limits_command,
     lookup_text,
     remember_chat,
     start,
@@ -107,41 +106,18 @@ def test_removed_commands_only_explain_supported_input(catalog_path, text):
         )
     )
     result = message.reply_text.await_args.args[0]
-    assert "/start" in result and "/limits" in result
+    assert "/start" in result and "Информация по картам" in result
     assert "Alpha Card" not in result and "Beta Card" not in result
 
 
-def test_limits_replies_immediately_and_does_not_change_number_lookup(catalog_path) -> None:
-    catalog = CardCatalog.from_file(catalog_path)
-    context = _context(catalog)
-    limits_message = SimpleNamespace(reply_text=AsyncMock())
-
-    asyncio.run(limits_command(SimpleNamespace(effective_message=limits_message), context))
-
-    limits_result = limits_message.reply_text.await_args.args[0]
-    assert "📊 Лимиты по картам" in limits_result
-    assert "Alpha Card" in limits_result
-    assert "parse_mode" not in limits_message.reply_text.await_args.kwargs
-
-    lookup_message = SimpleNamespace(text="5411", reply_text=AsyncMock())
-    asyncio.run(lookup_text(SimpleNamespace(effective_message=lookup_message), context))
-
-    lookup_result = lookup_message.reply_text.await_args.args[0]
-    assert "MCC 5411" in lookup_result
-    assert "Лимиты по картам" not in lookup_result
-
-
-def test_command_menu_lists_start_and_limits_with_russian_descriptions() -> None:
+def test_command_menu_lists_only_start_with_russian_description() -> None:
     set_commands = AsyncMock()
     application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_commands))
 
     asyncio.run(_configure_bot_commands(application))
 
     set_commands.assert_awaited_once_with(
-        [
-            BotCommand(command="start", description="Начало и меню"),
-            BotCommand(command="limits", description="Лимиты по картам"),
-        ]
+        [BotCommand(command="start", description="Начало и меню")]
     )
 
 
@@ -472,7 +448,7 @@ def test_oversized_card_gives_explicit_bounded_reply_without_losing_cards_silent
 
     message.reply_text.assert_awaited_once()
     assert "слишком длинные" in message.reply_text.await_args.args[0]
-    assert "/limits" in message.reply_text.await_args.args[0]
+    assert "Информация по картам" in message.reply_text.await_args.args[0]
     assert "reply_markup" not in message.reply_text.await_args.kwargs
 
     query = _callback("mcc_details:5411:0:1")
@@ -505,7 +481,7 @@ def test_application_registers_details_callback_handler(catalog_path, tmp_path) 
         if isinstance(handler, CommandHandler)
         for command in handler.commands
     }
-    assert commands == {"start", "limits"}
+    assert commands == {"start"}
     patterns = {
         handler.pattern.pattern
         for handler in handlers

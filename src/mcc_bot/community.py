@@ -24,11 +24,22 @@ LEASE_SECONDS = 15 * 60
 MEDIA_RETENTION_SECONDS = 5 * 86400
 MAX_COMMENT = 1000
 MAX_NAME = 160
+MAX_NOTE = 48
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
 MCC_KINDS = frozenset({"add_merchant", "add_mcc", "replace_mcc"})
 PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant"}
-EDIT_KINDS = PUBLIC_KINDS | {"aliases", "archive_merchant", "archive_mcc", "revert"}
+EDIT_KINDS = PUBLIC_KINDS | {
+    "aliases",
+    "archive_merchant",
+    "archive_mcc",
+    "revert",
+    "rename_brand",
+    "brand_aliases",
+    "set_brand_membership",
+    "merge_brand",
+    "edit_mcc_note",
+}
 STRUCTURAL_KINDS = frozenset(
     {
         "rename_merchant",
@@ -37,6 +48,11 @@ STRUCTURAL_KINDS = frozenset(
         "merge_merchant",
         "replace_mcc",
         "archive_mcc",
+        "rename_brand",
+        "brand_aliases",
+        "set_brand_membership",
+        "merge_brand",
+        "edit_mcc_note",
     }
 )
 
@@ -499,6 +515,18 @@ class CommunityService:
             ).fetchone()
             return self._draft(conn, user_id) if exists else None
 
+    def draft_has_media(self, user_id: int, draft_id: str | None = None) -> bool:
+        """Report whether the caller's current draft has a live screenshot reference."""
+
+        with self.stores.connection() as conn:
+            draft = self._draft(conn, user_id, draft_id)
+            return bool(
+                conn.execute(
+                    "SELECT 1 FROM community_media WHERE draft_id=? AND expires_at IS NULL",
+                    (draft.id,),
+                ).fetchone()
+            )
+
     def advance(
         self,
         user_id: int,
@@ -559,24 +587,32 @@ class CommunityService:
             self._discard_draft(conn, user_id)
 
     def _validate_payload(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {
-            "add_merchant": {"name", "channel", "mcc"},
-            "add_mcc": {"merchant_id", "mcc"},
-            "replace_mcc": {"merchant_id", "old_mcc", "mcc"},
-            "rename_merchant": {"merchant_id", "name"},
-            "merge_merchant": {"merchant_id", "target_id"},
-            "aliases": {"merchant_id", "aliases"},
-            "archive_merchant": {"merchant_id"},
-            "archive_mcc": {"merchant_id", "mcc"},
-            "revert": {"audit_id"},
+        schemas = {
+            "add_merchant": ({"name", "channel", "mcc"}, {"brand_id", "note"}),
+            "add_mcc": ({"merchant_id", "mcc"}, {"note"}),
+            "replace_mcc": ({"merchant_id", "old_mcc", "mcc"}, {"note"}),
+            "rename_merchant": ({"merchant_id", "name"}, set()),
+            "merge_merchant": ({"merchant_id", "target_id"}, set()),
+            "aliases": ({"merchant_id", "aliases"}, set()),
+            "archive_merchant": ({"merchant_id"}, set()),
+            "archive_mcc": ({"merchant_id", "mcc"}, set()),
+            "rename_brand": ({"brand_id", "name"}, set()),
+            "brand_aliases": ({"brand_id", "aliases"}, set()),
+            "set_brand_membership": ({"merchant_id", "brand_id"}, set()),
+            "merge_brand": ({"brand_id", "target_id"}, set()),
+            "edit_mcc_note": ({"merchant_id", "mcc", "note"}, set()),
+            "revert": ({"audit_id"}, set()),
         }
-        if kind not in allowed or set(payload) != allowed[kind]:
+        if kind not in schemas:
+            raise CommunityError("Неполные данные предложения. Начните заново.")
+        required, optional = schemas[kind]
+        if not required <= set(payload) or set(payload) - required - optional:
             raise CommunityError("Неполные данные предложения. Начните заново.")
         result = dict(payload)
         for key, value in result.items():
-            if key in {"merchant_id", "target_id", "audit_id"}:
+            if key in {"merchant_id", "brand_id", "target_id", "audit_id"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                    raise CommunityError("Некорректный магазин или запись истории.")
+                    raise CommunityError("Некорректный бренд, магазин или запись истории.")
             elif key in {"mcc", "old_mcc"}:
                 if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}", value):
                     raise CommunityError("MCC должен состоять из четырёх цифр.")
@@ -584,6 +620,14 @@ class CommunityService:
                 result[key] = clean_text(value, maximum=MAX_NAME)
             elif key == "channel" and value not in {"offline", "online"}:
                 raise CommunityError("Выберите офлайн или онлайн.")
+            elif key == "note":
+                if (
+                    not isinstance(value, str)
+                    or len(value.strip()) > MAX_NOTE
+                    or any(ord(ch) < 32 for ch in value)
+                ):
+                    raise CommunityError(f"Публичная заметка — не больше {MAX_NOTE} символов.")
+                result[key] = value.strip()
             elif key == "aliases":
                 if not isinstance(value, list) or len(value) > 20:
                     raise CommunityError("Можно сохранить не больше 20 названий.")
@@ -654,8 +698,10 @@ class CommunityService:
         expected: dict[str, Any] | None = None,
     ) -> int:
         kind, payload = proposal.kind, dict(proposal.payload)
-        if kind == "add_merchant" and self.stores.find_exact(
-            payload["name"], payload["channel"], connection=conn
+        if (
+            kind == "add_merchant"
+            and "brand_id" not in payload
+            and self.stores.find_exact(payload["name"], payload["channel"], connection=conn)
         ):
             raise CommunityError(
                 "Такой магазин уже есть. Отмените предложение и выберите его из поиска."
@@ -686,7 +732,17 @@ class CommunityService:
     ) -> dict[str, Any]:
         """Capture just the entities a structural preview can overwrite."""
 
-        result: dict[str, Any] = {"merchants": {}, "facts": {}}
+        result: dict[str, Any] = {"brands": {}, "merchants": {}, "facts": {}}
+        brand_id = payload.get("brand_id")
+        if kind in {"rename_brand", "brand_aliases", "merge_brand", "set_brand_membership"}:
+            brand_ids = [brand_id]
+            if kind == "merge_brand":
+                brand_ids.append(payload["target_id"])
+            for value in brand_ids:
+                brand = self.stores.get_brand(value, connection=conn, include_archived=True)
+                if brand is None:
+                    raise CommunityError("Бренд больше недоступен. Откройте поиск заново.")
+                result["brands"][str(value)] = [brand.revision, brand.archived]
         merchant_id = payload.get("merchant_id")
         if merchant_id and kind in STRUCTURAL_KINDS | {"add_mcc"}:
             ids = [merchant_id]
@@ -697,7 +753,7 @@ class CommunityService:
                 if merchant is None:
                     raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
                 result["merchants"][str(value)] = [merchant.revision, merchant.archived]
-            if kind in {"replace_mcc", "archive_mcc", "add_mcc"}:
+            if kind in {"replace_mcc", "archive_mcc", "add_mcc", "edit_mcc_note"}:
                 facts = {
                     fact.mcc: fact
                     for fact in self.stores.list_mcc(
@@ -709,7 +765,14 @@ class CommunityService:
                 for code in codes:
                     fact = facts.get(code)
                     result["facts"][f"{merchant_id}:{code}"] = (
-                        [fact.revision, fact.archived, fact.evidence_count] if fact else None
+                        [
+                            fact.revision,
+                            fact.archived,
+                            fact.evidence_count,
+                            getattr(fact, "note", ""),
+                        ]
+                        if fact
+                        else None
                     )
         return result
 
@@ -749,15 +812,6 @@ class CommunityService:
             media = conn.execute(
                 "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
             ).fetchone()
-            old_media = (
-                original
-                and conn.execute(
-                    "SELECT 1 FROM community_media WHERE proposal_id=? AND expires_at IS NULL",
-                    (original.id,),
-                ).fetchone()
-            )
-            if role == "user" and kind in MCC_KINDS and not (media or old_media):
-                raise CommunityError("Для нового или изменённого MCC нужен скриншот.")
             now = time.time()
             if original:
                 proposal_id = original.id
@@ -990,6 +1044,21 @@ class CommunityService:
                 "SELECT file_id FROM community_media WHERE proposal_id=?", (proposal_id,)
             ).fetchone()
             return row[0] if row else None
+
+    def proposal_has_media(self, actor_id: int, proposal_id: int) -> bool:
+        """Report screenshot presence after applying proposal visibility authorization."""
+
+        self.expire_media()
+        with self.stores.connection() as conn:
+            proposal = self._proposal(conn, proposal_id)
+            if proposal.user_id != actor_id:
+                self._require_admin(conn, actor_id)
+            return bool(
+                conn.execute(
+                    "SELECT 1 FROM community_media WHERE proposal_id=? AND expires_at IS NULL",
+                    (proposal_id,),
+                ).fetchone()
+            )
 
     def expire_media(self, *, now: float | None = None) -> int:
         """Delete expired references while preserving proposals, facts and audit history."""

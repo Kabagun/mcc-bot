@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Russian UI copy and ordinary Unicode buttons are intentional.
+# ruff: noqa: RUF001
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
@@ -55,8 +57,9 @@ def test_single_result_always_asks_mcc_with_category(setup):
     assert "Евроопт" in call.args[0]
     choices = buttons(call.kwargs["reply_markup"])
     assert choices[0].text == "MCC 5411 — Продуктовые магазины"
-    assert choices[0].callback_data == f"store:cards:{merchant_id}:5411:0:0"
-    assert choices[1].callback_data == f"community:report:{merchant_id}"
+    assert choices[0].callback_data == f"store:cards:{merchant_id}:offline:5411:0:0"
+    assert choices[1].text == "➕ Добавить или подтвердить MCC"
+    assert choices[1].callback_data == f"community:start:{merchant_id}:offline"
 
 
 def test_role_specific_action_is_one_and_rechecked(setup):
@@ -67,8 +70,8 @@ def test_role_specific_action_is_one_and_rechecked(setup):
     update.callback_query.data = f"store:show:{merchant_id}:0"
     asyncio.run(handle_store_callback(update, context))
     choices = buttons(update.callback_query.edit_message_text.await_args.kwargs["reply_markup"])
-    assert len(choices) == 2
-    assert choices[1].callback_data == f"community:edit:{merchant_id}"
+    assert len(choices) == 3
+    assert choices[-1].callback_data == f"community:edit:{merchant_id}"
     service.is_admin.assert_called_once_with(10)
 
 
@@ -86,7 +89,7 @@ def test_same_message_cards_toggle_and_back(setup):
     assert all("Евроопт" in call.args[0] for call in calls)
     assert "Beta Bank" not in calls[0].args[0]
     assert "Beta Bank" in calls[1].args[0]
-    assert "Выберите MCC" in calls[2].args[0]
+    assert "Офлайн / магазины" in calls[2].args[0]
     update.effective_message.reply_text.assert_not_awaited()
 
 
@@ -169,3 +172,27 @@ def test_many_search_results_inline_navigation_without_extra_messages(setup):
     asyncio.run(handle_store_callback(update, context))
     update.effective_message.reply_text.assert_awaited_once()
     update.callback_query.edit_message_text.assert_awaited_once()
+
+
+def test_public_brand_groups_channels_and_note_overrides_description(setup):
+    repository, merchant_id, update, context = setup
+    brand = repository.brand_for_merchant(merchant_id)
+    repository.apply_change(
+        "add_merchant",
+        {"brand_id": brand.id, "name": brand.name, "channel": "online", "mcc": "5812"},
+        1,
+    )
+    repository.apply_change(
+        "edit_mcc_note",
+        {"merchant_id": merchant_id, "mcc": "5411", "note": "Оплата у кассы"},
+        1,
+    )
+
+    asyncio.run(search_stores(update, context, "Евроопт"))
+
+    call = update.effective_message.reply_text.await_args
+    assert "Офлайн / магазины" in call.args[0]
+    assert "Онлайн / приложение" in call.args[0]
+    labels = [button.text for button in buttons(call.kwargs["reply_markup"])]
+    assert "MCC 5411 · Оплата у кассы" in labels
+    assert not any("MCC 5411 — Продуктовые магазины ·" in label for label in labels)

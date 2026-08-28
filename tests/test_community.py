@@ -156,10 +156,10 @@ def test_draft_restart_and_duplicate_updates(community):
         community.advance(11, moved.id, moved.version, "preview", {})
 
 
-def test_screenshot_required_users_optional_admins(community):
+def test_screenshot_optional_for_users_and_admins(community):
     draft = make_draft(community, media=False)
-    with pytest.raises(CommunityError, match="скриншот"):
-        community.submit(10, draft.id, draft.version)
+    queued = community.submit(10, draft.id, draft.version)
+    assert queued.status == "pending"
     draft = make_draft(community, 2, media=False)
     saved = community.submit(2, draft.id, draft.version)
     assert saved.status == "approved"

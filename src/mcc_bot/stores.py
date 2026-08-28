@@ -46,13 +46,36 @@ class Merchant:
 
 
 @dataclass(frozen=True, slots=True)
+class Brand:
+    """One user-facing brand that can contain several channel merchants."""
+
+    id: int
+    name: str
+    aliases: tuple[str, ...]
+    archived: bool
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class MccFact:
     """A unique MCC association, supported by independent evidence records."""
 
     merchant_id: int
     mcc: str
+    note: str
     archived: bool
     revision: int
+    evidence_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class BrandMccFact:
+    """One channel-level MCC view aggregated without rewriting source facts."""
+
+    channel: str
+    mcc: str
+    note: str
+    merchant_ids: tuple[int, ...]
     evidence_count: int
 
 
@@ -60,8 +83,8 @@ class MccFact:
 class SearchResult:
     """Deterministic matches and separately labelled fuzzy suggestions."""
 
-    matches: tuple[Merchant, ...]
-    suggestions: tuple[Merchant, ...] = ()
+    matches: tuple[Brand, ...]
+    suggestions: tuple[Brand, ...] = ()
     total: int = 0
 
 
@@ -71,6 +94,7 @@ class ChangeResult:
 
     audit_id: int
     merchant_id: int
+    brand_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +104,7 @@ class AuditEntry:
     id: int
     kind: str
     merchant_id: int
+    brand_id: int | None
     actor_id: int
     created_at: str
     reverted_by: int | None
@@ -194,6 +219,17 @@ def _aliases(value: Any) -> list[str]:
     return list(dict.fromkeys(_name(item) for item in value))
 
 
+def _note(value: Any) -> str:
+    """Validate a short public MCC note; an empty note is meaningful."""
+
+    if not isinstance(value, str) or len(value.strip()) > 48:
+        raise StoreError("Примечание должно содержать не более 48 символов")
+    value = value.strip()
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        raise StoreError("Примечание содержит недопустимые символы")
+    return value
+
+
 class _Changes:
     """Record only touched rows; audit snapshots never contain media identifiers."""
 
@@ -270,7 +306,12 @@ class StoreRepository:
                 raise
 
     def initialize(self) -> None:
-        """Create private durable schema, without changing existing facts."""
+        """Create and idempotently migrate the private durable schema.
+
+        The brand migration is additive: every pre-brand merchant receives its
+        own brand and membership while all existing merchant, source, fact,
+        evidence and audit row IDs remain untouched.
+        """
 
         if self._memory:
             if self._anchor is None:
@@ -290,6 +331,7 @@ class StoreRepository:
                 CREATE TABLE IF NOT EXISTS store_facts (
                     id INTEGER PRIMARY KEY, merchant_id INTEGER NOT NULL
                       REFERENCES store_merchants(id), mcc TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
                     archived INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1,
                     UNIQUE(merchant_id,mcc)
                 );
@@ -316,6 +358,99 @@ class StoreRepository:
                 CREATE INDEX IF NOT EXISTS store_evidence_fact ON store_evidence(fact_id);
                 CREATE INDEX IF NOT EXISTS store_audit_merchant ON store_audit(merchant_id,id);
             """)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                fact_columns = {
+                    row["name"] for row in connection.execute("PRAGMA table_info(store_facts)")
+                }
+                if "note" not in fact_columns:
+                    connection.execute(
+                        "ALTER TABLE store_facts ADD COLUMN note TEXT NOT NULL DEFAULT ''"
+                    )
+                audit_columns = {
+                    row["name"] for row in connection.execute("PRAGMA table_info(store_audit)")
+                }
+                if "brand_id" not in audit_columns:
+                    connection.execute("ALTER TABLE store_audit ADD COLUMN brand_id INTEGER")
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS store_brands (
+                        id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                        aliases_json TEXT NOT NULL DEFAULT '[]',
+                        archived INTEGER NOT NULL DEFAULT 0,
+                        revision INTEGER NOT NULL DEFAULT 1, merged_into INTEGER
+                          REFERENCES store_brands(id)
+                    )"""
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS store_brand_members (
+                        id INTEGER PRIMARY KEY, brand_id INTEGER NOT NULL
+                          REFERENCES store_brands(id),
+                        merchant_id INTEGER NOT NULL UNIQUE
+                          REFERENCES store_merchants(id),
+                        UNIQUE(brand_id,merchant_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS store_brand_members_brand "
+                    "ON store_brand_members(brand_id,merchant_id)"
+                )
+                for merchant in connection.execute(
+                    """SELECT m.* FROM store_merchants m
+                    LEFT JOIN store_brand_members bm ON bm.merchant_id=m.id
+                    WHERE bm.id IS NULL ORDER BY m.id"""
+                ).fetchall():
+                    brand = connection.execute(
+                        "SELECT id FROM store_brands WHERE id=?", (merchant["id"],)
+                    ).fetchone()
+                    occupied = (
+                        connection.execute(
+                            "SELECT 1 FROM store_brand_members WHERE brand_id=?",
+                            (merchant["id"],),
+                        ).fetchone()
+                        if brand is not None
+                        else None
+                    )
+                    if brand is None:
+                        connection.execute(
+                            """INSERT INTO store_brands
+                            (id,name,aliases_json,archived,revision)
+                            VALUES(?,?,?,?,?)""",
+                            (
+                                merchant["id"],
+                                merchant["name"],
+                                merchant["aliases_json"],
+                                merchant["archived"],
+                                merchant["revision"],
+                            ),
+                        )
+                        brand_id = merchant["id"]
+                    elif occupied is None:
+                        brand_id = brand["id"]
+                    else:
+                        brand_id = connection.execute(
+                            """INSERT INTO store_brands
+                            (name,aliases_json,archived,revision) VALUES(?,?,?,?)""",
+                            (
+                                merchant["name"],
+                                merchant["aliases_json"],
+                                merchant["archived"],
+                                merchant["revision"],
+                            ),
+                        ).lastrowid
+                    connection.execute(
+                        "INSERT INTO store_brand_members(brand_id,merchant_id) VALUES(?,?)",
+                        (brand_id, merchant["id"]),
+                    )
+                connection.execute(
+                    """UPDATE store_audit SET brand_id=(
+                        SELECT bm.brand_id FROM store_brand_members bm
+                        WHERE bm.merchant_id=store_audit.merchant_id
+                    ) WHERE brand_id IS NULL"""
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
         if not self._memory:
             os.chmod(self.path, 0o600)
 
@@ -325,6 +460,16 @@ class StoreRepository:
             row["id"],
             row["name"],
             row["channel"],
+            tuple(json.loads(row["aliases_json"])),
+            bool(row["archived"]),
+            row["revision"],
+        )
+
+    @staticmethod
+    def _brand(row: sqlite3.Row) -> Brand:
+        return Brand(
+            row["id"],
+            row["name"],
             tuple(json.loads(row["aliases_json"])),
             bool(row["archived"]),
             row["revision"],
@@ -343,35 +488,137 @@ class StoreRepository:
             return None
         return self._merchant(row)
 
+    def get_brand(self, brand_id: int, *, connection=None, include_archived=False) -> Brand | None:
+        """Read a brand; merged and archived brands are hidden by default."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.get_brand(brand_id, connection=conn, include_archived=include_archived)
+        row = connection.execute("SELECT * FROM store_brands WHERE id=?", (brand_id,)).fetchone()
+        if row is None or (row["archived"] and not include_archived):
+            return None
+        return self._brand(row)
+
+    def brand_for_merchant(
+        self, merchant_id: int, *, connection=None, include_archived=False
+    ) -> Brand | None:
+        """Return the current brand membership for a merchant."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.brand_for_merchant(
+                    merchant_id, connection=conn, include_archived=include_archived
+                )
+        row = connection.execute(
+            """SELECT b.* FROM store_brands b
+            JOIN store_brand_members bm ON bm.brand_id=b.id
+            WHERE bm.merchant_id=?""",
+            (merchant_id,),
+        ).fetchone()
+        if row is None or (row["archived"] and not include_archived):
+            return None
+        return self._brand(row)
+
+    def list_brand_members(
+        self,
+        brand_id: int,
+        *,
+        channel: str | None = None,
+        connection=None,
+        include_archived=False,
+    ) -> tuple[Merchant, ...]:
+        """List durable merchant branches belonging to one brand."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.list_brand_members(
+                    brand_id,
+                    channel=channel,
+                    connection=conn,
+                    include_archived=include_archived,
+                )
+        if channel is not None:
+            channel = _channel(channel)
+        rows = connection.execute(
+            """SELECT m.* FROM store_merchants m
+            JOIN store_brand_members bm ON bm.merchant_id=m.id
+            WHERE bm.brand_id=? AND (? IS NULL OR m.channel=?)
+              AND (? OR m.archived=0)
+            ORDER BY CASE m.channel WHEN 'offline' THEN 0 ELSE 1 END,m.id""",
+            (brand_id, channel, channel, include_archived),
+        )
+        return tuple(self._merchant(row) for row in rows)
+
+    def list_brand_channels(
+        self, brand_id: int, *, connection=None, include_archived=False
+    ) -> dict[str, tuple[Merchant, ...]]:
+        """Group a brand's merchant branches by payment channel."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.list_brand_channels(
+                    brand_id, connection=conn, include_archived=include_archived
+                )
+        members = self.list_brand_members(
+            brand_id, connection=connection, include_archived=include_archived
+        )
+        return {
+            channel: tuple(member for member in members if member.channel == channel)
+            for channel in ("offline", "online")
+            if any(member.channel == channel for member in members)
+        }
+
     def search(self, query: str, *, limit=20, offset=0) -> SearchResult:
-        """Search canonical names/aliases; fuzzy results never modify identity."""
+        """Search brands in strict tiers; fuzzy results never modify identity.
+
+        The first non-empty tier wins globally: exact official name/alias,
+        whole-name cross-script pronunciation, partial, then suggestions. This
+        prevents an exact ``Мила`` result from being diluted by ``Милавица``.
+        """
 
         needle = normalize_store_name(query)
         if not needle:
             return SearchResult(())
         limit, offset = max(1, min(int(limit), 100)), max(0, int(offset))
         with self.connection() as connection:
-            merchants = tuple(
-                self._merchant(row)
+            brands = tuple(
+                self._brand(row)
                 for row in connection.execute(
-                    "SELECT * FROM store_merchants WHERE archived=0 ORDER BY name,id"
+                    """SELECT b.* FROM store_brands b WHERE b.archived=0
+                    AND EXISTS (
+                      SELECT 1 FROM store_brand_members bm
+                      JOIN store_merchants m ON m.id=bm.merchant_id
+                      WHERE bm.brand_id=b.id AND m.archived=0
+                    ) ORDER BY b.name,b.id"""
                 )
             )
+            member_names: dict[int, list[str]] = {}
+            for row in connection.execute(
+                """SELECT bm.brand_id,m.name,m.aliases_json
+                FROM store_brand_members bm JOIN store_merchants m ON m.id=bm.merchant_id
+                WHERE m.archived=0
+                ORDER BY bm.brand_id,m.id"""
+            ):
+                member_names.setdefault(row["brand_id"], []).extend(
+                    (row["name"], *json.loads(row["aliases_json"]))
+                )
         exact, transliterated, partial, suggestions = [], [], [], []
-        for merchant in merchants:
-            names = (merchant.name, *merchant.aliases)
+        for brand in brands:
+            names = tuple(
+                dict.fromkeys((brand.name, *brand.aliases, *member_names.get(brand.id, [])))
+            )
             keys = [normalize_store_name(name) for name in names]
             if needle in keys:
-                exact.append(merchant)
+                exact.append(brand)
             elif any(_relaxed_cross_script_match(query, name, needle) for name in names):
-                transliterated.append(merchant)
+                transliterated.append(brand)
             elif any(needle in key for key in keys):
-                partial.append(merchant)
+                partial.append(brand)
             elif len(needle) >= 3:
                 score = max(SequenceMatcher(None, needle, key).ratio() for key in keys)
                 if score >= 0.68:
-                    suggestions.append((score, merchant))
-        matches = exact + transliterated + partial
+                    suggestions.append((score, brand))
+        matches = exact or transliterated or partial
         fuzzy = tuple(
             item[1] for item in sorted(suggestions, key=lambda item: (-item[0], item[1].id))
         )
@@ -422,12 +669,72 @@ class StoreRepository:
             MccFact(
                 row["merchant_id"],
                 row["mcc"],
+                row["note"],
                 bool(row["archived"]),
                 row["revision"],
                 row["evidence_count"],
             )
             for row in rows
         )
+
+    def list_brand_mcc(
+        self,
+        brand_id: int,
+        *,
+        channel: str | None = None,
+        connection=None,
+        include_archived=False,
+    ) -> tuple[BrandMccFact, ...]:
+        """Return channel-level MCC groups without collapsing source fact rows."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.list_brand_mcc(
+                    brand_id,
+                    channel=channel,
+                    connection=conn,
+                    include_archived=include_archived,
+                )
+        if channel is not None:
+            channel = _channel(channel)
+        rows = connection.execute(
+            """SELECT m.channel,f.mcc,f.note,f.merchant_id,
+              (SELECT count(*) FROM store_evidence e
+               WHERE e.fact_id=f.id AND e.revoked=0) AS evidence_count
+            FROM store_brand_members bm
+            JOIN store_merchants m ON m.id=bm.merchant_id
+            JOIN store_facts f ON f.merchant_id=m.id
+            WHERE bm.brand_id=? AND m.archived=0
+              AND (? IS NULL OR m.channel=?) AND (? OR f.archived=0)
+            ORDER BY CASE m.channel WHEN 'offline' THEN 0 ELSE 1 END,f.mcc,m.id""",
+            (brand_id, channel, channel, include_archived),
+        ).fetchall()
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = row["channel"], row["mcc"]
+            group = groups.setdefault(
+                key, {"notes": set(), "merchant_ids": [], "evidence_count": 0}
+            )
+            if row["note"]:
+                group["notes"].add(row["note"])
+            group["merchant_ids"].append(row["merchant_id"])
+            group["evidence_count"] += row["evidence_count"]
+        result = []
+        for (group_channel, mcc), group in groups.items():
+            if len(group["notes"]) > 1:
+                raise StoreError(
+                    f"У MCC {mcc} одного канала разные примечания; выберите одно вручную"
+                )
+            result.append(
+                BrandMccFact(
+                    group_channel,
+                    mcc,
+                    next(iter(group["notes"]), ""),
+                    tuple(group["merchant_ids"]),
+                    group["evidence_count"],
+                )
+            )
+        return tuple(result)
 
     def history(
         self, merchant_id=None, *, limit=20, offset: int = 0, connection=None
@@ -445,10 +752,44 @@ class StoreRepository:
             with self.connection() as conn:
                 return self.history(merchant_id, limit=limit, offset=offset, connection=conn)
         rows = connection.execute(
-            """SELECT id,kind,merchant_id,actor_id,created_at,reverted_by,changes_json
+            """SELECT id,kind,merchant_id,brand_id,actor_id,created_at,reverted_by,changes_json
             FROM store_audit WHERE (? IS NULL OR merchant_id=?)
             ORDER BY id DESC LIMIT ? OFFSET ?""",
             (merchant_id, merchant_id, max(1, min(int(limit), 100)), offset),
+        )
+        result = []
+        for row in rows:
+            values = dict(row)
+            values["details"] = self._audit_details(connection, values.pop("changes_json"))
+            result.append(AuditEntry(**values))
+        return tuple(result)
+
+    def brand_history(
+        self, brand_id: int, *, limit=20, offset: int = 0, connection=None
+    ) -> tuple[AuditEntry, ...]:
+        """Aggregate audits for current members and brands merged into a brand."""
+
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            raise StoreError("Смещение истории должно быть целым числом")
+        offset = max(0, min(offset, 1_000_000))
+        if connection is None:
+            with self.connection() as conn:
+                return self.brand_history(brand_id, limit=limit, offset=offset, connection=conn)
+        rows = connection.execute(
+            """WITH RECURSIVE related(id) AS (
+                SELECT ? UNION ALL
+                SELECT b.id FROM store_brands b JOIN related r ON b.merged_into=r.id
+            ), members(merchant_id) AS (
+                SELECT DISTINCT bm.merchant_id FROM store_brand_members bm
+                JOIN related r ON r.id=bm.brand_id
+            )
+            SELECT DISTINCT a.id,a.kind,a.merchant_id,a.brand_id,a.actor_id,
+              a.created_at,a.reverted_by,a.changes_json
+            FROM store_audit a
+            WHERE a.brand_id IN (SELECT id FROM related)
+               OR a.merchant_id IN (SELECT merchant_id FROM members)
+            ORDER BY a.id DESC LIMIT ? OFFSET ?""",
+            (brand_id, max(1, min(int(limit), 100)), offset),
         )
         result = []
         for row in rows:
@@ -493,6 +834,7 @@ class StoreRepository:
         added_mcc: list[str] = []
         hidden_mcc: list[str] = []
         restored_mcc: list[str] = []
+        note_changes: list[str] = []
         evidence_added: dict[tuple[str, str], int] = {}
         evidence_revoked: dict[tuple[str, str], int] = {}
         source_added = 0
@@ -545,6 +887,29 @@ class StoreRepository:
                         else f"записью №{after['merged_into']}"
                     )
                     details.append(f"Магазин объединён с {target_name}.")
+            elif table == "store_brands":
+                if before is None and after:
+                    details.append(f"Добавлен бренд «{clipped(after.get('name', ''))}».")
+                    continue
+                if not before or not after:
+                    continue
+                if before.get("name") != after.get("name"):
+                    details.append(
+                        f"Название бренда: «{clipped(before.get('name', ''))}» → "
+                        f"«{clipped(after.get('name', ''))}»."
+                    )
+                if before.get("aliases_json") != after.get("aliases_json"):
+                    details.append(
+                        f"Другие названия бренда: {aliases(before.get('aliases_json'))} → "
+                        f"{aliases(after.get('aliases_json'))}."
+                    )
+                if before.get("merged_into") != after.get("merged_into") and after.get(
+                    "merged_into"
+                ):
+                    details.append("Бренды объединены.")
+            elif table == "store_brand_members":
+                if before and after and before.get("brand_id") != after.get("brand_id"):
+                    details.append("Магазин перенесён в другую группу бренда.")
             elif table == "store_facts":
                 state = after or before or {}
                 mcc = str(state.get("mcc", ""))
@@ -552,6 +917,10 @@ class StoreRepository:
                     added_mcc.append(mcc)
                 elif before and after and before.get("archived") != after.get("archived"):
                     (hidden_mcc if after.get("archived") else restored_mcc).append(mcc)
+                if before and after and before.get("note", "") != after.get("note", ""):
+                    old = clipped(before.get("note", ""), 48) or "нет"
+                    new = clipped(after.get("note", ""), 48) or "нет"
+                    note_changes.append(f"Примечание MCC {mcc}: «{old}» → «{new}».")
             elif table == "store_evidence":
                 state = after or before or {}
                 fact = connection.execute(
@@ -576,6 +945,7 @@ class StoreRepository:
             details.append(f"Убран из поиска MCC: {listed(hidden_mcc)}.")
         if restored_mcc:
             details.append(f"Возвращён MCC: {listed(restored_mcc)}.")
+        details.extend(note_changes[:5])
         for (source, mcc), count in list(evidence_added.items())[:5]:
             details.append(f"Подтверждения {source} для MCC {mcc}: +{count}.")
         for (source, mcc), count in list(evidence_revoked.items())[:5]:
@@ -598,6 +968,13 @@ class StoreRepository:
         return row
 
     @staticmethod
+    def _required_brand(connection, brand_id):
+        row = connection.execute("SELECT * FROM store_brands WHERE id=?", (brand_id,)).fetchone()
+        if row is None or row["archived"]:
+            raise StoreError("Бренд недоступен; откройте поиск заново")
+        return row
+
+    @staticmethod
     def _update(connection, changes, table, row_id, **values):
         changes.touch(table, row_id)
         connection.execute(
@@ -614,22 +991,95 @@ class StoreRepository:
         changes.touch(table, cursor.lastrowid, new=True)
         return cursor.lastrowid
 
-    def _fact(self, connection, changes, merchant_id, mcc, *, reactivate=True):
+    def _create_brand(self, connection, changes, *, name, aliases=()):
+        return self._insert(
+            connection,
+            changes,
+            "store_brands",
+            name=_name(name),
+            aliases_json=_json(_aliases(aliases)),
+        )
+
+    def _attach_brand(self, connection, changes, merchant_id, brand_id):
+        self._required_brand(connection, brand_id)
+        row = connection.execute(
+            "SELECT * FROM store_brand_members WHERE merchant_id=?", (merchant_id,)
+        ).fetchone()
+        if row is None:
+            self._insert(
+                connection,
+                changes,
+                "store_brand_members",
+                brand_id=brand_id,
+                merchant_id=merchant_id,
+            )
+        elif row["brand_id"] != brand_id:
+            self._update(connection, changes, "store_brand_members", row["id"], brand_id=brand_id)
+        self._harmonize_brand_notes(connection, changes, brand_id)
+
+    def _harmonize_brand_notes(self, connection, changes, brand_id):
+        """Apply the empty/identical/conflict policy within channel MCC groups."""
+
+        rows = connection.execute(
+            """SELECT f.*,m.channel FROM store_brand_members bm
+            JOIN store_merchants m ON m.id=bm.merchant_id
+            JOIN store_facts f ON f.merchant_id=m.id
+            WHERE bm.brand_id=? ORDER BY m.channel,f.mcc,f.id""",
+            (brand_id,),
+        ).fetchall()
+        groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in rows:
+            groups.setdefault((row["channel"], row["mcc"]), []).append(row)
+        for (channel, mcc), facts in groups.items():
+            notes = {fact["note"] for fact in facts if fact["note"]}
+            if len(notes) > 1:
+                label = "онлайн" if channel == "online" else "обычного магазина"
+                raise StoreError(
+                    f"У MCC {mcc} для {label} разные примечания; выберите одно вручную"
+                )
+            if not notes:
+                continue
+            note = next(iter(notes))
+            for fact in facts:
+                if not fact["note"]:
+                    self._update(
+                        connection,
+                        changes,
+                        "store_facts",
+                        fact["id"],
+                        note=note,
+                        revision=fact["revision"] + 1,
+                    )
+
+    def _fact(self, connection, changes, merchant_id, mcc, *, reactivate=True, note=None):
         mcc = normalize_mcc(mcc)
+        incoming_note = _note(note) if note is not None else None
         row = connection.execute(
             "SELECT * FROM store_facts WHERE merchant_id=? AND mcc=?", (merchant_id, mcc)
         ).fetchone()
         if row is None:
             return self._insert(
-                connection, changes, "store_facts", merchant_id=merchant_id, mcc=mcc
+                connection,
+                changes,
+                "store_facts",
+                merchant_id=merchant_id,
+                mcc=mcc,
+                note=incoming_note or "",
             )
+        if incoming_note and row["note"] and incoming_note != row["note"]:
+            raise StoreError("У MCC уже другое примечание; измените его отдельно")
+        values = {}
+        if incoming_note and not row["note"]:
+            values["note"] = incoming_note
         if row["archived"] and reactivate:
+            values["archived"] = 0
+        if values:
             self._update(
                 connection,
                 changes,
                 "store_facts",
                 row["id"],
-                archived=0,
+                **values,
                 revision=row["revision"] + 1,
             )
         return row["id"]
@@ -650,6 +1100,8 @@ class StoreRepository:
             "source_network_id",
             "source_url",
             "occurrence",
+            "image_sha256",
+            "row_number",
         }
         if set(evidence) - allowed:
             raise StoreError("Подтверждение содержит неподдерживаемые поля")
@@ -680,13 +1132,87 @@ class StoreRepository:
             details_json=details,
         )
 
+    def confirm_mcc(
+        self,
+        merchant_id: int,
+        mcc: str,
+        *,
+        actor_id: int,
+        source: str,
+        source_key: str,
+        evidence: dict | None = None,
+        note: str | None = None,
+        connection=None,
+    ) -> ChangeResult:
+        """Idempotently add deterministic evidence, optionally in a caller transaction.
+
+        A curated package should derive ``source_key`` from immutable input,
+        for example ``<image SHA256>:<row number>``. Reusing that key for the
+        same fact is a no-op; reusing it for a different fact is rejected.
+        """
+
+        if connection is None:
+            with self.transaction() as conn:
+                return self.confirm_mcc(
+                    merchant_id,
+                    mcc,
+                    actor_id=actor_id,
+                    source=source,
+                    source_key=source_key,
+                    evidence=evidence,
+                    note=note,
+                    connection=conn,
+                )
+        if (
+            not isinstance(source, str)
+            or not source.strip()
+            or len(source.strip()) > 50
+            or not isinstance(source_key, str)
+            or not source_key.strip()
+            or len(source_key) > 240
+        ):
+            raise StoreError("Источник подтверждения или его ключ недопустим")
+        connection.execute("SAVEPOINT store_confirmation")
+        try:
+            self._required(connection, int(merchant_id))
+            changes = _Changes(connection)
+            fact_id = self._fact(connection, changes, int(merchant_id), mcc, note=note)
+            self._evidence(
+                connection,
+                changes,
+                fact_id,
+                evidence,
+                source=source.strip(),
+                key=source_key,
+            )
+            edits = changes.finish()
+            brand_id = self._brand_id_for_merchant(connection, int(merchant_id))
+            if not edits:
+                result = ChangeResult(0, int(merchant_id), brand_id)
+            else:
+                cursor = connection.execute(
+                    """INSERT INTO store_audit
+                    (kind,merchant_id,brand_id,actor_id,changes_json)
+                    VALUES('confirm_mcc',?,?,?,?)""",
+                    (int(merchant_id), brand_id, int(actor_id), _json(edits)),
+                )
+                result = ChangeResult(cursor.lastrowid, int(merchant_id), brand_id)
+        except BaseException:
+            connection.execute("ROLLBACK TO store_confirmation")
+            connection.execute("RELEASE store_confirmation")
+            raise
+        connection.execute("RELEASE store_confirmation")
+        return result
+
     def apply_change(
         self, kind: str, payload: dict, actor_id: int, *, connection=None
     ) -> ChangeResult:
         """Validate and atomically apply one audited edit; accept a review transaction.
 
         Supported kinds: add_merchant, add_mcc, replace_mcc, archive_mcc,
-        rename_merchant, aliases, archive_merchant, merge_merchant, revert.
+        edit_mcc_note, rename_merchant, aliases, archive_merchant,
+        rename_brand, brand_aliases, set_brand_membership, merge_brand,
+        merge_merchant, revert.
         Reversion creates a new audit and retains the historical evidence rows.
         """
 
@@ -712,8 +1238,10 @@ class StoreRepository:
             raise StoreError("Изменение должно быть объектом")
         changes = _Changes(connection)
         reverted = None
+        brand_id = None
         if kind == "revert":
             merchant_id, reverted = self._revert(connection, changes, payload["audit_id"])
+            brand_id = self._brand_id_for_merchant(connection, merchant_id)
         elif kind == "add_merchant":
             merchant_id = self._insert(
                 connection,
@@ -723,23 +1251,83 @@ class StoreRepository:
                 channel=_channel(payload.get("channel", "offline")),
                 aliases_json=_json(_aliases(payload.get("aliases", []))),
             )
+            if payload.get("brand_id") is None:
+                brand_id = self._create_brand(
+                    connection,
+                    changes,
+                    name=payload["name"],
+                    aliases=payload.get("aliases", []),
+                )
+            else:
+                brand_id = int(payload["brand_id"])
+            self._attach_brand(connection, changes, merchant_id, brand_id)
             if payload.get("mcc"):
-                fact_id = self._fact(connection, changes, merchant_id, payload["mcc"])
+                fact_id = self._fact(
+                    connection,
+                    changes,
+                    merchant_id,
+                    payload["mcc"],
+                    note=payload.get("note"),
+                )
                 changes.touch("store_facts", fact_id)
                 self._evidence(connection, changes, fact_id, payload.get("evidence"))
+                self._harmonize_brand_notes(connection, changes, brand_id)
+        elif kind in {"rename_brand", "brand_aliases", "set_brand_membership", "merge_brand"}:
+            if kind == "set_brand_membership":
+                merchant_id = int(payload["merchant_id"])
+                self._required(connection, merchant_id)
+                brand_id = int(payload["brand_id"])
+                self._attach_brand(connection, changes, merchant_id, brand_id)
+            else:
+                brand_id = int(payload["brand_id"])
+                brand = self._required_brand(connection, brand_id)
+                if kind == "rename_brand":
+                    self._update(
+                        connection,
+                        changes,
+                        "store_brands",
+                        brand_id,
+                        name=_name(payload["name"]),
+                        revision=brand["revision"] + 1,
+                    )
+                elif kind == "brand_aliases":
+                    self._update(
+                        connection,
+                        changes,
+                        "store_brands",
+                        brand_id,
+                        aliases_json=_json(_aliases(payload["aliases"])),
+                        revision=brand["revision"] + 1,
+                    )
+                else:
+                    brand_id = self._merge_brands(
+                        connection, changes, brand, int(payload["target_id"])
+                    )
+            merchant_id = self._brand_anchor(connection, brand_id)
         else:
             merchant_id = int(payload["merchant_id"])
             merchant = self._required(connection, merchant_id)
+            brand_id = self._brand_id_for_merchant(connection, merchant_id)
             if kind in {"add_mcc", "replace_mcc"}:
                 if kind == "replace_mcc":
                     if normalize_mcc(payload["old_mcc"]) == normalize_mcc(payload["mcc"]):
                         raise StoreError("Новый MCC совпадает с прежним")
                     self._archive_fact(connection, changes, merchant_id, payload["old_mcc"])
-                fact_id = self._fact(connection, changes, merchant_id, payload["mcc"])
+                fact_id = self._fact(
+                    connection,
+                    changes,
+                    merchant_id,
+                    payload["mcc"],
+                    note=payload.get("note"),
+                )
                 self._evidence(connection, changes, fact_id, payload.get("evidence"))
                 changes.touch("store_facts", fact_id)
             elif kind == "archive_mcc":
                 self._archive_fact(connection, changes, merchant_id, payload["mcc"])
+            elif kind == "edit_mcc_note":
+                self._edit_mcc_note(
+                    connection, changes, merchant_id, payload["mcc"], payload["note"]
+                )
             elif kind == "rename_merchant":
                 self._update(
                     connection,
@@ -768,18 +1356,109 @@ class StoreRepository:
                     revision=merchant["revision"] + 1,
                 )
             elif kind == "merge_merchant":
-                self._merge(connection, changes, merchant, int(payload["target_id"]))
+                merchant_id, brand_id = self._merge(
+                    connection, changes, merchant, int(payload["target_id"])
+                )
             else:
                 raise StoreError("Неизвестное изменение")
         cursor = connection.execute(
-            "INSERT INTO store_audit(kind,merchant_id,actor_id,changes_json) VALUES(?,?,?,?)",
-            (kind, merchant_id, actor_id, _json(changes.finish())),
+            """INSERT INTO store_audit
+            (kind,merchant_id,brand_id,actor_id,changes_json) VALUES(?,?,?,?,?)""",
+            (kind, merchant_id, brand_id, actor_id, _json(changes.finish())),
         )
         if reverted is not None:
             connection.execute(
                 "UPDATE store_audit SET reverted_by=? WHERE id=?", (cursor.lastrowid, reverted)
             )
-        return ChangeResult(cursor.lastrowid, merchant_id)
+        return ChangeResult(cursor.lastrowid, merchant_id, brand_id)
+
+    @staticmethod
+    def _brand_id_for_merchant(connection, merchant_id):
+        row = connection.execute(
+            "SELECT brand_id FROM store_brand_members WHERE merchant_id=?", (merchant_id,)
+        ).fetchone()
+        if row is None:
+            raise StoreError("Для магазина не найдена группа бренда")
+        return row["brand_id"]
+
+    @staticmethod
+    def _brand_anchor(connection, brand_id):
+        row = connection.execute(
+            "SELECT min(merchant_id) AS merchant_id FROM store_brand_members WHERE brand_id=?",
+            (brand_id,),
+        ).fetchone()
+        return row["merchant_id"] or 0
+
+    def _edit_mcc_note(self, connection, changes, merchant_id, mcc, note):
+        mcc = normalize_mcc(mcc)
+        note = _note(note)
+        merchant = self._required(connection, merchant_id)
+        fact = connection.execute(
+            """SELECT * FROM store_facts
+            WHERE merchant_id=? AND mcc=? AND archived=0""",
+            (merchant_id, mcc),
+        ).fetchone()
+        if fact is None:
+            raise StoreError("Такого действующего MCC у магазина нет")
+        brand_id = self._brand_id_for_merchant(connection, merchant_id)
+        siblings = connection.execute(
+            """SELECT f.* FROM store_brand_members bm
+            JOIN store_merchants m ON m.id=bm.merchant_id
+            JOIN store_facts f ON f.merchant_id=m.id
+            WHERE bm.brand_id=? AND m.channel=? AND f.mcc=?""",
+            (brand_id, merchant["channel"], mcc),
+        ).fetchall()
+        for sibling in siblings:
+            if sibling["note"] != note:
+                self._update(
+                    connection,
+                    changes,
+                    "store_facts",
+                    sibling["id"],
+                    note=note,
+                    revision=sibling["revision"] + 1,
+                )
+
+    def _merge_brands(self, connection, changes, source, target_id):
+        target = self._required_brand(connection, target_id)
+        if source["id"] == target_id:
+            raise StoreError("Нельзя объединить бренд с самим собой")
+        aliases = _aliases(
+            [
+                *json.loads(target["aliases_json"]),
+                source["name"],
+                *json.loads(source["aliases_json"]),
+            ]
+        )
+        self._update(
+            connection,
+            changes,
+            "store_brands",
+            target_id,
+            aliases_json=_json(aliases),
+            revision=target["revision"] + 1,
+        )
+        for member in connection.execute(
+            "SELECT * FROM store_brand_members WHERE brand_id=? ORDER BY id", (source["id"],)
+        ).fetchall():
+            self._update(
+                connection,
+                changes,
+                "store_brand_members",
+                member["id"],
+                brand_id=target_id,
+            )
+        self._harmonize_brand_notes(connection, changes, target_id)
+        self._update(
+            connection,
+            changes,
+            "store_brands",
+            source["id"],
+            archived=1,
+            merged_into=target_id,
+            revision=source["revision"] + 1,
+        )
+        return target_id
 
     def _archive_fact(self, connection, changes, merchant_id, mcc):
         row = connection.execute(
@@ -796,6 +1475,13 @@ class StoreRepository:
         target = self._required(connection, target_id)
         if source["id"] == target_id or source["channel"] != target["channel"]:
             raise StoreError("Объединять можно только разные магазины одного канала")
+        source_brand_id = self._brand_id_for_merchant(connection, source["id"])
+        target_brand_id = self._brand_id_for_merchant(connection, target_id)
+        if source_brand_id != target_brand_id:
+            source_brand = self._required_brand(connection, source_brand_id)
+            target_brand_id = self._merge_brands(connection, changes, source_brand, target_brand_id)
+        else:
+            self._harmonize_brand_notes(connection, changes, target_brand_id)
         aliases = _aliases(
             [
                 *json.loads(target["aliases_json"]),
@@ -817,7 +1503,14 @@ class StoreRepository:
             existing = connection.execute(
                 "SELECT * FROM store_facts WHERE merchant_id=? AND mcc=?", (target_id, fact["mcc"])
             ).fetchone()
-            target_fact = self._fact(connection, changes, target_id, fact["mcc"], reactivate=False)
+            target_fact = self._fact(
+                connection,
+                changes,
+                target_id,
+                fact["mcc"],
+                reactivate=False,
+                note=fact["note"] or None,
+            )
             if existing is None and fact["archived"]:
                 self._update(connection, changes, "store_facts", target_fact, archived=1)
             for evidence in connection.execute(
@@ -848,6 +1541,7 @@ class StoreRepository:
             merged_into=target_id,
             revision=source["revision"] + 1,
         )
+        return source["id"], target_brand_id
 
     def _revert(self, connection, changes, audit_id):
         audit = connection.execute("SELECT * FROM store_audit WHERE id=?", (audit_id,)).fetchone()
@@ -875,7 +1569,14 @@ class StoreRepository:
                     "Есть более поздние изменения; внесите отдельное исправление"
                 )
         # Revoke/rehome evidence before deciding whether an association still has support.
-        order = {"store_evidence": 0, "store_sources": 1, "store_facts": 2, "store_merchants": 3}
+        order = {
+            "store_evidence": 0,
+            "store_sources": 1,
+            "store_facts": 2,
+            "store_brand_members": 3,
+            "store_merchants": 4,
+            "store_brands": 5,
+        }
         for edit in sorted(edits, key=lambda item: order[item["table"]]):
             table, row_id, before, after = edit["table"], edit["id"], edit["before"], edit["after"]
             if table == "store_evidence" and before is None:
@@ -905,6 +1606,19 @@ class StoreRepository:
                 self._update(
                     connection, changes, table, row_id, archived=1, revision=after["revision"] + 1
                 )
+            elif table == "store_brands" and before is None:
+                self._update(
+                    connection,
+                    changes,
+                    table,
+                    row_id,
+                    archived=1,
+                    revision=after["revision"] + 1,
+                )
+            elif table == "store_brand_members" and before is None:
+                # Membership identity remains as the tombstone for an archived
+                # merchant/brand pair, just like imported source identities.
+                continue
             elif before is None:
                 # Source identities are permanent. Imported history cannot be deleted.
                 raise StaleChangeError(
@@ -987,6 +1701,10 @@ class StoreRepository:
                     channel="online" if metadata["is_online"] else "offline",
                     source_identity=identity,
                 )
+                brand_id = self._create_brand(connection, changes, name=name)
+                self._attach_brand(connection, changes, merchant_id, brand_id)
+            else:
+                brand_id = self._brand_id_for_merchant(connection, merchant_id)
             if link is None:
                 self._insert(
                     connection,
@@ -1027,13 +1745,14 @@ class StoreRepository:
                 )
             edits = changes.finish()
             if not edits:
-                return ChangeResult(0, merchant_id)
+                return ChangeResult(0, merchant_id, brand_id)
             cursor = connection.execute(
-                "INSERT INTO store_audit(kind,merchant_id,actor_id,changes_json) "
-                "VALUES('import',?,0,?)",
-                (merchant_id, _json(edits)),
+                """INSERT INTO store_audit
+                (kind,merchant_id,brand_id,actor_id,changes_json)
+                VALUES('import',?,?,0,?)""",
+                (merchant_id, brand_id, _json(edits)),
             )
-            return ChangeResult(cursor.lastrowid, merchant_id)
+            return ChangeResult(cursor.lastrowid, merchant_id, brand_id)
 
     def counts(self) -> dict[str, int]:
         """Return non-personal operational directory/import counters."""
