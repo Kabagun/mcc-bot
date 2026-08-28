@@ -65,6 +65,15 @@ class UserRegistry:
             ).fetchall()
         return tuple(row[0] for row in rows)
 
+    def private_chat_count(self) -> int:
+        """Return the number of remembered private Telegram chats."""
+
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM telegram_chats WHERE chat_id > 0"
+            ).fetchone()
+        return int(row[0])
+
 
 async def broadcast_message(bot: Bot, registry: UserRegistry, text: str) -> BroadcastResult:
     """Send one message to every remembered chat and return delivery counters."""

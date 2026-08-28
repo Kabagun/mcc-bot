@@ -55,8 +55,11 @@ def test_owner_is_explicit_and_user_id_authority(community):
 
 
 def test_role_requests_do_not_grant_or_subscribe(community):
+    assert community.role_request_status(10) is None
+    assert community.helper_count() == 2
     community.request_role(10, "candidate", "Alice", "Smith")
     community.request_role(10, "candidate_new", "Alice", "Updated")
+    assert community.role_request_status(10) == "pending"
     assert community.role(10) == "user"
     assert not community.digest_enabled(10)
     candidate = community.role_candidates(1)[0]
@@ -69,11 +72,14 @@ def test_role_requests_do_not_grant_or_subscribe(community):
     with pytest.raises(StaleAction):
         community.set_role(1, 11, True, require_pending=True)
     community.decline_role(1, 10, 0)
+    assert community.role_request_status(10) == "declined"
     with pytest.raises(StaleAction):
         community.decline_role(1, 10, 0)
     community.request_role(10, None, "Alice")
     community.set_role(1, 10, True, require_pending=True)
     assert community.is_admin(10)
+    assert community.role_request_status(10) == "granted"
+    assert community.helper_count() == 3
 
 
 def test_role_profile_schema_is_additive_and_survives_restart(community):

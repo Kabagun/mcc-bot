@@ -14,11 +14,13 @@ from telegram.error import BadRequest, Forbidden
 from mcc_bot.community import CommunityService
 from mcc_bot.community_handlers import (
     ADD,
+    APPLICATION_PENDING,
     INFO,
+    LEGACY_MINE,
     MANAGE,
-    MINE,
     QUEUE,
     SUGGEST,
+    VOLUNTEER,
     callback,
     handle_media,
     handle_text,
@@ -26,6 +28,7 @@ from mcc_bot.community_handlers import (
     show_menu,
 )
 from mcc_bot.stores import StoreRepository
+from mcc_bot.users import UserRegistry
 
 
 @pytest.fixture
@@ -33,8 +36,14 @@ def flow(tmp_path):
     service = CommunityService(StoreRepository(tmp_path / "stores.sqlite3"), owner_id=1)
     service.initialize()
     service.set_role(1, 2, True)
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10)
     bot = SimpleNamespace(send_message=AsyncMock())
-    return SimpleNamespace(application=SimpleNamespace(bot_data={"community": service}), bot=bot)
+    return SimpleNamespace(
+        application=SimpleNamespace(bot_data={"community": service, "user_registry": registry}),
+        bot=bot,
+    )
 
 
 def update(
@@ -133,7 +142,7 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     assert [button.text for row in keyboard_for(service, 10).keyboard for button in row] == [
         INFO,
         SUGGEST,
-        MINE,
+        VOLUNTEER,
     ]
     assert [button.text for row in keyboard_for(service, 2).keyboard for button in row] == [
         INFO,
@@ -147,6 +156,10 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     asyncio.run(show_menu(event, flow))
     assert any(
         "четырёхзначный MCC или название магазина" in call.args[0]
+        for call in event.effective_message.reply_text.await_args_list
+    )
+    assert any(
+        "👥 Пользователей: 1 · 🤝 Помощников: 1" in call.args[0]
         for call in event.effective_message.reply_text.await_args_list
     )
     assert service.draft(10) == current
@@ -168,7 +181,12 @@ def test_user_flow_allows_no_screenshot_preview_and_submit(flow):
     assert any(button.text == "Отправить на проверку" for button in all_buttons(preview))
     draft = service.draft(10)
     action = f"d:{draft.id}:{draft.version}:submit"
-    click(flow, action)
+    submitted = update(data="community:" + action)
+    submitted.callback_query.edit_message_text = AsyncMock()
+    asyncio.run(callback(submitted, flow))
+    confirmation = submitted.callback_query.edit_message_text.await_args.args[0]
+    assert "Спасибо! Отправлено на проверку" in confirmation
+    assert "Мои предложения" not in confirmation
     click(flow, action)
     assert len(service.own_proposals(10)) == 1
     assert not service.stores.search("New shop").matches
@@ -274,18 +292,19 @@ def test_revoked_reviewer_stale_preview_cannot_save(flow):
     assert service.stores.get(merchant_id).name == "Shop"
 
 
-def test_approval_notifies_author_and_forbidden_does_not_undo(flow):
+def test_approval_does_not_notify_author(flow):
     proposal = proposal_flow(flow)
     service = flow.application.bot_data["community"]
     click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
     claimed = service.proposal(2, proposal.id)
-    flow.bot.send_message.side_effect = Forbidden("blocked")
+    flow.bot.send_message.reset_mock()
     event = click(flow, f"q:{proposal.id}:{claimed.version}:approve", 2)
     assert service.proposal(2, proposal.id).status == "approved"
     assert "сохранено" in event.effective_message.reply_text.await_args.args[0]
+    flow.bot.send_message.assert_not_awaited()
 
 
-def test_clarification_answer_and_cancel(flow):
+def test_clarification_answer_and_legacy_cancel_is_inert(flow):
     proposal = proposal_flow(flow)
     service = flow.application.bot_data["community"]
     click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
@@ -298,12 +317,51 @@ def test_clarification_answer_and_cancel(flow):
     assert "Which address?" in flow.bot.send_message.await_args.kwargs["text"]
     click(flow, f"respond:{proposal.id}:{asked.version}")
     send(flow, "Town centre")
+    response_draft = service.draft(10)
+    click(flow, f"respond:{proposal.id}:{asked.version}")
+    assert service.draft(10) == response_draft
     draft_click(flow, "skip")
     draft_click(flow, "submit")
     pending = service.proposal(10, proposal.id)
     assert pending.status == "pending"
-    click(flow, f"cancel:{proposal.id}:{pending.version}")
-    assert service.proposal(10, proposal.id).status == "cancelled"
+    stale = click(flow, f"cancel:{proposal.id}:{pending.version}")
+    assert service.proposal(10, proposal.id).status == "pending"
+    assert "/start" in stale.effective_message.reply_text.await_args.args[0]
+
+
+def test_helper_application_main_button_is_idempotent(flow):
+    service = flow.application.bot_data["community"]
+
+    requested = send(
+        flow,
+        VOLUNTEER,
+        username="alice_helper",
+        first_name="Alice",
+        last_name="Smith",
+    )
+    markup = requested.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for row in markup.keyboard for button in row][-1] == APPLICATION_PENDING
+    with service.stores.connection() as connection:
+        created_at = connection.execute(
+            "SELECT created_at FROM community_role_requests WHERE user_id=10"
+        ).fetchone()[0]
+
+    repeated = send(flow, APPLICATION_PENDING)
+
+    assert "уже отправлена" in repeated.effective_message.reply_text.await_args.args[0]
+    with service.stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT created_at FROM community_role_requests WHERE user_id=10"
+            ).fetchone()[0]
+            == created_at
+        )
+
+
+def test_legacy_personal_proposals_button_is_inert(flow):
+    event = send(flow, LEGACY_MINE)
+
+    assert "/start" in event.effective_message.reply_text.await_args.args[0]
 
 
 def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
@@ -319,9 +377,12 @@ def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
     assert "Alice Smith" in candidate_text
     assert "Telegram ID: 10" in candidate_text
     assert any(button.text == "Назначить помощником" for button in all_buttons(candidate))
-    click(flow, "role:10:0:1", 1)
+    granted = click(flow, "role:10:0:1", 1)
     assert service.is_admin(10)
     assert flow.bot.send_message.await_args.kwargs["chat_id"] == 10
+    assert "✅ Вы назначены помощником" in flow.bot.send_message.await_args.kwargs["text"]
+    assert "/start" in flow.bot.send_message.await_args.kwargs["text"]
+    assert "Пользователь уведомлён" in granted.effective_message.reply_text.await_args.args[0]
     epoch = service.role_epoch(10)
     click(flow, f"digest:1:{epoch}")
     assert service.digest_enabled(10)
@@ -342,6 +403,21 @@ def test_role_request_grant_revoke_decline_and_consent_epoch(flow):
     assert not service.is_admin(12)
     management = click(flow, "manage", 1)
     assert all("user ID" not in button.text for button in all_buttons(management))
+
+
+def test_role_grant_delivery_failure_does_not_undo_role(flow):
+    service = flow.application.bot_data["community"]
+    service.request_role(12, "helper_12", "Helper", "Twelve")
+    flow.bot.send_message.side_effect = Forbidden("blocked")
+
+    event = click(flow, "role:12:0:1", 1)
+
+    assert service.is_admin(12)
+    assert "не доставлено" in event.effective_message.reply_text.await_args.args[0]
+    repeated = click(flow, "role:12:0:1", 1)
+    assert service.is_admin(12)
+    assert flow.bot.send_message.await_count == 1
+    assert "изменилась" in repeated.effective_message.reply_text.await_args.args[0]
 
 
 def test_media_bounds_document_rejection_privacy_and_unavailable_photo(flow):

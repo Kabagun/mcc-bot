@@ -233,6 +233,29 @@ class CommunityService:
         with self.stores.connection() as conn:
             return self._role(conn, user_id)[1]
 
+    def role_request_status(self, user_id: int) -> str | None:
+        """Return the current helper-application status, when one exists."""
+
+        with self.stores.connection() as conn:
+            self._role(conn, user_id)
+            row = conn.execute(
+                "SELECT status FROM community_role_requests WHERE user_id=?", (user_id,)
+            ).fetchone()
+        return str(row["status"]) if row else None
+
+    def helper_count(self) -> int:
+        """Return the number of active helpers, excluding the configured owner."""
+
+        with self.stores.connection() as conn:
+            if self.owner_id is None:
+                row = conn.execute("SELECT COUNT(*) FROM community_roles WHERE active=1").fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM community_roles WHERE active=1 AND user_id<>?",
+                    (self.owner_id,),
+                ).fetchone()
+        return int(row[0])
+
     def _require_admin(self, conn: sqlite3.Connection, user_id: int) -> None:
         if self._role(conn, user_id)[0] not in {"admin", "owner"}:
             raise AccessDenied("Это действие доступно только действующим помощникам.")
@@ -859,6 +882,16 @@ class CommunityService:
             or proposal.version != version
         ):
             raise StaleAction("Ответ уже получен или предложение закрыто.")
+        current = self.draft(user_id)
+        if current is not None:
+            if (
+                current.data.get("response_id") == proposal_id
+                and current.data.get("response_version") == version
+            ):
+                return current
+            raise StaleAction(
+                "У вас есть незавершённое действие. Продолжите или отмените его через /start."
+            )
         return self.begin(
             user_id,
             stage="response",

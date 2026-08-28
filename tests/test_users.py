@@ -16,8 +16,10 @@ def test_user_registry_remembers_unique_chat_ids(tmp_path) -> None:
     registry.remember(20)
     registry.remember(10)
     registry.remember(20)
+    registry.remember(-1001)
 
-    assert registry.chat_ids() == (10, 20)
+    assert registry.chat_ids() == (-1001, 10, 20)
+    assert registry.private_chat_count() == 2
     path.unlink()
     assert not path.exists()
 

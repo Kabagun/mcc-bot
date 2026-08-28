@@ -15,7 +15,6 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .community import (
-    FINAL_STATES,
     MAX_MEDIA_BYTES,
     MAX_NAME,
     MAX_NOTE,
@@ -32,18 +31,13 @@ LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
 SUGGEST = "➕ Предложить MCC магазина"
 ADD = "➕ Добавить MCC магазина"
-MINE = "👤 Мои предложения"
+VOLUNTEER = "🙋 Хочу помогать"
+APPLICATION_PENDING = "⏳ Заявка отправлена"
+LEGACY_MINE = "👤 Мои предложения"
 QUEUE = "📋 Разобрать очередь"
 MANAGE = "⚙️ Управление"
 HISTORY_PAGE_SIZE = 10
 MAX_HISTORY_OFFSET = 1000000
-STATUS = {
-    "pending": "ожидает проверки",
-    "approved": "принято",
-    "rejected": "отклонено",
-    "clarification": "нужно уточнение",
-    "cancelled": "отменено",
-}
 KINDS = {
     "add_merchant": "Добавить бренд, канал и MCC",
     "add_mcc": "Добавить MCC",
@@ -168,11 +162,13 @@ def _audit_identity(actor: dict[str, Any]) -> str:
 def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup:
     """Build a persistent keyboard from the user's current effective role."""
 
-    rows = (
-        [[INFO], [ADD], [QUEUE], [MANAGE]]
-        if service.is_admin(user_id)
-        else [[INFO], [SUGGEST], [MINE]]
-    )
+    if service.is_admin(user_id):
+        rows = [[INFO], [ADD], [QUEUE], [MANAGE]]
+    else:
+        application = (
+            APPLICATION_PENDING if service.role_request_status(user_id) == "pending" else VOLUNTEER
+        )
+        rows = [[INFO], [SUGGEST], [application]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
@@ -242,7 +238,10 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         update,
         "Отправьте четырёхзначный MCC или название магазина.\n"
         "Например: 5411 или Евроопт.\n"
-        "Данные магазинов пополняют пользователи; проверяйте MCC перед покупкой.",
+        "Данные магазинов пополняют пользователи; проверяйте MCC перед покупкой.\n\n"
+        f"👥 Пользователей: "
+        f"{context.application.bot_data['user_registry'].private_chat_count()} · "
+        f"🤝 Помощников: {service.helper_count()}",
         keyboard_for(service, user_id),
     )
 
@@ -614,45 +613,6 @@ async def _render_draft(
     await _say_inline(update, text, _draft_buttons(draft, rows))
 
 
-async def _mine(update: Update, service: CommunityService, user_id: int, offset: int = 0) -> None:
-    proposals = service.own_proposals(user_id, offset=offset)
-    text = "Ваши предложения" if proposals else "Пока нет предложений."
-    rows = []
-    for proposal in proposals:
-        rows.append([(f"№{proposal.id} · {STATUS[proposal.status]}", f"own:{proposal.id}")])
-    if offset:
-        rows.append([("⬅️ Назад", f"mine:{max(0, offset - 10)}")])
-    if len(proposals) == 10:
-        rows.append([("Дальше ➡️", f"mine:{offset + 10}")])
-    if not service.is_admin(user_id):
-        rows.append([("🙋 Хочу помогать", "volunteer")])
-    await _say(update, text, _keyboard(rows))
-
-
-async def _own(update: Update, service: CommunityService, user_id: int, proposal_id: int) -> None:
-    proposal = service.proposal(user_id, proposal_id)
-    if proposal.user_id != user_id:
-        raise CommunityError("Откройте предложение через очередь.")
-    text = f"Предложение №{proposal.id}: {STATUS[proposal.status]}\n\n" + _display_payload(
-        service, proposal.kind, proposal.payload
-    )
-    if proposal.comment:
-        text += "\nПриватный комментарий проверяющему: " + proposal.comment
-    has_media = service.proposal_has_media(user_id, proposal.id)
-    text += "\nСкриншот: приложен" if has_media else "\nСкриншот: Без скриншота"
-    if proposal.reason:
-        text += "\nОтвет помощника: " + proposal.reason
-    rows = []
-    if proposal.status == "clarification":
-        rows.append([("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")])
-    if proposal.status not in FINAL_STATES:
-        rows.append([("Отменить предложение", f"cancel:{proposal.id}:{proposal.version}")])
-    if has_media:
-        rows.append([("Скриншот", f"media:{proposal.id}")])
-    rows.append([("Мои предложения", "mine:0")])
-    await _say(update, text, _keyboard(rows))
-
-
 async def _queue(update: Update, service: CommunityService, user_id: int, offset: int = 0) -> None:
     proposals = service.queue(user_id, offset=offset)
     rows = [
@@ -708,7 +668,6 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
     rows = [
         [("Редактировать магазин", "edit")],
         [("Журнал изменений и восстановление", "recent")],
-        [(MINE, "mine:0")],
         [
             (
                 "🔔 Отключить сводку" if enabled else "🔕 Включить сводку в 20:00",
@@ -726,12 +685,10 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
 
 
 async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> None:
-    rows = (
-        [[("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")]]
-        if proposal.status == "clarification"
-        else [[("Мои предложения", "mine:0")]]
-    )
-    text = f"Ваше предложение №{proposal.id}: {STATUS[proposal.status]}."
+    if proposal.status != "clarification":
+        return
+    rows = [[("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")]]
+    text = f"Нужно уточнить предложение №{proposal.id}."
     if proposal.reason:
         text += "\n" + proposal.reason
     try:
@@ -739,18 +696,20 @@ async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> Non
             chat_id=proposal.user_id, text=text, reply_markup=_keyboard(rows)
         )
     except TelegramError:
-        LOGGER.info("Could not deliver a contribution decision; it remains in own proposals")
+        LOGGER.info("Could not deliver a contribution clarification request")
 
 
 async def _notify_role(
     context: ContextTypes.DEFAULT_TYPE, service: CommunityService, user_id: int, text: str
-) -> None:
+) -> bool:
     try:
         await context.bot.send_message(
             chat_id=user_id, text=text, reply_markup=keyboard_for(service, user_id)
         )
     except TelegramError:
         LOGGER.info("Could not deliver role notification; role change remains committed")
+        return False
+    return True
 
 
 def _advance(
@@ -808,6 +767,32 @@ async def begin_contribution(
     await _render_draft(update, service, draft)
 
 
+async def _request_helper_role(update: Update, service: CommunityService, user_id: int) -> None:
+    """Create one helper application without refreshing an existing pending request."""
+
+    if service.role_request_status(user_id) == "pending":
+        await _say(
+            update,
+            "Заявка уже отправлена. Доступ появится после подтверждения владельцем.",
+            keyboard_for(service, user_id),
+        )
+        return
+    user = update.effective_user
+    service.request_role(
+        user_id,
+        getattr(user, "username", None),
+        getattr(user, "first_name", None),
+        getattr(user, "last_name", None),
+    )
+    username = getattr(user, "username", None)
+    identity = f"@{username}" if username else "вашим именем в Telegram"
+    await _say(
+        update,
+        f"Заявка от {identity} отправлена владельцу. Доступ появится только после подтверждения.",
+        keyboard_for(service, user_id),
+    )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Consume role menu actions and active draft text, returning whether handled."""
 
@@ -817,7 +802,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     text = message.text.strip()
     user_id = _identity(update)
     if user_id is None:
-        if text in {INFO, ADD, SUGGEST, MINE, QUEUE, MANAGE}:
+        if text in {
+            INFO,
+            ADD,
+            SUGGEST,
+            VOLUNTEER,
+            APPLICATION_PENDING,
+            LEGACY_MINE,
+            QUEUE,
+            MANAGE,
+        }:
             await _say(update, "Откройте личный чат с ботом.")
             return True
         return False
@@ -830,8 +824,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             if text == ADD and not service.is_admin(user_id):
                 raise CommunityError("Роль изменилась. Используйте «Предложить MCC магазина».")
             await begin_contribution(update, context)
-        elif text == MINE:
-            await _mine(update, service, user_id)
+        elif text in {VOLUNTEER, APPLICATION_PENDING}:
+            await _request_helper_role(update, service, user_id)
+        elif text == LEGACY_MINE:
+            await _say(
+                update,
+                "Этот раздел больше не используется. Откройте /start.",
+                keyboard_for(service, user_id),
+            )
         elif text == QUEUE:
             await _queue(update, service, user_id)
         elif text == MANAGE:
@@ -1093,13 +1093,8 @@ async def _dispatch_callback(
         if draft is None or draft.id != parts[1] or draft.version != int(parts[2]):
             raise StaleAction("Кнопка устарела. Продолжите текущий шаг или откройте меню.")
         await _draft_callback(update, context, service, draft, parts[3:])
-    elif action == "mine":
-        await _mine(update, service, user_id, min(1000000, max(0, int(parts[1]))))
-    elif action == "own":
-        await _own(update, service, user_id, int(parts[1]))
-    elif action == "cancel":
-        proposal = service.cancel(user_id, int(parts[1]), int(parts[2]))
-        await _say(update, f"Предложение №{proposal.id} отменено.")
+    elif action in {"mine", "own", "cancel"}:
+        raise StaleAction("Кнопка устарела. Откройте /start.")
     elif action == "respond":
         draft = service.respond(user_id, int(parts[1]), int(parts[2]))
         await _render_draft(update, service, draft)
@@ -1171,20 +1166,7 @@ async def _dispatch_callback(
         service.set_digest(user_id, parts[1] == "1", expected_epoch=int(parts[2]))
         await _management(update, service, user_id)
     elif action == "volunteer":
-        user = update.effective_user
-        service.request_role(
-            user_id,
-            getattr(user, "username", None),
-            getattr(user, "first_name", None),
-            getattr(user, "last_name", None),
-        )
-        username = getattr(user, "username", None)
-        identity = f"@{username}" if username else "вашим именем в Telegram"
-        await _say(
-            update,
-            f"Заявка от {identity} отправлена владельцу. "
-            "Доступ появится только после подтверждения.",
-        )
+        await _request_helper_role(update, service, user_id)
     elif action == "roles":
         offset = max(0, min(1000000, int(parts[1]))) if len(parts) > 1 else 0
         candidates = service.role_candidates(user_id)
@@ -1243,16 +1225,23 @@ async def _dispatch_callback(
             expected_epoch=int(parts[2]),
             require_pending=parts[3] == "1",
         )
-        await _notify_role(
+        delivered = await _notify_role(
             context,
             service,
             int(parts[1]),
-            "Вы назначены помощником. Очередь и управление доступны в меню."
+            "✅ Вы назначены помощником. Теперь вам доступны очередь предложений "
+            "и управление данными.\nЕсли меню не обновилось, вызовите /start."
             if parts[3] == "1"
             else "Доступ помощника отозван. Предложения доступны как обычно.",
         )
         await _say(
-            update, "Роль обновлена. Вечерняя сводка выключена до нового согласия помощника."
+            update,
+            (
+                "Роль обновлена. Пользователь уведомлён."
+                if delivered
+                else "Роль обновлена, но уведомление пользователю не доставлено."
+            )
+            + " Вечерняя сводка выключена до нового согласия помощника.",
         )
     elif action == "decline":
         target_id = int(parts[1])
@@ -1320,7 +1309,7 @@ async def _draft_callback(
         text = (
             "Изменение сохранено в базе."
             if proposal.status == "approved"
-            else "Предложение отправлено на проверку. Статус — в «Мои предложения»."
+            else "Спасибо! Отправлено на проверку. Если понадобится уточнение, бот напишет вам."
         )
         brand_id = data.get("brand_id")
         if brand_id is None and proposal.status == "approved":
@@ -1341,7 +1330,7 @@ async def _draft_callback(
                     ]
                 )
         rows.append([("Добавить бренд", "again_new")])
-        await _say(update, text, _keyboard(rows))
+        await _say_inline(update, text, _keyboard(rows))
         return
     if action == "decision" and stage == "review_preview":
         proposal = service.review(

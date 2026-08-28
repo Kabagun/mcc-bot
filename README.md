@@ -96,15 +96,16 @@ mcc-broadcast --message 'Бот обновлён. Выполните /start.'
 The persistent private-chat keyboard is role-aware:
 
 - Everyone: `ℹ️ Информация по картам`.
-- Users: `➕ Предложить MCC магазина`, `👤 Мои предложения`.
+- Users: `➕ Предложить MCC магазина`, `🙋 Хочу помогать`.
 - Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
 
 Users choose a merchant (or explicitly create one), payment channel and MCC,
-attach a screenshot, review the draft, then submit it for approval. Subadmins
-may omit the screenshot and publish directly after confirmation. Name and
-duplicate reports need no screenshot. Forms support back/cancel and persist
-across restarts. Users can track or cancel unfinished proposals and request
-subadmin access via `/start` → `👤 Мои предложения` → `🙋 Хочу помогать`.
+optionally attach a screenshot, review the draft, then submit it for approval.
+Subadmins publish directly after confirmation. Forms support back/cancel and
+persist across restarts. After submission, the bot contacts the author only if
+a reviewer needs clarification. Users request subadmin access directly from
+`/start` → `🙋 Хочу помогать`. A pending request is shown as
+`⏳ Заявка отправлена`; the owner approves it from role management.
 
 Only the explicitly configured owner can approve pending requests or revoke
 roles. The owner sees the applicant's `@username`, Telegram display name and

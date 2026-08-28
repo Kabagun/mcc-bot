@@ -102,8 +102,10 @@ def test_registered_dispatcher_routes_numbers_text_and_removed_commands(telegram
             await app.process_update(incoming(app, "/start", sequence=9))
             keyboard = rendered(calls)[-1]["reply_markup"]["keyboard"]
             labels = [button["text"] for row in keyboard for button in row]
-            assert "👤 Мои предложения" in labels
+            assert "🙋 Хочу помогать" in labels
+            assert "👤 Мои предложения" not in labels
             assert "📋 Разобрать очередь" not in labels
+            assert "👥 Пользователей: 1 · 🤝 Помощников: 0" in rendered(calls)[-1]["text"]
 
     asyncio.run(scenario())
 
