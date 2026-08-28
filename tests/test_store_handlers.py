@@ -59,8 +59,8 @@ def test_single_result_always_asks_mcc_with_category(setup):
     choices = buttons(call.kwargs["reply_markup"])
     assert choices[0].text == "MCC 5411 — Продуктовые магазины"
     assert choices[0].callback_data == f"store:cards:{merchant_id}:offline:5411:0:0"
-    assert choices[1].text == "➕ Добавить или подтвердить MCC"
-    assert choices[1].callback_data == f"community:start:{merchant_id}:offline"
+    assert choices[1].text == "➕ Предложить MCC"
+    assert choices[1].callback_data == f"community:start:{merchant_id}"
 
 
 def test_brand_card_transport_preserves_html_contract(setup):
@@ -89,6 +89,8 @@ def test_role_specific_action_is_one_and_rechecked(setup):
     asyncio.run(handle_store_callback(update, context))
     choices = buttons(update.callback_query.edit_message_text.await_args.kwargs["reply_markup"])
     assert len(choices) == 3
+    assert choices[-2].text == "➕ Добавить MCC"
+    assert choices[-2].callback_data == f"community:start:{merchant_id}"
     assert choices[-1].callback_data == f"community:edit:{merchant_id}"
     service.is_admin.assert_called_once_with(10)
 
@@ -215,3 +217,4 @@ def test_public_brand_groups_channels_and_note_overrides_description(setup):
     labels = [button.text for button in buttons(call.kwargs["reply_markup"])]
     assert "MCC 5411 · Оплата у кассы" in labels
     assert not any("MCC 5411 — Продуктовые магазины ·" in label for label in labels)
+    assert labels.count("➕ Предложить MCC") == 1

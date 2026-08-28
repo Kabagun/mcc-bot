@@ -1308,22 +1308,42 @@ class StoreRepository:
             merchant_id = int(payload["merchant_id"])
             merchant = self._required(connection, merchant_id)
             brand_id = self._brand_id_for_merchant(connection, merchant_id)
+            fact_merchant_ids = [merchant_id]
+            if kind in {"replace_mcc", "archive_mcc", "edit_mcc_note"}:
+                fact_merchant_ids = self._fact_group_merchants(
+                    connection,
+                    payload,
+                    merchant,
+                    brand_id,
+                    payload.get("old_mcc", payload.get("mcc")),
+                )
             if kind in {"add_mcc", "replace_mcc"}:
                 if kind == "replace_mcc":
                     if normalize_mcc(payload["old_mcc"]) == normalize_mcc(payload["mcc"]):
                         raise StoreError("Новый MCC совпадает с прежним")
-                    self._archive_fact(connection, changes, merchant_id, payload["old_mcc"])
-                fact_id = self._fact(
-                    connection,
-                    changes,
-                    merchant_id,
-                    payload["mcc"],
-                    note=payload.get("note"),
-                )
-                self._evidence(connection, changes, fact_id, payload.get("evidence"))
-                changes.touch("store_facts", fact_id)
+                    for target_id in fact_merchant_ids:
+                        self._archive_fact(connection, changes, target_id, payload["old_mcc"])
+                for target_id in fact_merchant_ids:
+                    fact_id = self._fact(
+                        connection,
+                        changes,
+                        target_id,
+                        payload["mcc"],
+                        note=payload.get("note"),
+                    )
+                    evidence = payload.get("evidence")
+                    evidence_key = None
+                    if (
+                        len(fact_merchant_ids) > 1
+                        and isinstance(evidence, dict)
+                        and evidence.get("submission_id") is not None
+                    ):
+                        evidence_key = f"{evidence['submission_id']}:{target_id}"
+                    self._evidence(connection, changes, fact_id, evidence, key=evidence_key)
+                    changes.touch("store_facts", fact_id)
             elif kind == "archive_mcc":
-                self._archive_fact(connection, changes, merchant_id, payload["mcc"])
+                for target_id in fact_merchant_ids:
+                    self._archive_fact(connection, changes, target_id, payload["mcc"])
             elif kind == "edit_mcc_note":
                 self._edit_mcc_note(
                     connection, changes, merchant_id, payload["mcc"], payload["note"]
@@ -1371,6 +1391,52 @@ class StoreRepository:
                 "UPDATE store_audit SET reverted_by=? WHERE id=?", (cursor.lastrowid, reverted)
             )
         return ChangeResult(cursor.lastrowid, merchant_id, brand_id)
+
+    def _fact_group_merchants(self, connection, payload, merchant, brand_id, mcc):
+        """Validate all internal rows represented by one public channel/MCC fact."""
+
+        values = payload.get("merchant_ids")
+        if values is None:
+            return [merchant["id"]]
+        if (
+            not isinstance(values, list)
+            or not values
+            or len(values) > 100
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+                for value in values
+            )
+            or len(set(values)) != len(values)
+            or values[0] != merchant["id"]
+        ):
+            raise StoreError("Некорректная группа MCC")
+        normalized_mcc = normalize_mcc(mcc)
+        current_ids = [
+            row["merchant_id"]
+            for row in connection.execute(
+                """SELECT f.merchant_id FROM store_brand_members bm
+                JOIN store_merchants m ON m.id=bm.merchant_id
+                JOIN store_facts f ON f.merchant_id=m.id
+                WHERE bm.brand_id=? AND m.channel=? AND m.archived=0
+                  AND f.mcc=? AND f.archived=0 ORDER BY f.merchant_id""",
+                (brand_id, merchant["channel"], normalized_mcc),
+            ).fetchall()
+        ]
+        if current_ids != values:
+            raise StoreError("Группа MCC уже изменилась; откройте её заново")
+        for value in values:
+            target = self._required(connection, value)
+            if (
+                target["channel"] != merchant["channel"]
+                or self._brand_id_for_merchant(connection, value) != brand_id
+                or connection.execute(
+                    "SELECT 1 FROM store_facts WHERE merchant_id=? AND mcc=? AND archived=0",
+                    (value, normalized_mcc),
+                ).fetchone()
+                is None
+            ):
+                raise StoreError("Группа MCC уже изменилась; откройте её заново")
+        return values
 
     @staticmethod
     def _brand_id_for_merchant(connection, merchant_id):
@@ -1590,13 +1656,18 @@ class StoreRepository:
                     archived = 1
                 if archived and not after["archived"] and supported:
                     continue
+                values = {
+                    "archived": archived,
+                    "revision": after["revision"] + 1,
+                }
+                if before is not None and before["note"] != after["note"]:
+                    values["note"] = before["note"]
                 self._update(
                     connection,
                     changes,
                     table,
                     row_id,
-                    archived=archived,
-                    revision=after["revision"] + 1,
+                    **values,
                 )
             elif table == "store_merchants" and before is None:
                 if connection.execute(

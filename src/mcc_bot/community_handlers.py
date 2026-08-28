@@ -37,6 +37,7 @@ LEGACY_MINE = "👤 Мои предложения"
 QUEUE = "📋 Разобрать очередь"
 MANAGE = "⚙️ Управление"
 HISTORY_PAGE_SIZE = 10
+FACT_PAGE_SIZE = 10
 MAX_HISTORY_OFFSET = 1000000
 KINDS = {
     "add_merchant": "Добавить бренд, канал и MCC",
@@ -52,7 +53,7 @@ KINDS = {
     "brand_aliases": "Изменить названия бренда",
     "set_brand_membership": "Изменить принадлежность канала",
     "merge_brand": "Объединить бренды",
-    "edit_mcc_note": "Изменить заметку к MCC",
+    "edit_mcc_note": "Изменить подпись к MCC",
 }
 HISTORY_KINDS = {**KINDS, "import": "Импорт данных из tannei.by"}
 
@@ -212,6 +213,29 @@ async def _say_inline(
     await _say(update, text, markup, parse_mode=parse_mode)
 
 
+async def _close_draft(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    draft: Draft,
+) -> None:
+    """Discard a draft and restore its brand card when it has a live origin."""
+
+    brand_id = draft.data.get("brand_id")
+    service.cancel_draft(draft.user_id, draft.id, draft.version)
+    if isinstance(brand_id, int):
+        from .store_handlers import _brand_view
+
+        brand = _brand(service, brand_id)
+        if brand is not None:
+            text, markup = _brand_view(
+                service.stores, brand, 0, context, draft.user_id, private=True
+            )
+            await _say_inline(update, text, markup, parse_mode=ParseMode.HTML)
+            return
+    await _say(update, "Действие отменено.", keyboard_for(service, draft.user_id))
+
+
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show a private role-aware start menu without clearing a durable draft."""
 
@@ -251,9 +275,13 @@ def _draft_buttons(
 ) -> InlineKeyboardMarkup:
     prefix = f"d:{draft.id}:{draft.version}:"
     result = [[(label, prefix + action) for label, action in row] for row in (rows or [])]
+    if draft.stage in {"cancel_confirm", "editor"}:
+        return _keyboard(result)
     navigation = []
-    if draft.stage != "name":
+    if draft.data.get("back"):
         navigation.append(("⬅️ Назад", prefix + "back"))
+    elif draft.data.get("brand_id"):
+        navigation.append(("⬅️ К бренду", prefix + "close"))
     navigation.append(("Отмена", prefix + "cancel"))
     result.append(navigation)
     return _keyboard(result)
@@ -281,7 +309,7 @@ def _display_payload(service: CommunityService, kind: str, payload: dict[str, An
     if "mcc" in payload:
         parts.append("MCC: " + payload["mcc"])
     if "note" in payload:
-        parts.append("Публичная заметка: " + (payload["note"] or "не указана"))
+        parts.append("Подпись к MCC: " + (payload["note"] or "не указана"))
     if "target_id" in payload:
         target = (
             _brand(service, payload["target_id"], include_archived=True)
@@ -302,7 +330,87 @@ def _channel_label(channel: str) -> str:
     return "онлайн" if channel == "online" else "офлайн"
 
 
-def _administrative_preview(service: CommunityService, kind: str, payload: dict[str, Any]) -> str:
+def _channel_title(channel: str) -> str:
+    return "🌐 Онлайн" if channel == "online" else "🏬 Офлайн"
+
+
+def _brand_fact_items(service: CommunityService, brand_id: int) -> list[tuple[str, Any]]:
+    """Return public channel facts in the same deterministic order as the brand card."""
+
+    return [
+        (channel, fact)
+        for channel in ("offline", "online")
+        for fact in _brand_facts(service, brand_id, channel)
+    ]
+
+
+def _short_fact_note(note: str, maximum: int = 36) -> str:
+    note = note.strip()
+    if not note:
+        return "без подписи"
+    return note if len(note) <= maximum else note[: maximum - 1] + "…"
+
+
+def _brand_editor_summary(service: CommunityService, brand_id: int) -> str:
+    brand = _brand(service, brand_id, include_archived=True)
+    if brand is None:
+        return "Бренд недоступен."
+    aliases = ", ".join(brand.aliases) or "нет"
+    lines = [f"Редактирование: {brand.name}", f"Другие названия: {aliases}"]
+    for channel in ("offline", "online"):
+        facts = list(_brand_facts(service, brand_id, channel))
+        if not facts:
+            continue
+        shown = ", ".join(fact.mcc for fact in facts[:8])
+        if len(facts) > 8:
+            shown += f" … ещё {len(facts) - 8}"
+        lines.append(f"{_channel_title(channel)}: {shown}")
+    if len(lines) == 2:
+        lines.append("MCC пока не добавлены.")
+    return "\n".join(lines)
+
+
+def _selected_fact(service: CommunityService, data: dict[str, Any]):
+    brand_id = data.get("brand_id")
+    channel = data.get("channel")
+    mcc = data.get("selected_mcc") or data.get("mcc")
+    if (
+        not isinstance(brand_id, int)
+        or channel not in {"offline", "online"}
+        or not isinstance(mcc, str)
+    ):
+        return None
+    return next(
+        (fact for fact in _brand_facts(service, brand_id, channel) if fact.mcc == mcc), None
+    )
+
+
+def _selected_fact_text(service: CommunityService, data: dict[str, Any]) -> str:
+    brand = _brand(service, data["brand_id"], include_archived=True)
+    return (
+        f"Бренд: {brand.name if brand else 'недоступен'}\n"
+        f"Канал: {_channel_title(data['channel'])}\n"
+        f"MCC: {data['selected_mcc']}\n"
+        f"Подпись: {data.get('original_note') or 'отсутствует'}"
+    )
+
+
+def _note_change_text(old: str, new: str) -> str:
+    if old == new:
+        return f"Подпись: {new or 'отсутствует'} (без изменений)"
+    if not old:
+        return f"Подпись: добавлена «{new}»" if new else "Подпись: отсутствует"
+    if not new:
+        return f"Подпись: «{old}» → удалена"
+    return f"Подпись: «{old}» → «{new}»"
+
+
+def _administrative_preview(
+    service: CommunityService,
+    kind: str,
+    payload: dict[str, Any],
+    data: dict[str, Any] | None = None,
+) -> str:
     """Render compact confirmations for direct administrative changes."""
 
     if kind in {"archive_mcc", "archive_merchant"}:
@@ -323,6 +431,31 @@ def _administrative_preview(service: CommunityService, kind: str, payload: dict[
             f"Убрать {channel}-канал бренда «{name}» из поиска?\n"
             "Все MCC этого канала перестанут показываться."
         )
+    if kind in {"add_mcc", "replace_mcc", "edit_mcc_note"}:
+        merchant = service.stores.get(payload["merchant_id"], include_archived=True)
+        brand = (
+            _brand_for_merchant(service, payload["merchant_id"], include_archived=True)
+            if merchant
+            else None
+        )
+        lines = [
+            "Проверьте изменение:",
+            "",
+            f"Бренд: {brand.name if brand else 'бренд недоступен'}",
+            f"Канал: {_channel_title(merchant.channel) if merchant else 'канал недоступен'}",
+        ]
+        if kind == "replace_mcc":
+            lines.append(f"MCC: {payload['old_mcc']} → {payload['mcc']}")
+        else:
+            lines.append(f"MCC: {payload['mcc']}")
+        if kind == "add_mcc":
+            lines.append(f"Подпись: {payload.get('note') or 'отсутствует'}")
+        else:
+            state = data or {}
+            lines.append(
+                _note_change_text(str(state.get("original_note", "")), payload.get("note", ""))
+            )
+        return "\n".join(lines)
     return "Проверьте изменение:\n\n" + _display_payload(service, kind, payload)
 
 
@@ -332,14 +465,16 @@ def _button_only_guidance(service: CommunityService, draft: Draft) -> str:
     stage = draft.stage
     if stage == "editor":
         instruction = "Нажмите нужное действие, например «Изменить MCC», под сообщением бота выше."
-    elif stage == "mcc_editor":
-        instruction = (
-            "Нажмите «Заменить MCC», «Изменить заметку» или «Убрать MCC» под сообщением бота выше."
-        )
-    elif stage in {"channel", "fact_channel"}:
+    elif stage == "brand_editor":
+        instruction = "Нажмите, какие данные бренда нужно изменить, под сообщением бота выше."
+    elif stage == "mcc_facts":
+        instruction = "Выберите строку с нужными каналом и MCC кнопкой под сообщением бота выше."
+    elif stage == "mcc_fact":
+        instruction = "Выберите, что изменить в выбранном MCC, кнопкой под сообщением бота выше."
+    elif stage == "channel":
         instruction = "Нажмите кнопку нужного канала под сообщением бота выше."
-    elif stage == "old_mcc":
-        instruction = "Нажмите кнопку с нужным MCC под сообщением бота выше."
+    elif stage == "note_choice":
+        instruction = "Выберите, что сделать с подписью, кнопкой под сообщением бота выше."
     elif stage == "preview":
         direct = service.is_admin(draft.user_id) and not draft.data.get("response_id")
         label = "Сохранить в базу" if direct else "Отправить на проверку"
@@ -347,14 +482,14 @@ def _button_only_guidance(service: CommunityService, draft: Draft) -> str:
     elif stage == "cancel_confirm":
         instruction = "Нажмите «Да, отменить» или «Нет, продолжить» под сообщением бота выше."
     elif stage == "report":
-        instruction = "Нажмите «Добавить или подтвердить MCC» под сообщением бота выше."
+        instruction = "Нажмите «Предложить MCC» под сообщением бота выше."
     elif stage in {"evidence", "response_evidence"}:
         instruction = (
             "Пришлите скриншот как фотографию или нажмите «Без скриншота» под сообщением бота выше."
         )
     else:
         instruction = "Нажмите нужную кнопку под сообщением бота выше."
-    return f"Текст на этом шаге не используется. {instruction} Черновик сохранён."
+    return f"Текст на этом шаге не используется. {instruction}"
 
 
 async def _render_draft(
@@ -386,10 +521,42 @@ async def _render_draft(
         if stage in {"choose", "preview_choose"}:
             rows.append([("Создать новый бренд", "new")])
     elif stage == "channel":
-        text = f"Где оплачена покупка у бренда «{data['name']}»?"
+        text = f"Для какого канала добавить MCC у бренда «{data['name']}»?"
         rows = [[("🏬 Офлайн", "channel:offline"), ("🌐 Онлайн", "channel:online")]]
     elif stage == "mcc":
-        text = "Введите MCC покупки: ровно четыре цифры."
+        if data.get("kind") == "replace_mcc" and data.get("selected_mcc"):
+            text = _selected_fact_text(service, data) + "\n\nВведите новый MCC: ровно четыре цифры."
+        else:
+            text = (
+                f"Бренд: {data.get('name', 'бренд недоступен')}\n"
+                f"Канал: {_channel_title(data['channel'])}\n\n"
+                "Введите MCC: ровно четыре цифры."
+            )
+    elif stage == "note_choice":
+        brand = _brand(service, data.get("brand_id", 0), include_archived=True)
+        name = brand.name if brand else data.get("name", "бренд недоступен")
+        if data.get("kind") == "replace_mcc":
+            text = (
+                f"Бренд: {name}\nКанал: {_channel_title(data['channel'])}\n"
+                f"MCC: {data['old_mcc']} → {data['mcc']}\n"
+                f"Текущая подпись: {data.get('note') or 'отсутствует'}\n\n"
+                "Что сделать с подписью?"
+            )
+        else:
+            text = (
+                f"Бренд: {name}\nКанал: {_channel_title(data['channel'])}\n"
+                f"MCC: {data['mcc']}\n"
+                f"Подпись: {data.get('note') or 'отсутствует'}\n\n"
+                "Подпись необязательна. Что сделать?"
+            )
+        if data.get("note"):
+            rows = [
+                [("Оставить подпись", "note_keep")],
+                [("✏️ Изменить подпись", "note_edit")],
+                [("🗑 Убрать подпись", "note_remove")],
+            ]
+        else:
+            rows = [[("➕ Добавить подпись", "note_edit"), ("Без подписи", "note_keep")]]
     elif stage in {"evidence", "response_evidence"}:
         text = (
             "Пришлите скриншот операции из банка, где видны магазин и MCC.\n"
@@ -400,11 +567,12 @@ async def _render_draft(
         )
         rows = [[("Без скриншота", "skip")]]
     elif stage == "note":
+        current = data.get("note", "")
         text = (
-            f"Введите публичную заметку к MCC (до {MAX_NOTE} символов). "
-            "Её увидят все. Для пустой заметки отправьте «-»."
+            f"Текущая подпись: {current or 'отсутствует'}\n\n"
+            f"Введите новую подпись к MCC (до {MAX_NOTE} символов). Её увидят все."
         )
-        rows = [[("Без заметки", "skip")]]
+        rows = [[("🗑 Убрать подпись", "skip")]] if current else [[("Без подписи", "skip")]]
     elif stage == "private_comment":
         text = (
             "Введите приватный комментарий для помощников (до 1000 символов). "
@@ -421,7 +589,7 @@ async def _render_draft(
     elif stage == "preview":
         administrative = bool(data.get("editing"))
         text = (
-            _administrative_preview(service, data["kind"], data["payload"])
+            _administrative_preview(service, data["kind"], data["payload"], data)
             if administrative
             else "Проверьте перед отправкой:\n\n"
             + _display_payload(service, data["kind"], data["payload"])
@@ -438,7 +606,14 @@ async def _render_draft(
         if administrative:
             rows = []
             if data["kind"] in {"add_mcc", "replace_mcc", "edit_mcc_note"}:
-                rows.append([("Изменить заметку", "preview:note")])
+                rows.append(
+                    [
+                        (
+                            "✏️ Изменить подпись" if data.get("note") else "➕ Добавить подпись",
+                            "preview:note",
+                        )
+                    ]
+                )
             rows.append([("Сохранить в базу", "submit")])
         elif data["kind"] in {"add_merchant", "add_mcc", "replace_mcc"} and {
             "name",
@@ -447,7 +622,7 @@ async def _render_draft(
         } <= set(data):
             rows = [
                 [("🏪 Бренд", "preview:brand"), ("Канал", "preview:channel")],
-                [("MCC", "preview:mcc"), ("Заметка", "preview:note")],
+                [("MCC", "preview:mcc"), ("Подпись", "preview:note")],
                 [
                     ("Скриншот", "preview:evidence"),
                     ("Комментарий проверяющему", "preview:comment"),
@@ -458,47 +633,97 @@ async def _render_draft(
             rows = [[("Сохранить в базу" if direct else "Отправить на проверку", "submit")]]
     elif stage == "cancel_confirm":
         text = "В черновике уже есть данные. Точно отменить и удалить черновик?"
-        rows = [[("Да, отменить", "cancel_yes"), ("Нет, продолжить", "back")]]
+        rows = [[("Да, отменить", "cancel_yes"), ("Нет, продолжить", "cancel_no")]]
     elif stage == "report":
         text = "Что нужно дополнить или исправить?"
         rows = [
-            [("Добавить или подтвердить MCC", "operation:add_mcc")],
+            [
+                (
+                    "Добавить MCC" if service.is_admin(draft.user_id) else "Предложить MCC",
+                    "operation:add_mcc",
+                )
+            ]
         ]
     elif stage == "edit_name":
         text = "Введите название магазина для редактирования."
     elif stage == "editor":
-        brand = _brand(service, data["brand_id"], include_archived=True)
-        text = f"Редактирование бренда: {brand.name if brand else 'бренд недоступен'}"
+        text = _brand_editor_summary(service, data["brand_id"])
+        rows = [
+            [("➕ Добавить MCC", "operation:add_mcc")],
+            [("✏️ Изменить MCC", "mcc_actions")],
+            [("⋯ Ещё", "brand_actions")],
+            [("⬅️ К бренду", "close")],
+        ]
+    elif stage == "brand_editor":
+        text = _brand_editor_summary(service, data["brand_id"])
         rows = [
             [
                 ("Название", "operation:rename_brand"),
                 ("Другие названия", "operation:brand_aliases"),
             ],
-            [("Добавить MCC", "operation:add_mcc"), ("Изменить MCC", "mcc_actions")],
             [
                 ("Каналы / архив", "operation:channels"),
                 ("Объединить бренд", "operation:merge_brand"),
             ],
             [("История / отмена", "history")],
         ]
-    elif stage == "mcc_editor":
-        text = "Что изменить в существующем MCC?"
+    elif stage == "mcc_facts":
+        items = _brand_fact_items(service, data["brand_id"])
+        offset = min(max(0, int(data.get("fact_offset", 0))), max(0, len(items) - 1))
+        offset -= offset % FACT_PAGE_SIZE
+        page = items[offset : offset + FACT_PAGE_SIZE]
+        brand = _brand(service, data["brand_id"], include_archived=True)
+        text = f"Какой MCC изменить у бренда «{brand.name if brand else 'бренд недоступен'}»?"
+        for number, (channel, fact) in enumerate(page, start=offset + 1):
+            text += (
+                f"\n{number}. {_channel_title(channel)} · MCC {fact.mcc} — "
+                f"{_short_fact_note(getattr(fact, 'note', ''), MAX_NOTE)}"
+            )
+            rows.append(
+                [
+                    (
+                        f"{number} · {_channel_title(channel)} · {fact.mcc}",
+                        f"fact:{channel}:{fact.mcc}",
+                    )
+                ]
+            )
+        if not page:
+            text += "\nMCC пока не добавлены."
+        pagination = []
+        if offset:
+            pagination.append(("⬅️", f"fact_page:{max(0, offset - FACT_PAGE_SIZE)}"))
+        if offset + FACT_PAGE_SIZE < len(items):
+            pagination.append(("➡️", f"fact_page:{offset + FACT_PAGE_SIZE}"))
+        if pagination:
+            rows.append(pagination)
+    elif stage == "mcc_fact":
+        text = _selected_fact_text(service, data) + "\n\nЧто изменить?"
         rows = [
-            [("Заменить MCC", "operation:replace_mcc")],
-            [("Изменить заметку", "operation:edit_mcc_note")],
-            [("Убрать MCC", "operation:archive_mcc")],
+            [("✏️ Заменить MCC", "fact_replace")],
+            [
+                (
+                    "✏️ Изменить подпись" if data.get("original_note") else "➕ Добавить подпись",
+                    "fact_note",
+                )
+            ],
+            [("🗑 Убрать MCC", "fact_remove")],
         ]
     elif stage == "edit_value":
-        text = {
-            "rename_merchant": "Введите правильное название магазина.",
-            "aliases": "Введите другие названия через запятую (до 20). "
-            "Для удаления всех отправьте «-».",
-            "rename_brand": "Введите правильное название бренда.",
-            "brand_aliases": "Введите другие названия бренда через запятую (до 20). "
-            "Для удаления всех отправьте «-».",
-        }[data["kind"]]
+        brand = _brand(service, data["brand_id"], include_archived=True)
+        if data["kind"] == "rename_brand":
+            current = brand.name if brand else "бренд недоступен"
+            text = f"Текущее название: {current}\n\nВведите новое название бренда."
+        elif data["kind"] == "brand_aliases":
+            aliases = ", ".join(brand.aliases) if brand else ""
+            text = (
+                f"Текущие другие названия: {aliases or 'нет'}\n\n"
+                "Введите другие названия через запятую (до 20). Для удаления всех отправьте «-»."
+            )
+        else:
+            text = "Введите новое значение."
     elif stage == "manage_channels":
-        text = "Каналы бренда. Можно добавить новый канал с MCC или архивировать наблюдение."
+        text = _brand_editor_summary(service, data["brand_id"])
+        text += "\n\nМожно добавить канал с MCC или убрать существующий канал из поиска."
         channels = _brand_channels(service, data["brand_id"])
         for channel in ("offline", "online"):
             members = channels.get(channel, ())
@@ -521,29 +746,12 @@ async def _render_draft(
                         )
                     ]
                 )
-    elif stage == "fact_channel":
-        text = {
-            "replace_mcc": "В каком канале находится MCC для замены?",
-            "edit_mcc_note": "В каком канале находится MCC с нужной заметкой?",
-            "archive_mcc": "В каком канале находится MCC, который нужно убрать?",
-        }[data["kind"]]
-        for channel in _brand_channels(service, data["brand_id"]):
-            rows.append(
-                [(("🌐 Онлайн" if channel == "online" else "🏬 Офлайн"), f"fact_channel:{channel}")]
-            )
-    elif stage == "old_mcc":
-        text = {
-            "replace_mcc": "Выберите ошибочный MCC, который нужно заменить.",
-            "edit_mcc_note": "Выберите MCC, заметку к которому нужно изменить.",
-            "archive_mcc": "Выберите MCC, который нужно убрать.",
-        }[data["kind"]]
-        rows = [
-            [(fact.mcc, "old:" + fact.mcc)] for fact in service.stores.list_mcc(data["merchant_id"])
-        ]
-        if not rows:
-            text = "У магазина пока нет MCC. Вернитесь назад и добавьте его."
     elif stage == "target_name":
-        text = "Введите название бренда, который нужно оставить после объединения."
+        brand = _brand(service, data["brand_id"], include_archived=True)
+        text = (
+            f"Сейчас редактируется: {brand.name if brand else 'бренд недоступен'}\n\n"
+            "Введите название бренда, который нужно оставить после объединения."
+        )
     elif stage == "history":
         offset = data.get("history_offset", 0)
         brand = _brand(service, data["brand_id"], include_archived=True)
@@ -666,7 +874,6 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
         raise CommunityError("Управление доступно только действующим помощникам.")
     enabled = service.digest_enabled(user_id)
     rows = [
-        [("Редактировать магазин", "edit")],
         [("Журнал изменений и восстановление", "recent")],
         [
             (
@@ -744,7 +951,7 @@ async def begin_contribution(
     user_id = _identity(update)
     if user_id is None:
         raise CommunityError("Добавление доступно в личном чате с ботом.")
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = {"dirty": False}
     stage = "name"
     if brand_id is not None:
         brand = _brand(service, brand_id)
@@ -883,6 +1090,8 @@ def _sync_mcc_payload(data: dict[str, Any]) -> None:
         }
         if data.get("brand_id"):
             payload["brand_id"] = data["brand_id"]
+    if data.get("kind") in {"replace_mcc", "edit_mcc_note"} and data.get("merchant_ids"):
+        payload["merchant_ids"] = list(data["merchant_ids"])
     data["payload"] = payload
 
 
@@ -903,6 +1112,7 @@ def _consume_text(
         "preview_choose",
     }:
         name = clean_text(text, maximum=MAX_NAME)
+        data["dirty"] = True
         results = service.stores.search(name, limit=10)
         matches = (*results.matches, *results.suggestions)
         data["matches"] = list(dict.fromkeys(brand.id for brand in matches))[:10]
@@ -929,15 +1139,18 @@ def _consume_text(
         if not re.fullmatch(r"[0-9]{4}", text):
             raise CommunityError("Введите MCC: ровно четыре цифры.")
         data["mcc"] = text
+        data["dirty"] = True
         data.setdefault("note", "")
         _sync_mcc_payload(data)
-        stage = "preview"
+        stage = "note_choice"
     elif stage == "note":
-        data["note"] = "" if text == "-" else clean_text(text, maximum=MAX_NOTE)
+        data["note"] = clean_text(text, maximum=MAX_NOTE)
+        data["dirty"] = True
         _sync_mcc_payload(data)
         stage = "preview"
     elif stage in {"private_comment", "comment", "response"}:
         data["comment"] = clean_text(text)
+        data["dirty"] = True
         stage = "response_evidence" if stage == "response" else "preview"
     elif stage == "edit_value":
         payload = (
@@ -959,9 +1172,11 @@ def _consume_text(
         if data["kind"] in {"rename_brand", "brand_aliases"}:
             payload.pop("merchant_id", None)
         data["payload"] = payload
+        data["dirty"] = True
         stage = "preview" if data.get("editing") else "comment"
     elif stage == "reason":
         data["reason"] = clean_text(text)
+        data["dirty"] = True
         stage = "review_preview"
     elif stage in {"evidence", "response_evidence"}:
         raise _ButtonOnlyInput(_button_only_guidance(service, draft))
@@ -1084,6 +1299,7 @@ async def _dispatch_callback(
                 "brand_id": brand_id,
                 "selected_brand_id": brand_id,
                 "name": brand.name,
+                "dirty": False,
             },
             privileged=service.is_admin(user_id),
         )
@@ -1254,16 +1470,21 @@ async def _dispatch_callback(
         )
         await _say(update, "Заявка отклонена.")
     elif action == "edit":
-        data = {"editing": True}
-        stage = "edit_name"
-        if len(parts) == 2:
-            brand_id = int(parts[1])
-            if not _brand(service, brand_id):
-                raise CommunityError("Бренд не найден.")
-            data.update(brand_id=brand_id, name=_brand(service, brand_id).name)
-            stage = "editor"
+        if len(parts) != 2:
+            raise CommunityError(
+                "Найдите бренд по названию и нажмите «Редактировать бренд» в его карточке."
+            )
+        brand_id = int(parts[1])
+        if not _brand(service, brand_id):
+            raise CommunityError("Бренд не найден.")
+        data = {
+            "editing": True,
+            "dirty": False,
+            "brand_id": brand_id,
+            "name": _brand(service, brand_id).name,
+        }
         await _render_draft(
-            update, service, service.begin(user_id, stage=stage, data=data, privileged=True)
+            update, service, service.begin(user_id, stage="editor", data=data, privileged=True)
         )
     else:
         raise CommunityError("Кнопка устарела. Откройте меню заново.")
@@ -1277,29 +1498,24 @@ async def _draft_callback(
     parts: list[str],
 ) -> None:
     action, stage, data = parts[0], draft.stage, dict(draft.data)
-    if action == "cancel":
-        meaningful = any(
-            key in data
-            for key in {
-                "name",
-                "brand_id",
-                "channel",
-                "mcc",
-                "payload",
-                "note",
-                "comment",
-            }
-        ) or service.draft_has_media(draft.user_id, draft.id)
+    if action in {"cancel", "close"}:
+        meaningful = bool(data.get("dirty")) or service.draft_has_media(draft.user_id, draft.id)
         if meaningful and stage != "cancel_confirm":
-            draft = _advance(service, draft, "cancel_confirm", data)
+            data["cancel_stage"] = stage
+            draft = service.advance(draft.user_id, draft.id, draft.version, "cancel_confirm", data)
             await _render_draft(update, service, draft)
             return
-        service.cancel_draft(draft.user_id, draft.id, draft.version)
-        await _say(update, "Действие отменено.", keyboard_for(service, draft.user_id))
+        await _close_draft(update, context, service, draft)
         return
     if action == "cancel_yes" and stage == "cancel_confirm":
-        service.cancel_draft(draft.user_id, draft.id, draft.version)
-        await _say(update, "Действие отменено.", keyboard_for(service, draft.user_id))
+        await _close_draft(update, context, service, draft)
+        return
+    if action == "cancel_no" and stage == "cancel_confirm":
+        previous = data.pop("cancel_stage", None)
+        if not isinstance(previous, str) or previous == "cancel_confirm":
+            raise StaleAction("Не удалось восстановить предыдущий шаг.")
+        draft = service.advance(draft.user_id, draft.id, draft.version, previous, data)
+        await _render_draft(update, service, draft)
         return
     if action == "resume":
         await _render_draft(update, service, draft)
@@ -1346,13 +1562,10 @@ async def _draft_callback(
         return
     if action == "back":
         history = data.get("back", [])
-        if history:
-            stage = history[-1]
-            data["back"] = history[:-1]
-        else:
-            stage = "editor" if data.get("editing") and data.get("brand_id") else "name"
-        if stage == "name":
-            data = {}
+        if not history:
+            raise StaleAction("Назад с этого шага недоступно.")
+        stage = history[-1]
+        data["back"] = history[:-1]
         draft = service.advance(draft.user_id, draft.id, draft.version, stage, data)
         await _render_draft(update, service, draft)
         return
@@ -1369,7 +1582,9 @@ async def _draft_callback(
         if not brand:
             raise CommunityError("Бренд больше недоступен.")
         if stage == "target_choose":
+            data.pop("expected", None)
             data["payload"] = {"brand_id": data["brand_id"], "target_id": brand_id}
+            data["dirty"] = True
             stage = "preview" if data.get("editing") else "comment"
         elif stage == "preview_choose":
             data.update(brand_id=brand.id, selected_brand_id=brand.id, name=brand.name)
@@ -1419,6 +1634,8 @@ async def _draft_callback(
         if stage in {"comment", "private_comment"}:
             data["comment"] = ""
         elif stage == "note":
+            if data.get("note"):
+                data["dirty"] = True
             data["note"] = ""
             _sync_mcc_payload(data)
         stage = "preview"
@@ -1443,26 +1660,27 @@ async def _draft_callback(
         else:
             raise StaleAction("Поле недоступно.")
     elif action == "mcc_actions" and stage == "editor" and service.is_admin(draft.user_id):
-        stage = "mcc_editor"
-    elif action == "operation" and stage in {"report", "editor", "mcc_editor"}:
+        data["fact_offset"] = 0
+        stage = "mcc_facts"
+    elif action == "brand_actions" and stage == "editor" and service.is_admin(draft.user_id):
+        stage = "brand_editor"
+    elif action == "operation" and stage in {"report", "editor", "brand_editor"}:
         kind = parts[1]
-        if stage == "report":
+        if stage in {"report", "editor"}:
             allowed = {"add_mcc"}
-        elif stage == "editor":
+        else:
             allowed = {
                 "rename_brand",
                 "brand_aliases",
-                "add_mcc",
                 "channels",
                 "merge_brand",
             }
-        else:
-            allowed = {"replace_mcc", "edit_mcc_note", "archive_mcc"}
         if kind not in allowed or (
-            stage in {"editor", "mcc_editor"} and not service.is_admin(draft.user_id)
+            stage in {"editor", "brand_editor"} and not service.is_admin(draft.user_id)
         ):
             raise CommunityError("Изменение недоступно.")
         data["kind"] = kind
+        data.pop("expected", None)
         data.pop("payload", None)
         data.pop("comment", None)
         if kind in {"rename_brand", "brand_aliases"}:
@@ -1470,26 +1688,130 @@ async def _draft_callback(
         elif kind == "merge_brand":
             stage = "target_name"
         elif kind == "add_mcc":
+            for key in (
+                "channel",
+                "merchant_id",
+                "mcc",
+                "note",
+                "old_mcc",
+                "selected_mcc",
+                "original_note",
+                "merchant_ids",
+            ):
+                data.pop(key, None)
             stage = "channel"
-        elif kind in {"replace_mcc", "archive_mcc", "edit_mcc_note"}:
-            stage = "fact_channel"
         elif kind == "channels":
             stage = "manage_channels"
         else:
             raise CommunityError("Изменение недоступно.")
-    elif action == "fact_channel" and stage == "fact_channel":
-        channel = parts[1]
-        member = _member_for_channel(service, data["brand_id"], channel)
-        if member is None:
-            raise StaleAction("Канал бренда уже изменился.")
-        data.update(channel=channel, merchant_id=member.id)
-        stage = "old_mcc"
+    elif action == "fact_page" and stage == "mcc_facts":
+        offset = int(parts[1])
+        items = _brand_fact_items(service, data["brand_id"])
+        if (
+            offset < 0
+            or offset % FACT_PAGE_SIZE
+            or offset >= max(1, len(items))
+            or abs(offset - int(data.get("fact_offset", 0))) > FACT_PAGE_SIZE
+        ):
+            raise StaleAction("Страница MCC недоступна.")
+        data["fact_offset"] = offset
+    elif action == "fact" and stage == "mcc_facts":
+        selector, mcc = parts[1], parts[2]
+        if selector in {"offline", "online"}:
+            channel = selector
+            fact = next(
+                (
+                    fact
+                    for fact in _brand_facts(service, data["brand_id"], channel)
+                    if fact.mcc == mcc
+                ),
+                None,
+            )
+        else:
+            # Keep already-rendered buttons from the previous release usable.
+            legacy_id = int(selector)
+            member = next(
+                (
+                    item
+                    for item in _brand_members(service, data["brand_id"])
+                    if item.id == legacy_id
+                ),
+                None,
+            )
+            channel = member.channel if member else ""
+            fact = next(
+                (
+                    item
+                    for item in _brand_facts(service, data["brand_id"], channel)
+                    if item.mcc == mcc and legacy_id in item.merchant_ids
+                ),
+                None,
+            )
+        if fact is None:
+            raise StaleAction("MCC уже изменился. Откройте список заново.")
+        merchant_id = fact.merchant_ids[0]
+        data.pop("expected", None)
+        data.update(
+            merchant_id=merchant_id,
+            merchant_ids=list(fact.merchant_ids),
+            channel=channel,
+            selected_mcc=mcc,
+            original_note=getattr(fact, "note", ""),
+            note=getattr(fact, "note", ""),
+        )
+        for key in ("kind", "payload", "old_mcc", "mcc"):
+            data.pop(key, None)
+        stage = "mcc_fact"
+    elif action in {"fact_replace", "fact_note", "fact_remove"} and stage == "mcc_fact":
+        fact = _selected_fact(service, data)
+        if (
+            fact is None
+            or list(fact.merchant_ids) != data.get("merchant_ids")
+            or getattr(fact, "note", "") != data.get("original_note", "")
+        ):
+            raise StaleAction("MCC или его подпись уже изменились. Откройте список заново.")
+        if action == "fact_replace":
+            data.update(
+                kind="replace_mcc",
+                old_mcc=data["selected_mcc"],
+                note=data.get("original_note", ""),
+            )
+            data.pop("mcc", None)
+            data.pop("payload", None)
+            stage = "mcc"
+        elif action == "fact_note":
+            data.update(
+                kind="edit_mcc_note",
+                mcc=data["selected_mcc"],
+                note=data.get("original_note", ""),
+            )
+            _sync_mcc_payload(data)
+            stage = "note"
+        else:
+            data.update(kind="archive_mcc", dirty=True)
+            data["payload"] = {
+                "merchant_id": data["merchant_id"],
+                "merchant_ids": list(data["merchant_ids"]),
+                "mcc": data["selected_mcc"],
+            }
+            stage = "preview"
+    elif action in {"note_keep", "note_edit", "note_remove"} and stage == "note_choice":
+        if action == "note_edit":
+            stage = "note"
+        else:
+            if action == "note_remove" and data.get("note"):
+                data["note"] = ""
+                data["dirty"] = True
+            _sync_mcc_payload(data)
+            stage = "preview"
     elif action == "add_channel" and stage == "manage_channels":
         channel = parts[1]
         if channel not in {"offline", "online"}:
             raise CommunityError("Некорректный канал.")
         data["channel"] = channel
+        data.pop("expected", None)
         data.pop("merchant_id", None)
+        data.pop("merchant_ids", None)
         data["kind"] = "add_mcc"
         stage = "mcc"
     elif action == "archive_member" and stage == "manage_channels":
@@ -1497,30 +1819,11 @@ async def _draft_callback(
         if merchant_id not in {member.id for member in _brand_members(service, data["brand_id"])}:
             raise StaleAction("Канал бренда уже изменился.")
         data["kind"] = "archive_merchant"
+        data.pop("expected", None)
         data["payload"] = {"merchant_id": merchant_id}
+        data["dirty"] = True
         stage = "preview"
-    elif action == "old" and stage == "old_mcc":
-        mcc = parts[1]
-        if mcc not in {fact.mcc for fact in service.stores.list_mcc(data["merchant_id"])}:
-            raise StaleAction("MCC уже изменился.")
-        if data["kind"] == "archive_mcc":
-            data["payload"] = {"merchant_id": data["merchant_id"], "mcc": mcc}
-            stage = "preview"
-        elif data["kind"] == "edit_mcc_note":
-            fact = next(
-                fact for fact in service.stores.list_mcc(data["merchant_id"]) if fact.mcc == mcc
-            )
-            data.update(mcc=mcc, note=getattr(fact, "note", ""))
-            data["payload"] = {
-                "merchant_id": data["merchant_id"],
-                "mcc": mcc,
-                "note": data["note"],
-            }
-            stage = "note"
-        else:
-            data["old_mcc"] = mcc
-            stage = "mcc"
-    elif action == "history" and stage == "editor" and service.is_admin(draft.user_id):
+    elif action == "history" and stage == "brand_editor" and service.is_admin(draft.user_id):
         data["history_offset"] = 0
         stage = "history"
     elif action == "history_page" and stage == "history" and service.is_admin(draft.user_id):
@@ -1555,7 +1858,9 @@ async def _draft_callback(
         ):
             raise StaleAction("Изменение недоступно для отмены.")
         data["kind"] = "revert"
+        data.pop("expected", None)
         data["payload"] = {"audit_id": audit_id}
+        data["dirty"] = True
         stage = "preview"
     else:
         raise StaleAction("Кнопка не относится к текущему шагу.")

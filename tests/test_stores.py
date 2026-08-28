@@ -601,6 +601,106 @@ def test_note_validation_replace_and_audited_group_edit(repository):
     assert repository.list_mcc(merchant.merchant_id)[0].note == "restaurant"
 
 
+def test_public_fact_replace_and_archive_cover_every_internal_source_row(repository):
+    first = add(repository, name="Grouped", mcc=None)
+    second = repository.apply_change(
+        "add_merchant",
+        {
+            "brand_id": first.brand_id,
+            "name": "Grouped source",
+            "channel": "offline",
+            "mcc": "5411",
+            "note": "касса",
+        },
+        1,
+    )
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": first.merchant_id, "mcc": "5411", "note": "касса"},
+        1,
+    )
+    merchant_ids = [first.merchant_id, second.merchant_id]
+    assert repository.list_brand_mcc(first.brand_id)[0].merchant_ids == tuple(merchant_ids)
+
+    replaced = repository.apply_change(
+        "replace_mcc",
+        {
+            "merchant_id": first.merchant_id,
+            "merchant_ids": merchant_ids,
+            "old_mcc": "5411",
+            "mcc": "5812",
+            "note": "касса",
+        },
+        2,
+    )
+    for merchant_id in merchant_ids:
+        assert [(fact.mcc, fact.note) for fact in repository.list_mcc(merchant_id)] == [
+            ("5812", "касса")
+        ]
+    assert repository.list_brand_mcc(first.brand_id)[0].merchant_ids == tuple(merchant_ids)
+
+    archived = repository.apply_change(
+        "archive_mcc",
+        {
+            "merchant_id": first.merchant_id,
+            "merchant_ids": merchant_ids,
+            "mcc": "5812",
+        },
+        3,
+    )
+    assert repository.list_brand_mcc(first.brand_id) == ()
+    assert all(not repository.list_mcc(merchant_id) for merchant_id in merchant_ids)
+
+    repository.apply_change("revert", {"audit_id": archived.audit_id}, 4)
+    assert repository.list_brand_mcc(first.brand_id)[0].merchant_ids == tuple(merchant_ids)
+    assert repository.history(first.merchant_id)[1].id == archived.audit_id
+    assert replaced.audit_id > 0
+
+    edited = repository.apply_change(
+        "edit_mcc_note",
+        {
+            "merchant_id": first.merchant_id,
+            "merchant_ids": merchant_ids,
+            "mcc": "5812",
+            "note": "новая подпись",
+        },
+        5,
+    )
+    assert all(
+        repository.list_mcc(merchant_id)[0].note == "новая подпись" for merchant_id in merchant_ids
+    )
+    repository.apply_change("revert", {"audit_id": edited.audit_id}, 6)
+    assert all(repository.list_mcc(merchant_id)[0].note == "касса" for merchant_id in merchant_ids)
+
+
+def test_public_fact_group_rejects_partial_or_changed_membership(repository):
+    first = add(repository, name="Grouped", mcc="5411")
+    second = repository.apply_change(
+        "add_merchant",
+        {
+            "brand_id": first.brand_id,
+            "name": "Grouped source",
+            "channel": "offline",
+            "mcc": "5411",
+        },
+        1,
+    )
+    with pytest.raises(StoreError, match="Группа MCC уже изменилась"):
+        repository.apply_change(
+            "archive_mcc",
+            {
+                "merchant_id": first.merchant_id,
+                "merchant_ids": [first.merchant_id],
+                "mcc": "5411",
+            },
+            2,
+        )
+    assert repository.list_brand_mcc(first.brand_id)[0].merchant_ids == (
+        first.merchant_id,
+        second.merchant_id,
+    )
+
+
 def test_merchant_merge_reconciles_brand_and_brand_history_preserves_actors(repository):
     source = repository.apply_change("add_merchant", {"name": "Duplicate"}, 11)
     target = repository.apply_change("add_merchant", {"name": "Canonical"}, 22)

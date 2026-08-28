@@ -1,5 +1,8 @@
 """Exercise the registered PTB dispatcher with real updates and a fake Telegram transport."""
 
+# Russian UI copy and ordinary Unicode buttons are intentional.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
@@ -156,10 +159,54 @@ def test_owner_menu_and_sensitive_actions_reject_group_chat(telegram_app):
             assert "📋 Разобрать очередь" in labels
             calls.clear()
             await app.process_update(
-                incoming(app, "➕ Добавить MCC магазина", user_id=42, group=True, sequence=2)  # noqa: RUF001
+                incoming(app, "➕ Добавить MCC магазина", user_id=42, group=True, sequence=2)
             )
             assert app.bot_data["community"].draft(42) is None
             assert rendered(calls)
             assert "личн" in rendered(calls)[-1]["text"].lower()
+
+    asyncio.run(scenario())
+
+
+def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
+    app, calls = telegram_app
+    result = app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {"name": "eMall", "channel": "offline", "mcc": "5411", "note": "Европочта"},
+        42,
+    )
+    brand_id = result.brand_id
+    app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand_id,
+            "name": "eMall",
+            "channel": "online",
+            "mcc": "5300",
+            "note": "Онлайн-оплата",
+        },
+        42,
+    )
+
+    async def scenario():
+        async with app:
+            await app.process_update(incoming(app, "eMall", user_id=42))
+            card = rendered(calls)[-1]
+            buttons = [button for row in card["reply_markup"]["inline_keyboard"] for button in row]
+            assert [button["text"] for button in buttons].count("➕ Добавить MCC") == 1
+            edit = next(button for button in buttons if button["text"] == "✏️ Редактировать бренд")
+
+            calls.clear()
+            await app.process_update(tapped(app, edit["callback_data"], user_id=42, sequence=102))
+            editor = rendered(calls)[-1]
+            assert "Редактирование: eMall" in editor["text"]
+            assert "🏬 Офлайн: 5411" in editor["text"]
+            assert "🌐 Онлайн: 5300" in editor["text"]
+            labels = [
+                button["text"]
+                for row in editor["reply_markup"]["inline_keyboard"]
+                for button in row
+            ]
+            assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К бренду"]
 
     asyncio.run(scenario())

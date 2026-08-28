@@ -593,7 +593,12 @@ class CommunityService:
                     (draft.id, media[0], media[1], time.time()),
                 )
             data = dict(data)
-            if stage == "preview" and draft.stage != "preview" and data.get("kind") in EDIT_KINDS:
+            if (
+                stage == "preview"
+                and draft.stage != "preview"
+                and data.get("kind") in EDIT_KINDS
+                and "expected" not in data
+            ):
                 data["expected"] = self._snapshot(conn, data["kind"], data["payload"])
             conn.execute(
                 """UPDATE community_drafts SET stage=?,data=?,version=version+1,updated_at=?
@@ -613,17 +618,20 @@ class CommunityService:
         schemas = {
             "add_merchant": ({"name", "channel", "mcc"}, {"brand_id", "note"}),
             "add_mcc": ({"merchant_id", "mcc"}, {"note"}),
-            "replace_mcc": ({"merchant_id", "old_mcc", "mcc"}, {"note"}),
+            "replace_mcc": (
+                {"merchant_id", "old_mcc", "mcc"},
+                {"note", "merchant_ids"},
+            ),
             "rename_merchant": ({"merchant_id", "name"}, set()),
             "merge_merchant": ({"merchant_id", "target_id"}, set()),
             "aliases": ({"merchant_id", "aliases"}, set()),
             "archive_merchant": ({"merchant_id"}, set()),
-            "archive_mcc": ({"merchant_id", "mcc"}, set()),
+            "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids"}),
             "rename_brand": ({"brand_id", "name"}, set()),
             "brand_aliases": ({"brand_id", "aliases"}, set()),
             "set_brand_membership": ({"merchant_id", "brand_id"}, set()),
             "merge_brand": ({"brand_id", "target_id"}, set()),
-            "edit_mcc_note": ({"merchant_id", "mcc", "note"}, set()),
+            "edit_mcc_note": ({"merchant_id", "mcc", "note"}, {"merchant_ids"}),
             "revert": ({"audit_id"}, set()),
         }
         if kind not in schemas:
@@ -636,6 +644,19 @@ class CommunityService:
             if key in {"merchant_id", "brand_id", "target_id", "audit_id"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                     raise CommunityError("Некорректный бренд, магазин или запись истории.")
+            elif key == "merchant_ids":
+                if (
+                    not isinstance(value, list)
+                    or not value
+                    or len(value) > 100
+                    or any(
+                        not isinstance(item, int) or isinstance(item, bool) or item <= 0
+                        for item in value
+                    )
+                    or len(set(value)) != len(value)
+                    or value[0] != result.get("merchant_id")
+                ):
+                    raise CommunityError("Некорректная группа MCC.")
             elif key in {"mcc", "old_mcc"}:
                 if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}", value):
                     raise CommunityError("MCC должен состоять из четырёх цифр.")
@@ -649,7 +670,7 @@ class CommunityService:
                     or len(value.strip()) > MAX_NOTE
                     or any(ord(ch) < 32 for ch in value)
                 ):
-                    raise CommunityError(f"Публичная заметка — не больше {MAX_NOTE} символов.")
+                    raise CommunityError(f"Подпись к MCC — не больше {MAX_NOTE} символов.")
                 result[key] = value.strip()
             elif key == "aliases":
                 if not isinstance(value, list) or len(value) > 20:
@@ -768,7 +789,7 @@ class CommunityService:
                 result["brands"][str(value)] = [brand.revision, brand.archived]
         merchant_id = payload.get("merchant_id")
         if merchant_id and kind in STRUCTURAL_KINDS | {"add_mcc"}:
-            ids = [merchant_id]
+            ids = list(payload.get("merchant_ids", [merchant_id]))
             if kind == "merge_merchant":
                 ids.append(payload["target_id"])
             for value in ids:
@@ -777,26 +798,27 @@ class CommunityService:
                     raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
                 result["merchants"][str(value)] = [merchant.revision, merchant.archived]
             if kind in {"replace_mcc", "archive_mcc", "add_mcc", "edit_mcc_note"}:
-                facts = {
-                    fact.mcc: fact
-                    for fact in self.stores.list_mcc(
-                        merchant_id, connection=conn, include_archived=True
-                    )
-                }
                 old_mcc = payload.get("old_mcc", payload.get("mcc"))
-                codes = facts if kind == "add_mcc" else [old_mcc]
-                for code in codes:
-                    fact = facts.get(code)
-                    result["facts"][f"{merchant_id}:{code}"] = (
-                        [
-                            fact.revision,
-                            fact.archived,
-                            fact.evidence_count,
-                            getattr(fact, "note", ""),
-                        ]
-                        if fact
-                        else None
-                    )
+                for value in ids:
+                    facts = {
+                        fact.mcc: fact
+                        for fact in self.stores.list_mcc(
+                            value, connection=conn, include_archived=True
+                        )
+                    }
+                    codes = facts if kind == "add_mcc" else [old_mcc]
+                    for code in codes:
+                        fact = facts.get(code)
+                        result["facts"][f"{value}:{code}"] = (
+                            [
+                                fact.revision,
+                                fact.archived,
+                                fact.evidence_count,
+                                getattr(fact, "note", ""),
+                            ]
+                            if fact
+                            else None
+                        )
         return result
 
     def submit(self, user_id: int, draft_id: str, version: int) -> Proposal:

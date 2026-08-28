@@ -106,6 +106,7 @@ def _fact_label(fact, descriptions) -> str:
 def _brand_view(repository, brand, page, context, user_id, *, private=True):
     """Render a brand card as Telegram HTML with its inline keyboard."""
 
+    admin = private and _is_admin(context, user_id)
     channels = _brand_channels(repository, brand.id)
     observed = [channel for channel in _CHANNELS if channels.get(channel)]
     descriptions = context.application.bot_data["descriptions"]
@@ -142,27 +143,19 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 )
         elif not all_facts:
             text += "\nMCC пока не добавлен."
-        if private:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        "➕ Добавить или подтвердить MCC",
-                        callback_data=f"community:start:{brand.id}:{channel}",
-                    )
-                ]
-            )
     if not observed:
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
-        if private:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        "➕ Добавить или подтвердить MCC",
-                        callback_data=f"community:start:{brand.id}",
-                    )
-                ]
-            )
     text += f"\n\n<i>{_WARNING}</i>"
+
+    if private:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "➕ Добавить MCC" if admin else "➕ Предложить MCC",
+                    callback_data=f"community:start:{brand.id}",
+                )
+            ]
+        )
 
     navigation = []
     if page:
@@ -181,7 +174,7 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         )
     if navigation:
         rows.append(navigation)
-    if private and _is_admin(context, user_id):
+    if admin:
         rows.append(
             [
                 InlineKeyboardButton(
