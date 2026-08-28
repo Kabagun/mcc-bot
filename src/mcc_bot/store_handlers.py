@@ -104,6 +104,8 @@ def _fact_label(fact, descriptions) -> str:
 
 
 def _brand_view(repository, brand, page, context, user_id, *, private=True):
+    """Render a brand card as Telegram HTML with its inline keyboard."""
+
     channels = _brand_channels(repository, brand.id)
     observed = [channel for channel in _CHANNELS if channels.get(channel)]
     descriptions = context.application.bot_data["descriptions"]

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 from mcc_bot.catalog import CardCatalog
@@ -60,6 +61,23 @@ def test_single_result_always_asks_mcc_with_category(setup):
     assert choices[0].callback_data == f"store:cards:{merchant_id}:offline:5411:0:0"
     assert choices[1].text == "➕ Добавить или подтвердить MCC"
     assert choices[1].callback_data == f"community:start:{merchant_id}:offline"
+
+
+def test_brand_card_transport_preserves_html_contract(setup):
+    _, merchant_id, update, context = setup
+
+    asyncio.run(search_stores(update, context, "Euroopt"))
+    update.callback_query.data = f"store:show:{merchant_id}:0"
+    asyncio.run(handle_store_callback(update, context))
+
+    for call in (
+        update.effective_message.reply_text.await_args,
+        update.callback_query.edit_message_text.await_args,
+    ):
+        assert call.kwargs["parse_mode"] == ParseMode.HTML
+        assert call.args[0].startswith("🏪 <b>Евроопт</b>")
+        assert "<b>🏬 Офлайн / магазины</b>" in call.args[0]
+        assert "<i>MCC может отличаться у разных касс и способов оплаты.</i>" in call.args[0]
 
 
 def test_role_specific_action_is_one_and_rechecked(setup):
@@ -153,6 +171,7 @@ def test_fuzzy_search_labels_suggestions_and_escapes_names(setup):
     repository.apply_change("add_merchant", {"name": "<Supermarket & One>"}, 1)
     asyncio.run(search_stores(update, context, "Supermarket &"))
     call = update.effective_message.reply_text.await_args
+    assert call.kwargs["parse_mode"] == ParseMode.HTML
     assert "&lt;Supermarket &amp; One&gt;" in call.args[0]
     asyncio.run(search_stores(update, context, "evroppt"))
     assert "Точных совпадений" in update.effective_message.reply_text.await_args.args[0]

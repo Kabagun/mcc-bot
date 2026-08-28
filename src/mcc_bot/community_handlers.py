@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
@@ -60,6 +61,10 @@ KINDS = {
     "edit_mcc_note": "Изменить заметку к MCC",
 }
 HISTORY_KINDS = {**KINDS, "import": "Импорт данных из tannei.by"}
+
+
+class _ButtonOnlyInput(CommunityError):
+    """Text was sent while the durable draft expects an inline-button choice."""
 
 
 def _service(context: ContextTypes.DEFAULT_TYPE) -> CommunityService:
@@ -171,16 +176,25 @@ def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
-async def _say(update: Update, text: str, markup: Any = None) -> None:
+async def _say(
+    update: Update, text: str, markup: Any = None, *, parse_mode: str | None = None
+) -> None:
     if update.effective_message is not None:
         chunks = split_message(text)
         for index, chunk in enumerate(chunks):
-            await update.effective_message.reply_text(
-                chunk, reply_markup=markup if index == len(chunks) - 1 else None
-            )
+            kwargs = {"reply_markup": markup if index == len(chunks) - 1 else None}
+            if parse_mode is not None:
+                kwargs["parse_mode"] = parse_mode
+            await update.effective_message.reply_text(chunk, **kwargs)
 
 
-async def _say_inline(update: Update, text: str, markup: InlineKeyboardMarkup) -> None:
+async def _say_inline(
+    update: Update,
+    text: str,
+    markup: InlineKeyboardMarkup,
+    *,
+    parse_mode: str | None = None,
+) -> None:
     """Edit the current callback message when Telegram permits a compact inline view."""
 
     query = update.callback_query
@@ -192,11 +206,14 @@ async def _say_inline(update: Update, text: str, markup: InlineKeyboardMarkup) -
         and getattr(query.message, "is_accessible", True)
     ):
         try:
-            await query.edit_message_text(text, reply_markup=markup)
+            kwargs = {"reply_markup": markup}
+            if parse_mode is not None:
+                kwargs["parse_mode"] = parse_mode
+            await query.edit_message_text(text, **kwargs)
             return
         except TelegramError:
             LOGGER.info("Could not edit contribution message; sending the current view")
-    await _say(update, text, markup)
+    await _say(update, text, markup, parse_mode=parse_mode)
 
 
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -282,7 +299,72 @@ def _display_payload(service: CommunityService, kind: str, payload: dict[str, An
     return "\n".join(parts)
 
 
-async def _render_draft(update: Update, service: CommunityService, draft: Draft) -> None:
+def _channel_label(channel: str) -> str:
+    return "онлайн" if channel == "online" else "офлайн"
+
+
+def _administrative_preview(service: CommunityService, kind: str, payload: dict[str, Any]) -> str:
+    """Render compact confirmations for direct administrative changes."""
+
+    if kind in {"archive_mcc", "archive_merchant"}:
+        merchant = service.stores.get(payload["merchant_id"], include_archived=True)
+        brand = (
+            _brand_for_merchant(service, payload["merchant_id"], include_archived=True)
+            if merchant
+            else None
+        )
+        name = brand.name if brand else "бренд недоступен"
+        channel = _channel_label(merchant.channel) if merchant else "канал недоступен"
+        if kind == "archive_mcc":
+            return (
+                f"Убрать MCC {payload['mcc']} у бренда «{name}» ({channel})?\n"
+                "Другие MCC останутся без изменений."
+            )
+        return (
+            f"Убрать {channel}-канал бренда «{name}» из поиска?\n"
+            "Все MCC этого канала перестанут показываться."
+        )
+    return "Проверьте изменение:\n\n" + _display_payload(service, kind, payload)
+
+
+def _button_only_guidance(service: CommunityService, draft: Draft) -> str:
+    """Explain how to continue when text cannot be consumed by the current stage."""
+
+    stage = draft.stage
+    if stage == "editor":
+        instruction = "Нажмите нужное действие, например «Изменить MCC», под сообщением бота выше."
+    elif stage == "mcc_editor":
+        instruction = (
+            "Нажмите «Заменить MCC», «Изменить заметку» или «Убрать MCC» под сообщением бота выше."
+        )
+    elif stage in {"channel", "fact_channel"}:
+        instruction = "Нажмите кнопку нужного канала под сообщением бота выше."
+    elif stage == "old_mcc":
+        instruction = "Нажмите кнопку с нужным MCC под сообщением бота выше."
+    elif stage == "preview":
+        direct = service.is_admin(draft.user_id) and not draft.data.get("response_id")
+        label = "Сохранить в базу" if direct else "Отправить на проверку"
+        instruction = f"Нажмите «{label}», «Назад» или «Отмена» под сообщением бота выше."
+    elif stage == "cancel_confirm":
+        instruction = "Нажмите «Да, отменить» или «Нет, продолжить» под сообщением бота выше."
+    elif stage == "report":
+        instruction = "Нажмите «Добавить или подтвердить MCC» под сообщением бота выше."
+    elif stage in {"evidence", "response_evidence"}:
+        instruction = (
+            "Пришлите скриншот как фотографию или нажмите «Без скриншота» под сообщением бота выше."
+        )
+    else:
+        instruction = "Нажмите нужную кнопку под сообщением бота выше."
+    return f"Текст на этом шаге не используется. {instruction} Черновик сохранён."
+
+
+async def _render_draft(
+    update: Update,
+    service: CommunityService,
+    draft: Draft,
+    *,
+    notice: str | None = None,
+) -> None:
     stage, data = draft.stage, draft.data
     if stage in {"reason", "review_preview"}:
         service.touch_review(draft.user_id, data["proposal_id"], data["proposal_version"])
@@ -338,18 +420,28 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
     elif stage == "response":
         text = "Напишите уточнение для помощника (до 1000 символов)."
     elif stage == "preview":
-        text = "Проверьте перед отправкой:\n\n" + _display_payload(
-            service, data["kind"], data["payload"]
+        administrative = bool(data.get("editing"))
+        text = (
+            _administrative_preview(service, data["kind"], data["payload"])
+            if administrative
+            else "Проверьте перед отправкой:\n\n"
+            + _display_payload(service, data["kind"], data["payload"])
         )
-        if data.get("comment"):
-            text += "\n\nПриватный комментарий проверяющему: " + data["comment"]
-        text += (
-            "\nСкриншот: приложен"
-            if service.draft_has_media(draft.user_id, draft.id)
-            else "\nСкриншот: Без скриншота"
-        )
+        if not administrative:
+            if data.get("comment"):
+                text += "\n\nПриватный комментарий проверяющему: " + data["comment"]
+            text += (
+                "\nСкриншот: приложен"
+                if service.draft_has_media(draft.user_id, draft.id)
+                else "\nСкриншот: Без скриншота"
+            )
         direct = service.is_admin(draft.user_id) and not data.get("response_id")
-        if data["kind"] in {"add_merchant", "add_mcc", "replace_mcc"} and {
+        if administrative:
+            rows = []
+            if data["kind"] in {"add_mcc", "replace_mcc", "edit_mcc_note"}:
+                rows.append([("Изменить заметку", "preview:note")])
+            rows.append([("Сохранить в базу", "submit")])
+        elif data["kind"] in {"add_merchant", "add_mcc", "replace_mcc"} and {
             "name",
             "channel",
             "mcc",
@@ -383,16 +475,19 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
                 ("Название", "operation:rename_brand"),
                 ("Другие названия", "operation:brand_aliases"),
             ],
-            [("Добавить MCC", "operation:add_mcc"), ("Заменить MCC", "operation:replace_mcc")],
-            [
-                ("Заметка к MCC", "operation:edit_mcc_note"),
-                ("Убрать MCC", "operation:archive_mcc"),
-            ],
+            [("Добавить MCC", "operation:add_mcc"), ("Изменить MCC", "mcc_actions")],
             [
                 ("Каналы / архив", "operation:channels"),
                 ("Объединить бренд", "operation:merge_brand"),
             ],
             [("История / отмена", "history")],
+        ]
+    elif stage == "mcc_editor":
+        text = "Что изменить в существующем MCC?"
+        rows = [
+            [("Заменить MCC", "operation:replace_mcc")],
+            [("Изменить заметку", "operation:edit_mcc_note")],
+            [("Убрать MCC", "operation:archive_mcc")],
         ]
     elif stage == "edit_value":
         text = {
@@ -428,13 +523,21 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
                     ]
                 )
     elif stage == "fact_channel":
-        text = "Выберите канал MCC."
+        text = {
+            "replace_mcc": "В каком канале находится MCC для замены?",
+            "edit_mcc_note": "В каком канале находится MCC с нужной заметкой?",
+            "archive_mcc": "В каком канале находится MCC, который нужно убрать?",
+        }[data["kind"]]
         for channel in _brand_channels(service, data["brand_id"]):
             rows.append(
                 [(("🌐 Онлайн" if channel == "online" else "🏬 Офлайн"), f"fact_channel:{channel}")]
             )
     elif stage == "old_mcc":
-        text = "Выберите ошибочный MCC, который нужно заменить или убрать."
+        text = {
+            "replace_mcc": "Выберите ошибочный MCC, который нужно заменить.",
+            "edit_mcc_note": "Выберите MCC, заметку к которому нужно изменить.",
+            "archive_mcc": "Выберите MCC, который нужно убрать.",
+        }[data["kind"]]
         rows = [
             [(fact.mcc, "old:" + fact.mcc)] for fact in service.stores.list_mcc(data["merchant_id"])
         ]
@@ -506,6 +609,8 @@ async def _render_draft(update: Update, service: CommunityService, draft: Draft)
         rows = [[("Отправить решение", "decision")]]
     else:
         raise CommunityError("Неизвестный шаг. Отмените действие и начните заново.")
+    if notice:
+        text = notice + "\n\n" + text
     await _say_inline(update, text, _draft_buttons(draft, rows))
 
 
@@ -737,6 +842,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
                 return False
             draft = _consume_text(service, draft, text, getattr(update, "update_id", None))
             await _render_draft(update, service, draft)
+    except _ButtonOnlyInput as exc:
+        draft = service.draft(user_id)
+        if draft is None:
+            await _say(update, str(exc), keyboard_for(service, user_id))
+        else:
+            await _render_draft(update, service, draft, notice=str(exc))
     except (CommunityError, ValueError) as exc:
         await _say(update, str(exc), keyboard_for(service, user_id))
     return True
@@ -848,14 +959,14 @@ def _consume_text(
         if data["kind"] in {"rename_brand", "brand_aliases"}:
             payload.pop("merchant_id", None)
         data["payload"] = payload
-        stage = "comment"
+        stage = "preview" if data.get("editing") else "comment"
     elif stage == "reason":
         data["reason"] = clean_text(text)
         stage = "review_preview"
     elif stage in {"evidence", "response_evidence"}:
-        raise CommunityError("Пришлите скриншот или нажмите «Без скриншота».")
+        raise _ButtonOnlyInput(_button_only_guidance(service, draft))
     else:
-        raise CommunityError("Выберите действие кнопкой под текущим шагом.")
+        raise _ButtonOnlyInput(_button_only_guidance(service, draft))
     return _advance(service, draft, stage, data, update_id=update_id)
 
 
@@ -956,7 +1067,7 @@ async def _dispatch_callback(
         if brand is None:
             raise CommunityError("Бренд больше недоступен.")
         text, markup = _brand_view(service.stores, brand, 0, context, user_id, private=True)
-        await _say_inline(update, text, markup)
+        await _say_inline(update, text, markup, parse_mode=ParseMode.HTML)
     elif action == "again":
         await begin_contribution(update, context, brand_id=int(parts[1]), channel=parts[2])
     elif action == "again_new":
@@ -1270,7 +1381,7 @@ async def _draft_callback(
             raise CommunityError("Бренд больше недоступен.")
         if stage == "target_choose":
             data["payload"] = {"brand_id": data["brand_id"], "target_id": brand_id}
-            stage = "comment"
+            stage = "preview" if data.get("editing") else "comment"
         elif stage == "preview_choose":
             data.update(brand_id=brand.id, selected_brand_id=brand.id, name=brand.name)
             member = _member_for_channel(service, brand.id, data["channel"])
@@ -1324,6 +1435,10 @@ async def _draft_callback(
         stage = "preview"
     elif action == "preview" and stage == "preview":
         field = parts[1]
+        if data.get("editing") and (
+            field != "note" or data.get("kind") not in {"add_mcc", "replace_mcc", "edit_mcc_note"}
+        ):
+            raise StaleAction("Поле недоступно.")
         if field == "brand":
             stage = "preview_brand"
         elif field == "channel":
@@ -1338,23 +1453,25 @@ async def _draft_callback(
             stage = "private_comment"
         else:
             raise StaleAction("Поле недоступно.")
-    elif action == "operation" and stage in {"report", "editor"}:
+    elif action == "mcc_actions" and stage == "editor" and service.is_admin(draft.user_id):
+        stage = "mcc_editor"
+    elif action == "operation" and stage in {"report", "editor", "mcc_editor"}:
         kind = parts[1]
-        allowed = (
-            {"add_mcc"}
-            if stage == "report"
-            else {
+        if stage == "report":
+            allowed = {"add_mcc"}
+        elif stage == "editor":
+            allowed = {
                 "rename_brand",
                 "brand_aliases",
                 "add_mcc",
-                "replace_mcc",
-                "edit_mcc_note",
-                "archive_mcc",
                 "channels",
                 "merge_brand",
             }
-        )
-        if kind not in allowed or (stage == "editor" and not service.is_admin(draft.user_id)):
+        else:
+            allowed = {"replace_mcc", "edit_mcc_note", "archive_mcc"}
+        if kind not in allowed or (
+            stage in {"editor", "mcc_editor"} and not service.is_admin(draft.user_id)
+        ):
             raise CommunityError("Изменение недоступно.")
         data["kind"] = kind
         data.pop("payload", None)
