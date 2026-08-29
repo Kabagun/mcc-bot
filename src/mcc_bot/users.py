@@ -83,7 +83,7 @@ async def broadcast_message(bot: Bot, registry: UserRegistry, text: str) -> Broa
     failed = 0
     for chat_id in chat_ids:
         try:
-            await bot.send_message(chat_id=chat_id, text=text)
+            await bot.send_message(chat_id=chat_id, text=text, disable_notification=True)
         except TelegramError:
             failed += 1
         else:

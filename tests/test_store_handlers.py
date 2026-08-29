@@ -12,6 +12,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 from mcc_bot.catalog import CardCatalog
+from mcc_bot.community import CommunityService
 from mcc_bot.descriptions import DescriptionCatalog
 from mcc_bot.store_handlers import handle_store_callback, search_stores
 from mcc_bot.stores import StoreRepository
@@ -218,3 +219,42 @@ def test_public_brand_groups_channels_and_note_overrides_description(setup):
     assert "MCC 5411 · Оплата у кассы" in labels
     assert not any("MCC 5411 — Продуктовые магазины ·" in label for label in labels)
     assert labels.count("➕ Предложить MCC") == 1
+
+
+def test_brand_card_hides_a_channel_after_its_last_fact_is_removed(setup):
+    repository, merchant_id, update, context = setup
+    repository.apply_change("archive_mcc", {"merchant_id": merchant_id, "mcc": "5411"}, 1)
+
+    asyncio.run(search_stores(update, context, "Евроопт"))
+
+    text = update.effective_message.reply_text.await_args.args[0]
+    assert "Офлайн / магазины" not in text
+    assert "Онлайн / приложение" not in text
+    assert "Наблюдений по офлайн- и онлайн-оплате пока нет" in text
+
+
+def test_tannei_backing_does_not_lock_the_brand_card_for_helpers(setup):
+    repository, _, update, context = setup
+    service = CommunityService(repository, owner_id=1)
+    service.initialize()
+    service.set_role(1, 10, True)
+    context.application.bot_data["community"] = service
+    imported = repository.import_store(
+        {
+            "id": 111,
+            "network_id": 222,
+            "network_name": "Imported",
+            "name": "Imported",
+            "is_online": False,
+            "address": None,
+        },
+        [{"mcc": "5411", "payment_date": "2026-08", "merchant_type": "Groceries"}],
+    )
+    brand = repository.brand_for_merchant(imported.merchant_id)
+
+    asyncio.run(search_stores(update, context, brand.name))
+
+    call = update.effective_message.reply_text.await_args
+    assert "🔒" not in call.args[0]
+    labels = [button.text for button in buttons(call.kwargs["reply_markup"])]
+    assert "MCC 5411 — Продуктовые магазины" in labels

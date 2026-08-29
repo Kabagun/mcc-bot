@@ -27,7 +27,7 @@ MAX_NAME = 160
 MAX_NOTE = 48
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
-MCC_KINDS = frozenset({"add_merchant", "add_mcc", "replace_mcc"})
+MCC_KINDS = frozenset({"add_merchant", "add_mcc", "add_mcc_both", "replace_mcc"})
 PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant"}
 EDIT_KINDS = PUBLIC_KINDS | {
     "aliases",
@@ -36,6 +36,7 @@ EDIT_KINDS = PUBLIC_KINDS | {
     "revert",
     "rename_brand",
     "brand_aliases",
+    "edit_brand_names",
     "set_brand_membership",
     "merge_brand",
     "edit_mcc_note",
@@ -46,10 +47,12 @@ STRUCTURAL_KINDS = frozenset(
         "aliases",
         "archive_merchant",
         "merge_merchant",
+        "add_mcc_both",
         "replace_mcc",
         "archive_mcc",
         "rename_brand",
         "brand_aliases",
+        "edit_brand_names",
         "set_brand_membership",
         "merge_brand",
         "edit_mcc_note",
@@ -226,6 +229,20 @@ class CommunityService:
         """Check whether the user is a currently active reviewer or owner."""
 
         return self.role(user_id) in {"admin", "owner"}
+
+    def can_edit_brand(self, user_id: int, brand_id: int) -> bool:
+        """Return ordinary helper/owner edit access for a brand."""
+
+        del brand_id
+        with self.stores.connection() as conn:
+            return self._role(conn, user_id)[0] in {"admin", "owner"}
+
+    def can_edit_mcc(self, user_id: int, brand_id: int, channel: str, mcc: str) -> bool:
+        """Return ordinary helper/owner edit access for a public MCC fact."""
+
+        del brand_id, channel, mcc
+        with self.stores.connection() as conn:
+            return self._role(conn, user_id)[0] in {"admin", "owner"}
 
     def role_epoch(self, user_id: int) -> int:
         """Return the role generation used to reject stale consent and role buttons."""
@@ -618,6 +635,7 @@ class CommunityService:
         schemas = {
             "add_merchant": ({"name", "channel", "mcc"}, {"brand_id", "note"}),
             "add_mcc": ({"merchant_id", "mcc"}, {"note"}),
+            "add_mcc_both": ({"mcc"}, {"brand_id", "name", "note"}),
             "replace_mcc": (
                 {"merchant_id", "old_mcc", "mcc"},
                 {"note", "merchant_ids"},
@@ -629,6 +647,7 @@ class CommunityService:
             "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids"}),
             "rename_brand": ({"brand_id", "name"}, set()),
             "brand_aliases": ({"brand_id", "aliases"}, set()),
+            "edit_brand_names": ({"brand_id", "name", "aliases"}, set()),
             "set_brand_membership": ({"merchant_id", "brand_id"}, set()),
             "merge_brand": ({"brand_id", "target_id"}, set()),
             "edit_mcc_note": ({"merchant_id", "mcc", "note"}, {"merchant_ids"}),
@@ -640,6 +659,8 @@ class CommunityService:
         if not required <= set(payload) or set(payload) - required - optional:
             raise CommunityError("Неполные данные предложения. Начните заново.")
         result = dict(payload)
+        if kind == "add_mcc_both" and (("brand_id" in result) == ("name" in result)):
+            raise CommunityError("Выберите существующий бренд или задайте название нового.")
         for key, value in result.items():
             if key in {"merchant_id", "brand_id", "target_id", "audit_id"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -756,13 +777,10 @@ class CommunityService:
             if replace_old == payload["mcc"]:
                 raise CommunityError("Старый и новый MCC совпадают.")
             kind, payload = "replace_mcc", {**payload, "old_mcc": replace_old}
+        self._authorize_store_change(conn, actor_id, kind, payload)
         if kind in STRUCTURAL_KINDS:
             current = self._snapshot(conn, kind, payload)
-            if expected is None or any(
-                expected.get(section, {}).get(key) != value
-                for section, values in current.items()
-                for key, value in values.items()
-            ):
+            if expected is None or current != expected:
                 raise StaleAction(
                     "Данные магазина изменились после просмотра. "
                     "Откройте редактирование или возьмите предложение в разбор заново."
@@ -771,14 +789,38 @@ class CommunityService:
             payload["evidence"] = {"submission_id": proposal.id, "source": "community"}
         return self.stores.apply_change(kind, payload, actor_id, connection=conn).audit_id
 
+    def _authorize_store_change(
+        self, conn: sqlite3.Connection, actor_id: int, kind: str, payload: dict[str, Any]
+    ) -> None:
+        """Recheck ordinary helper/owner authority inside the publication transaction."""
+
+        del kind, payload
+        self._require_admin(conn, actor_id)
+
     def _snapshot(
         self, conn: sqlite3.Connection, kind: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         """Capture just the entities a structural preview can overwrite."""
 
-        result: dict[str, Any] = {"brands": {}, "merchants": {}, "facts": {}}
+        result: dict[str, Any] = {
+            "brands": {},
+            "merchants": {},
+            "facts": {},
+            "tannei": {},
+        }
         brand_id = payload.get("brand_id")
-        if kind in {"rename_brand", "brand_aliases", "merge_brand", "set_brand_membership"}:
+        if (
+            kind
+            in {
+                "rename_brand",
+                "brand_aliases",
+                "edit_brand_names",
+                "merge_brand",
+                "set_brand_membership",
+                "add_mcc_both",
+            }
+            and brand_id is not None
+        ):
             brand_ids = [brand_id]
             if kind == "merge_brand":
                 brand_ids.append(payload["target_id"])
@@ -787,6 +829,30 @@ class CommunityService:
                 if brand is None:
                     raise CommunityError("Бренд больше недоступен. Откройте поиск заново.")
                 result["brands"][str(value)] = [brand.revision, brand.archived]
+        if kind == "add_mcc_both" and brand_id is not None:
+            for merchant in self.stores.list_brand_members(
+                brand_id, connection=conn, include_archived=True
+            ):
+                result["merchants"][str(merchant.id)] = [
+                    merchant.revision,
+                    merchant.archived,
+                    merchant.channel,
+                ]
+                for fact in self.stores.list_mcc(
+                    merchant.id, connection=conn, include_archived=True
+                ):
+                    result["facts"][f"{merchant.id}:{fact.mcc}"] = [
+                        fact.revision,
+                        fact.archived,
+                        fact.evidence_count,
+                        fact.note,
+                    ]
+            snapshot = self.stores.tannei_snapshot(brand_id, connection=conn)
+            result["tannei"][str(brand_id)] = (
+                [snapshot["revision"], snapshot["source_count"], snapshot["channels"]]
+                if snapshot
+                else None
+            )
         merchant_id = payload.get("merchant_id")
         if merchant_id and kind in STRUCTURAL_KINDS | {"add_mcc"}:
             ids = list(payload.get("merchant_ids", [merchant_id]))

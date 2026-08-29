@@ -91,6 +91,10 @@ broadcast from the configured server with:
 mcc-broadcast --message 'Бот обновлён. Выполните /start.'
 ```
 
+`mcc-broadcast` always sends broadcasts silently, without a notification sound,
+including delivery attempts that Telegram rejects. This is a permanent operator
+contract and is not configurable per run.
+
 ## Contributions and moderation
 
 The persistent private-chat keyboard is role-aware:
@@ -99,8 +103,12 @@ The persistent private-chat keyboard is role-aware:
 - Users: `➕ Предложить MCC магазина`, `🙋 Хочу помогать`.
 - Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
 
-Users choose a merchant (or explicitly create one), payment channel and MCC,
-optionally attach a screenshot, review the draft, then submit it for approval.
+Users choose a merchant (or explicitly create one), payment channel and MCC.
+The channel selector includes `🏬🌐 Оба`; that choice creates one proposal and one
+audit operation for the offline and online facts. A proposed public note is used
+only for facts that the operation creates, while notes already stored on either
+channel remain unchanged. Users may then optionally attach a screenshot, review
+the draft, and submit it for approval.
 Subadmins publish directly after confirmation. Forms support back/cancel and
 persist across restarts. After submission, the bot contacts the author only if
 a reviewer needs clarification. Users request subadmin access directly from
@@ -111,10 +119,16 @@ Only the explicitly configured owner can approve pending requests or revoke
 roles. The owner sees the applicant's `@username`, Telegram display name and
 stable user ID before approval. Permissions use Telegram user IDs—not mutable
 usernames—and are checked at each sensitive action; screenshots and editing are
-private-chat only. Subadmins can edit merchants/aliases/MCCs, merge or archive
-merchants and inspect/revert history, but cannot change card reward rules. The
-history shows what changed and attributes every publication to its stored user
-ID and last known helper identity; imports are labelled as tannei.by. A
+private-chat only. Subadmins can manage a brand's primary name and aliases from
+one names screen, including adding, editing, deleting and promoting an alias.
+They can edit, replace, remove and restore public MCC facts, manage names and
+merge brands regardless of whether tannei.by contributed source data, but cannot
+change card reward rules. Empty payment-channel sections and channel/archive
+controls are not shown. History shows tannei.by provenance once as an aggregated,
+read-only snapshot and hides legacy per-import audit rows. Each brand/channel/MCC
+combination receives exactly one `импорт: 1` marker; the snapshot's overall source
+count and observation dates are provenance details, not confirmation weight. Manual changes remain
+attributed to the stored user ID and last known helper identity. A
 15-minute renewable review lease prevents overlapping reviews;
 final decisions and publication are atomic. A conflicting code requires an
 explicit choice to add another variant or replace the incorrect code. Duplicate

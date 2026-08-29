@@ -48,3 +48,6 @@ def test_broadcast_message_reports_successes_and_failures(tmp_path) -> None:
     assert result.sent == 1
     assert result.failed == 1
     assert [call.kwargs["chat_id"] for call in bot.send_message.await_args_list] == [10, 20]
+    assert all(
+        call.kwargs["disable_notification"] is True for call in bot.send_message.await_args_list
+    )

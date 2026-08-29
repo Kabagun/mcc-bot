@@ -187,6 +187,11 @@ def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
         },
         42,
     )
+    app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {"name": "Second brand", "channel": "offline", "mcc": "5812"},
+        42,
+    )
 
     async def scenario():
         async with app:
@@ -208,5 +213,10 @@ def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
                 for button in row
             ]
             assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К бренду"]
+
+            calls.clear()
+            await app.process_update(incoming(app, "Second brand", user_id=42, sequence=103))
+            assert app.bot_data["community"].draft(42) is None
+            assert "Second brand" in rendered(calls)[-1]["text"]
 
     asyncio.run(scenario())

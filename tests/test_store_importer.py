@@ -265,3 +265,21 @@ def test_dry_run_never_touches_requested_database(tmp_path, monkeypatch, capsys)
     main(["--database", str(database), "--dry-run"])
     assert not database.exists()
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["dry_run"] is True
+
+
+def test_fetch_error_discards_every_staged_publication(repository, monkeypatch):
+    metadata = {store_id: parse_store(source_store(store_id)) for store_id in (1, 2)}
+    monkeypatch.setattr(StoreImporter, "discover", lambda self: ({1, 2}, {10}, metadata, 0))
+
+    class Client:
+        def request(self, url, **_kwargs):
+            if "/item/2/" in url:
+                raise SourceError("broken second source")
+            return observations()
+
+    result = StoreImporter(repository, Client()).run()
+    assert result["errors"] == 1
+    assert result["imported"] == 0
+    assert repository.counts()["source_stores"] == 0
+    assert repository.checkpoint("done:1") is None
+    assert repository.checkpoint("done:2") is None

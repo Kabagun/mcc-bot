@@ -9,7 +9,6 @@ import logging
 import secrets
 from dataclasses import dataclass
 from html import escape
-from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -52,14 +51,6 @@ def _brand_for_merchant(repository: StoreRepository, merchant_id: int):
     if resolver is not None:
         return resolver(merchant_id)
     return repository.get(merchant_id)
-
-
-def _brand_channels(repository: StoreRepository, brand_id: int) -> dict[str, tuple[Any, ...]]:
-    getter = getattr(repository, "list_brand_channels", None)
-    if getter is not None:
-        return {key: tuple(value) for key, value in getter(brand_id).items() if value}
-    merchant = repository.get(brand_id)
-    return {merchant.channel: (merchant,)} if merchant else {}
 
 
 def _brand_facts(repository: StoreRepository, brand_id: int, channel: str):
@@ -107,12 +98,13 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     """Render a brand card as Telegram HTML with its inline keyboard."""
 
     admin = private and _is_admin(context, user_id)
-    channels = _brand_channels(repository, brand.id)
-    observed = [channel for channel in _CHANNELS if channels.get(channel)]
     descriptions = context.application.bot_data["descriptions"]
     grouped = [
-        (channel, tuple(_brand_facts(repository, brand.id, channel))) for channel in observed
+        (channel, facts)
+        for channel in _CHANNELS
+        if (facts := tuple(_brand_facts(repository, brand.id, channel)))
     ]
+    observed = [channel for channel, _facts in grouped]
     flat = [(channel, fact) for channel, facts in grouped for fact in facts]
     count = max(1, (len(flat) + _PAGE_SIZE - 1) // _PAGE_SIZE)
     page = min(max(0, page), count - 1)
@@ -127,7 +119,6 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         if channel not in shown_channels:
             continue
         facts = [fact for fact_channel, fact in shown if fact_channel == channel]
-        all_facts = dict((fact.mcc, fact) for fact in _brand_facts(repository, brand.id, channel))
         text += "\n\n<b>" + _channel_label(channel) + "</b>"
         if facts:
             for fact in facts:
@@ -141,12 +132,9 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                         )
                     ]
                 )
-        elif not all_facts:
-            text += "\nMCC пока не добавлен."
     if not observed:
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
     text += f"\n\n<i>{_WARNING}</i>"
-
     if private:
         rows.append(
             [

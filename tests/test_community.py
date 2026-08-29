@@ -42,6 +42,28 @@ def make_proposal(service, user_id=10, **kwargs):
     return service.submit(user_id, draft.id, draft.version)
 
 
+def tannei_metadata(store_id=1, network_id=10):
+    return {
+        "id": store_id,
+        "network_id": network_id,
+        "network_name": "Imported",
+        "name": "Imported branch",
+        "is_online": False,
+        "address": None,
+    }
+
+
+def tannei_observations(mcc="5411"):
+    return [
+        {
+            "mcc": mcc,
+            "payment_date": "2026-08",
+            "merchant_type": "Shop",
+            "address_extra": None,
+        }
+    ]
+
+
 def test_owner_is_explicit_and_user_id_authority(community):
     assert community.role(1) == "owner"
     assert community.role(2) == "admin"
@@ -499,3 +521,134 @@ def test_review_touch_keeps_original_snapshot_version_and_rejects_expired_or_for
     community.set_role(1, 2, False)
     with pytest.raises(AccessDenied):
         community.touch_review(2, proposed.id, claimed.version, now=202)
+
+
+def test_helper_can_correct_and_revert_tannei_backed_public_facts(community):
+    imported = community.stores.import_store(tannei_metadata(), tannei_observations())
+    raw_snapshot = community.stores.tannei_snapshot(imported.brand_id)
+    assert community.can_edit_brand(2, imported.brand_id)
+    assert community.can_edit_mcc(2, imported.brand_id, "offline", "5411")
+    assert community.can_edit_mcc(2, imported.brand_id, "offline", "5812")
+    assert not community.can_edit_brand(10, imported.brand_id)
+    assert not community.can_edit_mcc(10, imported.brand_id, "offline", "5411")
+
+    note = make_draft(
+        community,
+        2,
+        kind="edit_mcc_note",
+        payload={"merchant_id": imported.merchant_id, "mcc": "5411", "note": "stale source"},
+        media=False,
+    )
+    assert community.submit(2, note.id, note.version).status == "approved"
+    assert community.stores.list_mcc(imported.merchant_id)[0].note == "stale source"
+
+    replacement = make_draft(
+        community,
+        2,
+        kind="replace_mcc",
+        payload={"merchant_id": imported.merchant_id, "old_mcc": "5411", "mcc": "5812"},
+        media=False,
+    )
+    replaced = community.submit(2, replacement.id, replacement.version)
+    assert replaced.status == "approved"
+    assert [fact.mcc for fact in community.stores.list_mcc(imported.merchant_id)] == ["5812"]
+    assert community.stores.tannei_snapshot(imported.brand_id) == raw_snapshot
+
+    undo_replace = make_draft(
+        community,
+        2,
+        kind="revert",
+        payload={"audit_id": replaced.audit_id},
+        media=False,
+    )
+    assert community.submit(2, undo_replace.id, undo_replace.version).status == "approved"
+    assert [fact.mcc for fact in community.stores.list_mcc(imported.merchant_id)] == ["5411"]
+
+    archive = make_draft(
+        community,
+        2,
+        kind="archive_mcc",
+        payload={"merchant_id": imported.merchant_id, "mcc": "5411"},
+        media=False,
+    )
+    archived = community.submit(2, archive.id, archive.version)
+    assert archived.status == "approved"
+    assert community.stores.list_mcc(imported.merchant_id) == ()
+    assert community.stores.tannei_snapshot(imported.brand_id) == raw_snapshot
+
+    undo_archive = make_draft(
+        community,
+        2,
+        kind="revert",
+        payload={"audit_id": archived.audit_id},
+        media=False,
+    )
+    assert community.submit(2, undo_archive.id, undo_archive.version).status == "approved"
+    assert [fact.mcc for fact in community.stores.list_mcc(imported.merchant_id)] == ["5411"]
+
+
+def test_helper_can_add_manual_channel_and_both_mcc_to_tannei_brand(community):
+    imported = community.stores.import_store(tannei_metadata(), tannei_observations())
+    channel = make_draft(
+        community,
+        2,
+        kind="add_merchant",
+        payload={
+            "brand_id": imported.brand_id,
+            "name": "Imported online",
+            "channel": "online",
+            "mcc": "5732",
+        },
+        media=False,
+    )
+    assert community.submit(2, channel.id, channel.version).status == "approved"
+
+    both = make_draft(
+        community,
+        2,
+        kind="add_mcc_both",
+        payload={"brand_id": imported.brand_id, "mcc": "5812", "note": "manual"},
+        media=False,
+    )
+    published = community.submit(2, both.id, both.version)
+    assert published.status == "approved"
+    facts = community.stores.list_brand_mcc(imported.brand_id)
+    assert {(fact.channel, fact.mcc) for fact in facts} >= {
+        ("offline", "5812"),
+        ("online", "5812"),
+    }
+
+    undo = make_draft(
+        community,
+        2,
+        kind="revert",
+        payload={"audit_id": published.audit_id},
+        media=False,
+    )
+    assert community.submit(2, undo.id, undo.version).status == "approved"
+    assert "5812" not in {fact.mcc for fact in community.stores.list_brand_mcc(imported.brand_id)}
+
+
+def test_tannei_brand_names_and_merges_use_ordinary_helper_rights(community):
+    imported = community.stores.import_store(tannei_metadata(), tannei_observations())
+    rename = make_draft(
+        community,
+        2,
+        kind="edit_brand_names",
+        payload={"brand_id": imported.brand_id, "name": "Changed", "aliases": ["Alias"]},
+        media=False,
+    )
+    assert community.submit(2, rename.id, rename.version).status == "approved"
+    assert community.stores.get_brand(imported.brand_id).name == "Changed"
+
+    human = community.stores.apply_change("add_merchant", {"name": "Human"}, 1)
+    merge = make_draft(
+        community,
+        2,
+        kind="merge_brand",
+        payload={"brand_id": imported.brand_id, "target_id": human.brand_id},
+        media=False,
+    )
+    assert community.submit(2, merge.id, merge.version).status == "approved"
+    assert community.stores.get_brand(imported.brand_id) is None
+    assert community.stores.tannei_snapshot(human.brand_id)["source_count"] == 1

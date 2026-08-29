@@ -329,7 +329,7 @@ class StoreImporter:
         return stores, networks, metadata, ambiguity
 
     def run(self, *, max_stores=None, dry_run=False, progress=None) -> dict:
-        """Import one bounded batch; resume skips completed IDs, not failed records."""
+        """Fetch one bounded batch, then publish every staged record atomically."""
 
         counters = {
             "found": 0,
@@ -348,6 +348,7 @@ class StoreImporter:
         self.repository.checkpoint("last_run", counters, write=True)
         if progress:
             progress({"event": "discovery_complete", **counters})
+        staged: list[tuple[dict, list[dict]]] = []
         for store_id in sorted(stores):
             key = f"done:{store_id}"
             if self.resume and self.repository.checkpoint(key):
@@ -370,9 +371,7 @@ class StoreImporter:
                 if dry_run:
                     counters["imported"] += 1
                 else:
-                    result = self.repository.import_store(store, observations)
-                    counters["imported" if result.audit_id else "skipped"] += 1
-                    self.repository.checkpoint(key, {"merchant_id": result.merchant_id}, write=True)
+                    staged.append((store, observations))
             except (SourceBlocked, SourcePaused) as exc:
                 counters["errors"] += 1
                 counters["status"] = "paused" if isinstance(exc, SourcePaused) else "blocked"
@@ -385,6 +384,16 @@ class StoreImporter:
             self.repository.checkpoint("last_run", counters, write=True)
             if progress and counters["processed"] % 50 == 0:
                 progress({"event": "progress", **counters})
+        if staged and not counters["errors"]:
+            try:
+                results = self.repository.import_stores(staged, checkpoint_done=True)
+            except StoreError as exc:
+                counters["errors"] += 1
+                counters["status"] = "stopped"
+                counters["stop_reason"] = str(exc)
+            else:
+                for result in results:
+                    counters["imported" if result.changed else "skipped"] += 1
         self.repository.checkpoint("last_run", counters, write=True)
         return counters
 

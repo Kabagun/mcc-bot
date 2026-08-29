@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -186,29 +187,20 @@ def test_import_chain_identity_channel_idempotence_and_precision(repository):
     online = repository.import_store(source_metadata(3, online=True), source_evidence())
     assert first.merchant_id != online.merchant_id
     assert [fact.mcc for fact in repository.list_mcc(first.merchant_id)] == ["5411", "5812"]
-    assert repository.import_store(source_metadata(), source_evidence()).audit_id == 0
-    with repository.connection() as connection:
-        assert (
-            '"payment_date":"2022-06"'
-            in connection.execute("SELECT details_json FROM store_evidence ORDER BY id").fetchone()[
-                0
-            ]
-        )
+    assert not repository.import_store(source_metadata(), source_evidence()).changed
+    snapshot = repository.tannei_snapshot(first.brand_id)
+    assert snapshot["channels"]["offline"]["5411"]["first_seen"] == "2022-06"
 
 
-def test_import_history_explains_visible_changes_without_evidence_metadata(repository):
+def test_import_snapshot_is_visible_without_automatic_audit_or_evidence_metadata(repository):
     imported = repository.import_store(source_metadata(), source_evidence())
-    entry = repository.history(imported.merchant_id)[0]
-    details = "\n".join(entry.details)
-    assert entry.kind == "import"
-    assert entry.actor_id == 0
-    assert "Добавлен магазин «Евроопт»" in details
-    assert "Добавлен MCC: 5411" in details
-    assert "Подтверждения tannei.by для MCC 5411: +1" in details
-    assert "Добавлены записи источника: 1" in details
-    assert "2022-06" not in details
-    assert "Groceries" not in details
-    assert "address" not in details
+    assert imported.changed
+    assert imported.audit_id == 0
+    assert repository.history(imported.merchant_id) == ()
+    snapshot = repository.tannei_snapshot(imported.brand_id)
+    assert snapshot["channels"]["offline"]["5411"]["support_count"] == 1
+    assert "Groceries" not in str(snapshot)
+    assert "address" not in str(snapshot)
 
 
 def test_import_preserves_manual_name_alias_archive_and_duplicate_observations(repository):
@@ -221,7 +213,7 @@ def test_import_preserves_manual_name_alias_archive_and_duplicate_observations(r
     assert not repository.list_mcc(merchant_id)
     assert repository.get(merchant_id).name == "New"
     assert repository.get(merchant_id).aliases == ("Alias",)
-    assert repository.list_mcc(merchant_id, include_archived=True)[0].evidence_count == 2
+    assert repository.list_mcc(merchant_id, include_archived=True)[0].evidence_count == 1
     repository.apply_change("archive_merchant", {"merchant_id": merchant_id}, 1)
     repository.import_store(source_metadata(4), source_evidence("5812"))
     assert repository.get(merchant_id) is None
@@ -237,7 +229,7 @@ def test_merge_archived_source_preserves_tombstone_for_reimport_and_new_branch(r
     repository.import_store(source_metadata(), source_evidence())
     repository.import_store(source_metadata(2), source_evidence())
     assert not repository.list_mcc(target.merchant_id)
-    assert repository.list_mcc(target.merchant_id, include_archived=True)[0].evidence_count == 2
+    assert repository.list_mcc(target.merchant_id, include_archived=True)[0].evidence_count == 1
 
 
 def test_merge_undo_preserves_new_independent_target_evidence(repository):
@@ -274,7 +266,7 @@ def test_merge_undo_after_new_import_is_stale_and_does_not_split_network(reposit
     with pytest.raises(StaleChangeError):
         repository.apply_change("revert", {"audit_id": merge.audit_id}, 1)
     assert repository.get(source.merchant_id) is None
-    assert repository.list_mcc(target.merchant_id)[0].evidence_count == 2
+    assert repository.list_mcc(target.merchant_id)[0].evidence_count == 1
 
 
 @pytest.mark.parametrize("metadata", [source_metadata(network_id=20), source_metadata(online=True)])
@@ -311,12 +303,12 @@ def test_replayed_old_submission_cannot_reactivate_archived_or_reverted_fact(rep
     assert not repository.list_mcc(merchant.merchant_id)
 
 
-def test_reimport_after_reverting_added_source_evidence_keeps_it_revoked(repository):
+def test_changed_import_updates_snapshot_without_creating_revertible_audit(repository):
     first = repository.import_store(source_metadata(), source_evidence())
-    later = repository.import_store(source_metadata(), source_evidence("5812"))
-    repository.apply_change("revert", {"audit_id": later.audit_id}, 1)
-    assert repository.import_store(source_metadata(), source_evidence("5812")).audit_id == 0
-    assert [fact.mcc for fact in repository.list_mcc(first.merchant_id)] == ["5411"]
+    assert repository.import_store(source_metadata(), source_evidence("5812")).changed
+    assert repository.history(first.merchant_id) == ()
+    assert [fact.mcc for fact in repository.list_mcc(first.merchant_id)] == ["5411", "5812"]
+    assert not repository.import_store(source_metadata(), source_evidence("5812")).changed
 
 
 def test_history_pagination_reaches_older_archived_merchants(repository):
@@ -792,3 +784,254 @@ def test_import_keeps_strict_source_brands_despite_similar_names(repository):
             ("1", first.merchant_id, "10"),
             ("2", second.merchant_id, "20"),
         ]
+
+
+def test_add_mcc_both_uses_two_real_channels_and_edit_names_is_one_reversible_audit(repository):
+    created = repository.apply_change(
+        "add_mcc_both",
+        {"name": "Two channel", "mcc": "5411", "note": "new"},
+        7,
+    )
+    channels = repository.list_brand_channels(created.brand_id)
+    assert set(channels) == {"offline", "online"}
+    assert {member.channel for members in channels.values() for member in members} == {
+        "offline",
+        "online",
+    }
+    assert all(
+        repository.list_mcc(member.id)[0].note == "new"
+        for members in channels.values()
+        for member in members
+    )
+    edited = repository.apply_change(
+        "edit_brand_names",
+        {"brand_id": created.brand_id, "name": "Canonical", "aliases": ["Alias"]},
+        8,
+    )
+    assert repository.get_brand(created.brand_id).name == "Canonical"
+    assert repository.get_brand(created.brand_id).aliases == ("Alias",)
+    assert repository.history()[0].id == edited.audit_id
+    repository.apply_change("revert", {"audit_id": edited.audit_id}, 8)
+    assert repository.get_brand(created.brand_id).name == "Two channel"
+    assert repository.get_brand(created.brand_id).aliases == ()
+
+
+def test_add_mcc_both_preserves_existing_fact_note_and_rolls_back_both_on_error(repository):
+    existing = add(repository, name="Existing", mcc=None)
+    repository.apply_change(
+        "add_mcc",
+        {"merchant_id": existing.merchant_id, "mcc": "5411", "note": "old"},
+        1,
+    )
+    result = repository.apply_change(
+        "add_mcc_both",
+        {"brand_id": existing.brand_id, "mcc": "5411", "note": "new"},
+        2,
+    )
+    grouped = repository.list_brand_mcc(existing.brand_id)
+    assert [(fact.channel, fact.note) for fact in grouped] == [
+        ("offline", "old"),
+        ("online", "new"),
+    ]
+    assert repository.history()[0].id == result.audit_id
+
+    before = repository.list_brand_channels(existing.brand_id)
+    with pytest.raises(StoreError), repository.transaction() as connection:
+        repository.apply_change(
+            "add_mcc_both",
+            {
+                "brand_id": existing.brand_id,
+                "mcc": "5812",
+                "evidence": {"file_id": "not durable"},
+            },
+            2,
+            connection=connection,
+        )
+    assert repository.list_brand_channels(existing.brand_id) == before
+    assert "5812" not in {fact.mcc for fact in repository.list_brand_mcc(existing.brand_id)}
+
+
+def test_tannei_snapshot_counts_one_logical_support_and_keeps_source_provenance(repository):
+    first = repository.import_store(
+        source_metadata(store_id=1),
+        source_evidence("5411") + source_evidence("5411"),
+    )
+    repository.import_store(source_metadata(store_id=2), source_evidence("5411"))
+    snapshot = repository.tannei_snapshot(first.brand_id)
+    support = snapshot["channels"]["offline"]["5411"]
+    assert snapshot["source_count"] == 2
+    assert support == {
+        "support_count": 1,
+        "first_seen": "2022-06",
+        "last_seen": "2022-06",
+        "source_store_ids": ["1", "2"],
+    }
+    assert repository.brand_has_tannei(first.brand_id)
+    assert repository.brand_mcc_has_tannei(first.brand_id, "offline", "5411")
+    assert not repository.brand_mcc_has_tannei(first.brand_id, "online", "5411")
+    assert repository.list_brand_mcc(first.brand_id)[0].evidence_count == 1
+    with repository.connection() as connection:
+        private = json.loads(
+            connection.execute(
+                "SELECT snapshot_json FROM store_tannei_snapshots WHERE brand_id=?",
+                (first.brand_id,),
+            ).fetchone()[0]
+        )
+    observation_keys = [
+        key for source in private["stores"].values() for key in source["observations"]
+    ]
+    assert len(observation_keys) == 3
+    assert all(
+        len(key.split(":")) == 3 and len(key.split(":")[1]) == 64 for key in observation_keys
+    )
+    revision = snapshot["revision"]
+    assert not repository.import_store(
+        source_metadata(store_id=1),
+        source_evidence("5411") + source_evidence("5411"),
+    ).changed
+    assert repository.tannei_snapshot(first.brand_id)["revision"] == revision
+
+
+def test_snapshot_merge_has_one_active_public_owner_and_revert_restores_both(repository):
+    source = repository.import_store(
+        source_metadata(store_id=1, network_id=10), source_evidence("5411")
+    )
+    target = repository.import_store(
+        source_metadata(store_id=2, network_id=20), source_evidence("5812")
+    )
+    merged = repository.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, 1
+    )
+    assert repository.tannei_snapshot(source.brand_id) is None
+    assert repository.tannei_snapshot(target.brand_id)["source_count"] == 2
+    repository.apply_change("revert", {"audit_id": merged.audit_id}, 1)
+    assert repository.tannei_snapshot(source.brand_id)["source_count"] == 1
+    assert repository.tannei_snapshot(target.brand_id)["source_count"] == 1
+    assert repository.brand_mcc_has_tannei(source.brand_id, "offline", "5411")
+    assert repository.brand_mcc_has_tannei(target.brand_id, "offline", "5812")
+
+
+def test_import_batch_rolls_back_every_source_when_later_identity_conflicts(repository):
+    changed = source_metadata(store_id=1, network_id=20)
+    with pytest.raises(StoreError, match="network/channel"):
+        repository.import_stores(
+            [
+                (source_metadata(store_id=1, network_id=10), source_evidence()),
+                (changed, source_evidence("5812")),
+            ]
+        )
+    assert repository.counts()["source_stores"] == 0
+    assert repository.search("Евроопт").matches == ()
+
+
+def test_compaction_is_idempotent_preserves_human_audits_and_legacy_merge_guard(repository):
+    imported = repository.import_store(source_metadata(store_id=1), source_evidence())
+    target = add(repository, name="Target", mcc=None)
+    merge = repository.apply_change(
+        "merge_merchant",
+        {"merchant_id": imported.merchant_id, "target_id": target.merchant_id},
+        91,
+    )
+    repository.import_store(source_metadata(store_id=2), source_evidence("5812"))
+    with repository.transaction() as connection:
+        # Emulate a pre-snapshot merge/import history while retaining human IDs.
+        merge_row = connection.execute(
+            "SELECT changes_json FROM store_audit WHERE id=?", (merge.audit_id,)
+        ).fetchone()
+        merge_edits = [
+            edit for edit in json.loads(merge_row[0]) if edit["table"] != "store_tannei_snapshots"
+        ]
+        connection.execute(
+            "UPDATE store_audit SET changes_json=? WHERE id=?",
+            (json.dumps(merge_edits, ensure_ascii=False, separators=(",", ":")), merge.audit_id),
+        )
+        connection.execute("DELETE FROM store_audit WHERE kind='import' AND actor_id=0")
+        connection.execute(
+            "DELETE FROM store_tannei_merge_guards WHERE audit_id=?", (merge.audit_id,)
+        )
+    before_human = [(entry.id, entry.reverted_by) for entry in repository.history()]
+    repository.initialize()
+    first_snapshot = repository.tannei_snapshot(target.brand_id)
+    tables = (
+        "store_tannei_snapshots",
+        "store_tannei_import_guards",
+        "store_tannei_merge_guards",
+        "store_sources",
+        "store_evidence",
+        "store_audit",
+    )
+    with repository.connection() as connection:
+        compacted_rows = {
+            table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1")]
+            for table in tables
+        }
+        assert connection.execute(
+            "SELECT 1 FROM store_tannei_merge_guards WHERE audit_id=?", (merge.audit_id,)
+        ).fetchone()
+    repository.initialize()
+    assert repository.tannei_snapshot(target.brand_id) == first_snapshot
+    with repository.connection() as connection:
+        assert {
+            table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1")]
+            for table in tables
+        } == compacted_rows
+    assert [(entry.id, entry.reverted_by) for entry in repository.history()] == before_human
+    with pytest.raises(StaleChangeError, match="импортированные данные"):
+        repository.apply_change("revert", {"audit_id": merge.audit_id}, 91)
+
+
+def test_legacy_tannei_rows_compact_without_renumbering_human_history(repository):
+    human = add(repository, name="Legacy source", mcc="5411")
+    with repository.transaction() as connection:
+        fact_id = connection.execute(
+            "SELECT id FROM store_facts WHERE merchant_id=? AND mcc='5411'",
+            (human.merchant_id,),
+        ).fetchone()[0]
+        connection.execute(
+            """INSERT INTO store_sources
+            (id,source,store_id,merchant_id,network_id,metadata_json)
+            VALUES(800,'tannei','77',?,'10',?)""",
+            (human.merchant_id, json.dumps(source_metadata(store_id=77))),
+        )
+        details = {
+            "payment_date": "2021-01",
+            "merchant_type": "Legacy",
+            "address_extra": None,
+            "source_store_id": "77",
+        }
+        connection.execute(
+            """INSERT INTO store_evidence
+            (id,fact_id,source,source_key,details_json)
+            VALUES(900,?,'tannei','77:legacy:0',?)""",
+            (fact_id, json.dumps(details)),
+        )
+        connection.execute(
+            """INSERT INTO store_audit
+            (id,kind,merchant_id,brand_id,actor_id,changes_json)
+            VALUES(1000,'import',?,?,0,'[]')""",
+            (human.merchant_id, human.brand_id),
+        )
+        connection.execute("UPDATE store_audit SET reverted_by=12345 WHERE id=?", (human.audit_id,))
+    repository.initialize()
+    repository.initialize()
+    with repository.connection() as connection:
+        assert connection.execute("SELECT 1 FROM store_evidence WHERE id=900").fetchone() is None
+        assert connection.execute("SELECT 1 FROM store_audit WHERE id=1000").fetchone() is None
+        assert tuple(
+            connection.execute(
+                "SELECT id,reverted_by FROM store_audit WHERE id=?", (human.audit_id,)
+            ).fetchone()
+        ) == (human.audit_id, 12345)
+        assert tuple(
+            connection.execute(
+                "SELECT id,store_id,network_id FROM store_sources WHERE id=800"
+            ).fetchone()
+        ) == (800, "77", "10")
+        assert (
+            connection.execute(
+                "SELECT revision FROM store_tannei_import_guards WHERE store_source_id=800"
+            ).fetchone()[0]
+            == 1
+        )
+    snapshot = repository.tannei_snapshot(human.brand_id)
+    assert snapshot["channels"]["offline"]["5411"]["support_count"] == 1
