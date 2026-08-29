@@ -92,6 +92,7 @@ def test_role_specific_action_is_one_and_rechecked(setup):
     assert len(choices) == 3
     assert choices[-2].text == "➕ Добавить MCC"
     assert choices[-2].callback_data == f"community:start:{merchant_id}"
+    assert choices[-1].text == "✏️ Редактировать магазин"
     assert choices[-1].callback_data == f"community:edit:{merchant_id}"
     service.is_admin.assert_called_once_with(10)
 
@@ -111,6 +112,7 @@ def test_same_message_cards_toggle_and_back(setup):
     assert "Beta Bank" not in calls[0].args[0]
     assert "Beta Bank" in calls[1].args[0]
     assert "Офлайн / магазины" in calls[2].args[0]
+    assert any(button.text == "← К магазину" for button in buttons(calls[1].kwargs["reply_markup"]))
     update.effective_message.reply_text.assert_not_awaited()
 
 
@@ -194,6 +196,21 @@ def test_many_search_results_inline_navigation_without_extra_messages(setup):
     asyncio.run(handle_store_callback(update, context))
     update.effective_message.reply_text.assert_awaited_once()
     update.callback_query.edit_message_text.assert_awaited_once()
+
+
+def test_search_and_stale_result_use_store_wording(setup):
+    _, _, update, context = setup
+
+    asyncio.run(search_stores(update, context, "missing"))
+    call = update.effective_message.reply_text.await_args
+    assert call.args[0] == ("Магазин <b>missing</b> не найден. Можно добавить его вместе с MCC.")
+    assert buttons(call.kwargs["reply_markup"])[-1].text == "➕ Добавить новый магазин"
+
+    update.callback_query.data = "store:show:999999:0"
+    asyncio.run(handle_store_callback(update, context))
+    assert update.callback_query.edit_message_text.await_args.args[0] == (
+        "Магазин изменён или архивирован. Повторите поиск по названию."
+    )
 
 
 def test_public_brand_groups_channels_and_note_overrides_description(setup):

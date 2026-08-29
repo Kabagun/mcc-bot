@@ -170,7 +170,7 @@ def test_numeric_brand_and_mcc_offer_explicit_choice(catalog_path) -> None:
 
     message.reply_text.assert_awaited_once()
     rows = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard
-    assert [row[0].text for row in rows] == ["🏪 Бренд «7745»", "🧾 MCC 7745"]
+    assert [row[0].text for row in rows] == ["🏪 Магазин «7745»", "🧾 MCC 7745"]
     assert rows[0][0].callback_data == "store:show:77:0"
     assert rows[1][0].callback_data == "mcc_lookup:7745"
 
@@ -188,7 +188,7 @@ def test_unknown_numeric_input_explains_mcc_and_offers_prefilled_brand(catalog_p
     assert text.splitlines()[0] == "MCC 1233 не найден в справочнике. Проверьте код."
     assert "Если «1233» — название магазина, его можно добавить." in text  # noqa: RUF001
     button = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
-    assert button.text == "➕ Добавить бренд «1233»"  # noqa: RUF001
+    assert button.text == "➕ Добавить магазин «1233»"  # noqa: RUF001
     _, _, _, token = button.callback_data.split(":")
     assert context.user_data["store_searches"][token] == "1233"
 

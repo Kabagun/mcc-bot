@@ -244,18 +244,28 @@ def test_reject_requires_reason_and_expiry_is_five_days(community):
     assert community.expire_media(now=101 + MEDIA_RETENTION_SECONDS) == 1
 
 
-def test_claim_lease_renew_and_takeover_boundary(community):
+def test_claim_lease_is_fixed_and_takeover_starts_at_boundary(community):
     proposal = make_proposal(community)
     claimed = community.claim(2, proposal.id, proposal.version, now=100)
-    with pytest.raises(StaleAction):
-        community.claim(3, proposal.id, claimed.version, now=999)
-    renewed = community.claim(2, proposal.id, claimed.version, now=200)
-    assert renewed.lease_until == 200 + LEASE_SECONDS
-    taken = community.claim(3, proposal.id, renewed.version, now=200 + LEASE_SECONDS)
-    with pytest.raises(StaleAction):
-        community.review(2, proposal.id, renewed.version, "approved", now=1101)
+    assert claimed.lease_until == 100 + LEASE_SECONDS
+    validated = community.validate_review(2, proposal.id, claimed.version, now=200)
+    assert validated.lease_until == claimed.lease_until
+    assert validated.version == claimed.version
     assert (
-        community.review(3, proposal.id, taken.version, "approved", now=1101).status == "approved"
+        community.media_for(2, proposal.id, review_version=claimed.version, now=300)
+        == "secret-file-token"
+    )
+    with pytest.raises(StaleAction):
+        community.claim(2, proposal.id, claimed.version, now=200)
+    with pytest.raises(StaleAction, match="другого помощника"):
+        community.claim(3, proposal.id, claimed.version, now=999)
+    assert community.proposal(2, proposal.id).lease_until == 1000
+    taken = community.claim(3, proposal.id, claimed.version, now=1000)
+    assert taken.lease_until == 1000 + LEASE_SECONDS
+    with pytest.raises(StaleAction):
+        community.review(2, proposal.id, claimed.version, "approved", now=1001)
+    assert (
+        community.review(3, proposal.id, taken.version, "approved", now=1001).status == "approved"
     )
 
 
@@ -266,7 +276,7 @@ def test_live_claim_is_hidden_from_queue_until_the_fifteen_minute_boundary(commu
     assert community.queue(2, now=999) == ()
     assert community.queue(3, now=999) == ()
     assert [item.id for item in community.queue(3, now=1000)] == [proposal.id]
-    with pytest.raises(StaleAction, match="другого помощника"):
+    with pytest.raises(StaleAction):
         community.claim(3, proposal.id, claimed.version, now=999)
 
 
@@ -318,6 +328,66 @@ def test_cancel_own_pending_invalidates_claim(community):
     assert result.status == "cancelled"
     with pytest.raises(StaleAction):
         community.review(2, proposal.id, claimed.version, "approved")
+
+
+def test_release_review_returns_expired_unchanged_claim_to_queue(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+
+    released = community.release_review(2, proposal.id, claimed.version, now=1001)
+
+    assert released.version == claimed.version + 1
+    assert released.reviewer_id is None
+    assert released.lease_until is None
+    assert [item.id for item in community.queue(3, now=1001)] == [proposal.id]
+    with pytest.raises(StaleAction):
+        community.release_review(2, proposal.id, claimed.version, now=1002)
+
+
+def test_cancel_review_draft_releases_expired_claim_and_discards_draft(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    draft = community.begin(
+        2,
+        stage="reason",
+        privileged=True,
+        data={
+            "proposal_id": proposal.id,
+            "proposal_version": claimed.version,
+            "decision": "rejected",
+        },
+    )
+
+    released = community.cancel_review_draft(2, draft.id, draft.version)
+
+    assert released is not None
+    assert released.version == claimed.version + 1
+    assert released.reviewer_id is None
+    assert released.lease_until is None
+    assert community.draft(2) is None
+
+
+def test_cancel_review_draft_does_not_release_new_foreign_claim(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    draft = community.begin(
+        2,
+        stage="reason",
+        privileged=True,
+        data={
+            "proposal_id": proposal.id,
+            "proposal_version": claimed.version,
+            "decision": "clarification",
+        },
+    )
+    taken = community.claim(3, proposal.id, claimed.version, now=1000)
+
+    assert community.cancel_review_draft(2, draft.id, draft.version) is None
+    current = community.proposal(3, proposal.id)
+    assert current.version == taken.version
+    assert current.reviewer_id == 3
+    assert current.lease_until == taken.lease_until
+    assert community.draft(2) is None
 
 
 def test_clarification_response_is_versioned_and_reuses_original_evidence(community):
@@ -531,7 +601,8 @@ def test_two_structural_reviewers_cannot_silently_overwrite(community):
     community.review(2, a.id, a.version, "approved")
     with pytest.raises(StaleAction):
         community.review(3, b.id, b.version, "approved")
-    b = community.claim(3, b.id, b.version)
+    released = community.release_review(3, b.id, b.version)
+    b = community.claim(3, b.id, released.version)
     community.review(3, b.id, b.version, "approved")
     assert community.stores.get(merchant.merchant_id).name == "Second"
 
@@ -580,7 +651,7 @@ def test_old_mcc_new_support_blocks_stale_replacement_but_not_additive_approval(
     }
 
 
-def test_review_touch_keeps_original_snapshot_version_and_rejects_expired_or_foreign(community):
+def test_review_validation_is_read_only_and_rejects_expired_or_foreign(community):
     merchant = community.stores.apply_change(
         "add_merchant", {"name": "Shop", "channel": "offline"}, 1
     )
@@ -596,23 +667,23 @@ def test_review_touch_keeps_original_snapshot_version_and_rejects_expired_or_for
     community.stores.apply_change(
         "rename_merchant", {"merchant_id": merchant.merchant_id, "name": "Newer edit"}, 3
     )
-    touched = community.touch_review(2, proposed.id, claimed.version, now=200)
-    assert touched.version == claimed.version
-    assert touched.lease_until == 1100
+    validated = community.validate_review(2, proposed.id, claimed.version, now=200)
+    assert validated.version == claimed.version
+    assert validated.lease_until == 1000
     with community.stores.connection() as conn:
         assert dict(conn.execute("SELECT * FROM community_review_snapshots").fetchone()) == before
     with pytest.raises(StaleAction):
         community.review(2, proposed.id, claimed.version, "approved", now=201)
     with pytest.raises(StaleAction):
-        community.touch_review(3, proposed.id, claimed.version, now=201)
+        community.validate_review(3, proposed.id, claimed.version, now=201)
     with pytest.raises(StaleAction):
-        community.touch_review(2, proposed.id, claimed.version - 1, now=201)
+        community.validate_review(2, proposed.id, claimed.version - 1, now=201)
     with pytest.raises(StaleAction):
-        community.touch_review(2, proposed.id, claimed.version, now=1100)
-    assert community.proposal(2, proposed.id).lease_until == 1100
+        community.validate_review(2, proposed.id, claimed.version, now=1000)
+    assert community.proposal(2, proposed.id).lease_until == 1000
     community.set_role(1, 2, False)
     with pytest.raises(AccessDenied):
-        community.touch_review(2, proposed.id, claimed.version, now=202)
+        community.validate_review(2, proposed.id, claimed.version, now=202)
 
 
 def test_helper_can_correct_and_revert_tannei_backed_public_facts(community):

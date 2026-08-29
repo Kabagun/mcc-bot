@@ -1,7 +1,7 @@
 # «Какой картой?» Telegram Bot
 
 Telegram bot and local CLI for looking up cards by a four-digit merchant
-category code (MCC), with a local merchant directory and moderated contributions.
+category code (MCC), with a local store directory and moderated contributions.
 Results are sorted by gross reward percentage. The bot
 uses long polling, so it does not need a public HTTP endpoint. The layout keeps
 settings, the catalog domain, and Telegram handlers separate, following the
@@ -49,16 +49,16 @@ of the command menu. Send `5411` as a normal message for an MCC lookup; leading
 zeros such
 as `0742` are preserved. Digit-only input of another length gets a format hint.
 Other text, including `MCC 5411`, `Евроопт`, `А-100` and `21 век`, searches the
-merchant directory. Menu buttons and active form steps take precedence over search.
+store directory. Menu buttons and active form steps take precedence over search.
 Search also accepts Belarusian `і`/Russian `и` keyboard variants and conservative
 cross-script pronunciation such as `Green`/`грин`. These search keys never change
 source identity or automatically merge similar stores.
 The information button immediately lists the minimum eligible payment and maximum
 reward for every card; it does not change how subsequent messages are interpreted.
 
-Merchant lookup always shows MCC buttons first, even for a single known code.
+Store lookup always shows MCC buttons first, even for a single known code.
 Choosing a code edits that message into the ranked card list, with in-place
-details, pagination and a return button. Search results are canonical brands:
+details, pagination and a return button. Search results are canonical stores:
 official names and aliases open one card, while confirmed physical-shop and
 online-payment variants are grouped into separate sections inside it. Empty
 sections are not shown. Similar names are suggestions, never automatic merges,
@@ -66,7 +66,7 @@ and imported source records keep their exact source identities.
 
 An MCC belongs to one confirmed payment channel and may have a short public note,
 for example `MCC 5411 · Оплата товаров на Европочте`. The reviewer-only comment is
-stored separately and is never displayed on the public brand card. A screenshot
+stored separately and is never displayed on the public store card. A screenshot
 is optional; proposals without one are explicitly marked for reviewers.
 
 Each result message with matching cards has a `🏦 Банки и минимальный платёж`
@@ -104,13 +104,13 @@ The persistent private-chat keyboard is role-aware. Everyone also sees
 - Users: `➕ Предложить MCC магазина`, `🙋 Хочу помогать`.
 - Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
 
-Users choose a merchant (or explicitly create one), payment method and MCC.
+Users choose a store (or explicitly create one), payment method and MCC.
 The selector includes `🏬🌐 Офлайн и онлайн`; that choice creates one proposal and one
 audit operation for the offline and online facts. A proposed public note is used
 only for facts that the operation creates, while notes already stored on either
-payment method remain unchanged. New-brand drafts may also include aliases.
+payment method remain unchanged. New-store drafts may also include aliases.
 Users may optionally attach a screenshot, review the draft, and submit it for approval.
-Subadmins use a compact preview with brand, MCC/payment method and optional fields;
+Subadmins use a compact preview with store, MCC/payment method and optional fields;
 their private reviewer comment is omitted. They publish directly after confirmation.
 Forms support back/cancel and
 persist across restarts. After submission, the bot contacts the author only if
@@ -122,17 +122,17 @@ Only the explicitly configured owner can approve pending requests or revoke
 roles. The owner sees the applicant's `@username`, Telegram display name and
 stable user ID before approval. Permissions use Telegram user IDs—not mutable
 usernames—and are checked at each sensitive action; screenshots and editing are
-private-chat only. Subadmins can manage a brand's primary name and aliases from
+private-chat only. Subadmins can manage a store's primary name and aliases from
 one names screen, including adding, editing, deleting and promoting an alias.
 They can edit, replace, remove and restore public MCC facts, manage names and
-merge brands regardless of whether tannei.by contributed source data, but cannot
+merge stores regardless of whether tannei.by contributed source data, but cannot
 change card reward rules. Empty payment-channel sections and channel/archive
 controls are not shown. History shows tannei.by provenance once as an aggregated,
-read-only snapshot and hides legacy per-import audit rows. Each brand/channel/MCC
+read-only snapshot and hides legacy per-import audit rows. Each store/channel/MCC
 combination receives exactly one `импорт: 1` marker; the snapshot's overall source
 count and observation dates are provenance details, not confirmation weight. Manual changes remain
 attributed to the stored user ID and last known helper identity. A
-15-minute renewable review lease prevents overlapping reviews. A live claimed
+fixed 15-minute review reservation prevents overlapping reviews. A live claimed
 proposal is hidden from other reviewers and from the digest count. Cancelling a
 clarification answer returns the proposal immediately; no answer within 24 hours
 also returns it with a visible marker. History lists compact, concrete summaries
@@ -284,7 +284,7 @@ the user-facing answer does not render those internal conditions or raw notes.
 MCC descriptions are loaded from `MCC_DESCRIPTIONS_PATH`, defaulting to the
 bundled `mcc_bot/data/mcc_descriptions.json`. Lookup and contribution accept only
 codes present in this map; an unknown code is not calculated or stored and asks
-the user to check it. Exact four-digit brand names and aliases are checked before
+the user to check it. Exact four-digit store names and aliases are checked before
 the same text is treated as an MCC. `5411` is explicitly shown as
 `Продуктовые магазины`.
 

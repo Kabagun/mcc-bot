@@ -166,7 +166,7 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         rows.append(
             [
                 InlineKeyboardButton(
-                    "✏️ Редактировать бренд", callback_data=f"community:edit:{brand.id}"
+                    "✏️ Редактировать магазин", callback_data=f"community:edit:{brand.id}"
                 )
             ]
         )
@@ -193,11 +193,11 @@ def _search_view(repository, query, page, token):
     page = min(max(0, page), max(0, (total - 1) // _PAGE_SIZE))
     shown = entities[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
     if matches:
-        text = f"Бренды по запросу <b>{escape(query)}</b>. Выберите бренд:"
+        text = f"Магазины по запросу <b>{escape(query)}</b>. Выберите магазин:"
     elif suggestions:
         text = f"Точных совпадений для <b>{escape(query)}</b> нет. Возможно, вы имели в виду:"
     else:
-        text = f"Бренд <b>{escape(query)}</b> не найден. Можно добавить его вместе с MCC."
+        text = f"Магазин <b>{escape(query)}</b> не найден. Можно добавить его вместе с MCC."
     rows = [
         [InlineKeyboardButton(entity.name, callback_data=f"store:show:{entity.id}:0")]
         for entity in shown
@@ -216,7 +216,7 @@ def _search_view(repository, query, page, token):
     rows.append(
         [
             InlineKeyboardButton(
-                "➕ Добавить новый бренд", callback_data=f"community:start:0:{token}"
+                "➕ Добавить новый магазин", callback_data=f"community:start:0:{token}"
             )
         ]
     )
@@ -237,7 +237,7 @@ async def search_stores(
             query = ""
     query = query.strip()
     if not query or len(query) > 180:
-        await message.reply_text("Укажите название бренда, например: Евроопт.")
+        await message.reply_text("Укажите название магазина, например: Евроопт.")
         return
     repository: StoreRepository = context.application.bot_data["stores"]
     matches, suggestions = _search_entities(repository, query)
@@ -312,7 +312,7 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
         brand = _get_brand(repository, brand_id)
         if brand is None:
-            text, keyboard = "Бренд изменён или архивирован. Повторите поиск по названию.", None
+            text, keyboard = "Магазин изменён или архивирован. Повторите поиск по названию.", None
         else:
             text, keyboard = _brand_view(
                 repository,
@@ -365,7 +365,7 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 "Откройте информацию по картам через /start."
             )
             keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("← К бренду", callback_data=f"store:show:{brand_id}:0")]]
+                [[InlineKeyboardButton("← К магазину", callback_data=f"store:show:{brand_id}:0")]]
             )
         else:
             if page_index >= len(pages):
@@ -411,7 +411,7 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
             if navigation:
                 rows.append(navigation)
             rows.append(
-                [InlineKeyboardButton("← К бренду", callback_data=f"store:show:{brand_id}:0")]
+                [InlineKeyboardButton("← К магазину", callback_data=f"store:show:{brand_id}:0")]
             )
             keyboard = InlineKeyboardMarkup(rows)
     else:

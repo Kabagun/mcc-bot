@@ -331,13 +331,13 @@ def _ensure_variants(
         if item.group_with is not None:
             group = repository.brand_for_merchant(variants[item.group_with], connection=connection)
             if group is None:
-                raise CuratedUpdateError(f"Бренд для {item.group_with} не найден")
+                raise CuratedUpdateError(f"Магазин для {item.group_with} не найден")
             brand_id = group.id
         if matches:
             merchant_id = matches[0].id
             brand = repository.brand_for_merchant(merchant_id, connection=connection)
             if brand is None or (brand_id is not None and brand.id != brand_id):
-                raise CuratedUpdateError(f"Вариант {item.name} уже принадлежит другому бренду")
+                raise CuratedUpdateError(f"Вариант {item.name} уже принадлежит другому магазину")
             existing += 1
         else:
             payload = {"name": item.name, "channel": item.channel}
@@ -359,7 +359,7 @@ def _ensure_brand_metadata(
     for key, (name, requested_aliases) in BRAND_METADATA.items():
         brand = repository.brand_for_merchant(variants[key], connection=connection)
         if brand is None:
-            raise CuratedUpdateError(f"Бренд для {key} не найден")
+            raise CuratedUpdateError(f"Магазин для {key} не найден")
         if brand.name != name:
             brand_id = brand.id
             repository.apply_change(
@@ -371,7 +371,7 @@ def _ensure_brand_metadata(
             changed += 1
             brand = repository.get_brand(brand_id, connection=connection)
             if brand is None:
-                raise CuratedUpdateError(f"Бренд #{brand_id} исчез после переименования")
+                raise CuratedUpdateError(f"Магазин #{brand_id} исчез после переименования")
         aliases = tuple(dict.fromkeys((*brand.aliases, *requested_aliases)))
         if aliases != brand.aliases:
             repository.apply_change(

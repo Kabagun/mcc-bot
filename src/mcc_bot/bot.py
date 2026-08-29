@@ -251,7 +251,7 @@ async def _route_four_digit_text(
             [
                 [
                     InlineKeyboardButton(
-                        f"🏪 Бренд «{value}»",
+                        f"🏪 Магазин «{value}»",
                         callback_data=brand_callback,
                     )
                 ],
@@ -259,7 +259,7 @@ async def _route_four_digit_text(
             ]
         )
         await message.reply_text(
-            f"«{value}» есть и среди брендов, и в справочнике MCC. Что открыть?",
+            f"«{value}» есть и среди магазинов, и в справочнике MCC. Что открыть?",
             reply_markup=keyboard,
         )
         return
@@ -272,7 +272,7 @@ async def _route_four_digit_text(
             [
                 [
                     InlineKeyboardButton(
-                        f"➕ Добавить бренд «{value}»",  # noqa: RUF001
+                        f"➕ Добавить магазин «{value}»",  # noqa: RUF001
                         callback_data=f"community:start:0:{token}",
                     )
                 ]

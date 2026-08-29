@@ -1353,7 +1353,7 @@ class StoreRepository:
                     target = edit.get("after") or edit.get("before")
                     if isinstance(target, dict) and clipped(target.get("name")):
                         return f"объединён с «{clipped(target['name'])}»"
-            return "бренды объединены"
+            return "магазины объединены"
 
         for edit in edits:
             before, after = edit.get("before"), edit.get("after")
@@ -1497,7 +1497,7 @@ class StoreRepository:
                 and isinstance(after, dict)
                 and before.get("brand_id") != after.get("brand_id")
             ):
-                return "изменена группа бренда"
+                return "изменена привязка магазина"
         if any(edit.get("table") == "store_tannei_snapshots" for edit in edits):
             return "обновлены данные MCC"
         return "обновлена запись"
@@ -1593,27 +1593,27 @@ class StoreRepository:
                     details.append(f"Магазин объединён с {target_name}.")
             elif table == "store_brands":
                 if before is None and after:
-                    details.append(f"Добавлен бренд «{clipped(after.get('name', ''))}».")
+                    details.append(f"Добавлен магазин «{clipped(after.get('name', ''))}».")
                     continue
                 if not before or not after:
                     continue
                 if before.get("name") != after.get("name"):
                     details.append(
-                        f"Название бренда: «{clipped(before.get('name', ''))}» → "
+                        f"Название магазина: «{clipped(before.get('name', ''))}» → "
                         f"«{clipped(after.get('name', ''))}»."
                     )
                 if before.get("aliases_json") != after.get("aliases_json"):
                     details.append(
-                        f"Другие названия бренда: {aliases(before.get('aliases_json'))} → "
+                        f"Другие названия магазина: {aliases(before.get('aliases_json'))} → "
                         f"{aliases(after.get('aliases_json'))}."
                     )
                 if before.get("merged_into") != after.get("merged_into") and after.get(
                     "merged_into"
                 ):
-                    details.append("Бренды объединены.")
+                    details.append("Магазины объединены.")
             elif table == "store_brand_members":
                 if before and after and before.get("brand_id") != after.get("brand_id"):
-                    details.append("Магазин перенесён в другую группу бренда.")
+                    details.append("Изменена привязка магазина.")
             elif table == "store_facts":
                 state = after or before or {}
                 mcc = str(state.get("mcc", ""))
@@ -1699,7 +1699,7 @@ class StoreRepository:
     def _required_brand(connection, brand_id):
         row = connection.execute("SELECT * FROM store_brands WHERE id=?", (brand_id,)).fetchone()
         if row is None or row["archived"]:
-            raise StoreError("Бренд недоступен; откройте поиск заново")
+            raise StoreError("Магазин недоступен; откройте поиск заново")
         return row
 
     @staticmethod
@@ -2147,7 +2147,7 @@ class StoreRepository:
         has_brand = payload.get("brand_id") is not None
         has_name = payload.get("name") is not None
         if has_brand == has_name:
-            raise StoreError("Укажите существующий бренд или название нового бренда")
+            raise StoreError("Укажите существующий магазин или название нового магазина")
         if has_brand:
             brand_id = int(payload["brand_id"])
             brand = self._required_brand(connection, brand_id)
@@ -2261,7 +2261,7 @@ class StoreRepository:
             "SELECT brand_id FROM store_brand_members WHERE merchant_id=?", (merchant_id,)
         ).fetchone()
         if row is None:
-            raise StoreError("Для магазина не найдена группа бренда")
+            raise StoreError("Магазин не привязан к группе")
         return row["brand_id"]
 
     @staticmethod
@@ -2305,7 +2305,7 @@ class StoreRepository:
     def _merge_brands(self, connection, changes, source, target_id):
         target = self._required_brand(connection, target_id)
         if source["id"] == target_id:
-            raise StoreError("Нельзя объединить бренд с самим собой")
+            raise StoreError("Нельзя объединить магазин с самим собой")
         aliases = _aliases(
             [
                 *json.loads(target["aliases_json"]),

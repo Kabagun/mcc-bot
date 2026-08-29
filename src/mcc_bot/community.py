@@ -599,7 +599,7 @@ class CommunityService:
         with self.stores.transaction() as conn:
             draft = self._draft(conn, user_id, draft_id, version)
             if stage in {"reason", "review_preview"} and draft.data.get("proposal_id"):
-                self._touch_review(
+                self._validate_review(
                     conn,
                     user_id,
                     draft.data["proposal_id"],
@@ -706,11 +706,11 @@ class CommunityService:
             raise CommunityError("Неполные данные предложения. Начните заново.")
         result = dict(payload)
         if kind == "add_mcc_both" and (("brand_id" in result) == ("name" in result)):
-            raise CommunityError("Выберите существующий бренд или задайте название нового.")
+            raise CommunityError("Выберите существующий магазин или задайте название нового.")
         for key, value in result.items():
             if key in {"merchant_id", "brand_id", "target_id", "audit_id"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                    raise CommunityError("Некорректный бренд, магазин или запись истории.")
+                    raise CommunityError("Некорректный магазин или запись истории.")
             elif key == "merchant_ids":
                 if (
                     not isinstance(value, list)
@@ -926,7 +926,7 @@ class CommunityService:
             for value in brand_ids:
                 brand = self.stores.get_brand(value, connection=conn, include_archived=True)
                 if brand is None:
-                    raise CommunityError("Бренд больше недоступен. Откройте поиск заново.")
+                    raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
                 result["brands"][str(value)] = [brand.revision, brand.archived]
         if kind == "add_mcc_both" and brand_id is not None:
             for merchant in self.stores.list_brand_members(
@@ -1102,22 +1102,18 @@ class CommunityService:
     def claim(
         self, actor_id: int, proposal_id: int, version: int, *, now: float | None = None
     ) -> Proposal:
-        """Acquire or renew a 15-minute review lease with atomic role/version checks."""
+        """Acquire one fixed 15-minute review lease with atomic role/version checks."""
 
         now = time.time() if now is None else now
         with self.stores.transaction() as conn:
             self._require_admin(conn, actor_id)
             proposal = self._proposal(conn, proposal_id)
-            if (
-                proposal.status == "pending"
-                and proposal.reviewer_id not in {None, actor_id}
-                and (proposal.lease_until or 0) > now
-            ):
-                raise StaleAction("Заявка уже в работе у другого помощника.")
             if proposal.version != version or proposal.status != "pending":
                 raise StaleAction("Предложение уже изменилось. Обновите очередь.")
-            if proposal.reviewer_id not in {None, actor_id} and (proposal.lease_until or 0) > now:
-                raise StaleAction("Заявка уже в работе у другого помощника.")
+            if proposal.reviewer_id is not None and (proposal.lease_until or 0) > now:
+                if proposal.reviewer_id != actor_id:
+                    raise StaleAction("Заявка уже в работе у другого помощника.")
+                raise StaleAction("Заявка уже зарезервирована вами. Продолжите текущий разбор.")
             conn.execute(
                 """UPDATE community_proposals SET reviewer_id=?,lease_until=?,version=version+1
                    WHERE id=?""",
@@ -1135,7 +1131,7 @@ class CommunityService:
             )
             return self._proposal(conn, proposal_id)
 
-    def _touch_review(
+    def _validate_review(
         self, conn: sqlite3.Connection, actor_id: int, proposal_id: int, version: int, now: float
     ) -> Proposal:
         self._require_admin(conn, actor_id)
@@ -1149,21 +1145,64 @@ class CommunityService:
             raise StaleAction(
                 "Срок разбора истёк или предложение уже изменилось. Откройте очередь."
             )
-        conn.execute(
-            "UPDATE community_proposals SET lease_until=? WHERE id=?",
-            (now + LEASE_SECONDS, proposal_id),
-        )
-        return self._proposal(conn, proposal_id)
+        return proposal
 
-    def touch_review(
+    def validate_review(
         self, actor_id: int, proposal_id: int, version: int, *, now: float | None = None
     ) -> Proposal:
-        """Extend only a live owned lease without refreshing its version or edit snapshot."""
+        """Validate a live owned review lease without changing its deadline or version."""
 
-        with self.stores.transaction() as conn:
-            return self._touch_review(
+        with self.stores.connection() as conn:
+            return self._validate_review(
                 conn, actor_id, proposal_id, version, time.time() if now is None else now
             )
+
+    def _release_review(
+        self,
+        conn: sqlite3.Connection,
+        actor_id: int,
+        proposal_id: int,
+        version: int,
+        now: float,
+    ) -> Proposal | None:
+        self._require_admin(conn, actor_id)
+        changed = conn.execute(
+            """UPDATE community_proposals SET reviewer_id=NULL,lease_until=NULL,
+               version=version+1,updated_at=?
+               WHERE id=? AND status='pending' AND version=? AND reviewer_id=?""",
+            (now, proposal_id, version, actor_id),
+        ).rowcount
+        return self._proposal(conn, proposal_id) if changed else None
+
+    def release_review(
+        self, actor_id: int, proposal_id: int, version: int, *, now: float | None = None
+    ) -> Proposal:
+        """Release one's unchanged pending claim, including after its lease expires."""
+
+        with self.stores.transaction() as conn:
+            proposal = self._release_review(
+                conn, actor_id, proposal_id, version, time.time() if now is None else now
+            )
+            if proposal is None:
+                raise StaleAction("Разбор уже изменился. Откройте очередь.")
+            return proposal
+
+    def cancel_review_draft(
+        self, actor_id: int, draft_id: str, draft_version: int
+    ) -> Proposal | None:
+        """Discard a moderator draft and release only its unchanged pending claim."""
+
+        with self.stores.transaction() as conn:
+            draft = self._draft(conn, actor_id, draft_id, draft_version)
+            proposal_id = draft.data.get("proposal_id")
+            proposal_version = draft.data.get("proposal_version")
+            if not isinstance(proposal_id, int) or not isinstance(proposal_version, int):
+                raise StaleAction("Разбор уже недоступен.")
+            proposal = self._release_review(
+                conn, actor_id, proposal_id, proposal_version, time.time()
+            )
+            self._discard_draft(conn, actor_id)
+            return proposal
 
     def review(
         self,
@@ -1184,17 +1223,7 @@ class CommunityService:
         if decision != "approved":
             reason = clean_text(reason)
         with self.stores.transaction() as conn:
-            self._require_admin(conn, actor_id)
-            proposal = self._proposal(conn, proposal_id)
-            if (
-                proposal.status != "pending"
-                or proposal.version != version
-                or proposal.reviewer_id != actor_id
-                or (proposal.lease_until or 0) <= now
-            ):
-                raise StaleAction(
-                    "Срок разбора истёк или предложение уже изменилось. Откройте очередь."
-                )
+            proposal = self._validate_review(conn, actor_id, proposal_id, version, now)
             snapshot = conn.execute(
                 "SELECT state FROM community_review_snapshots WHERE proposal_id=? AND version=?",
                 (proposal_id, version),
@@ -1268,7 +1297,7 @@ class CommunityService:
             if proposal.user_id != actor_id:
                 self._require_admin(conn, actor_id)
             if review_version is not None:
-                self._touch_review(
+                self._validate_review(
                     conn,
                     actor_id,
                     proposal_id,

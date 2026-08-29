@@ -646,12 +646,14 @@ def test_audit_summary_covers_names_aliases_merge_and_note(repository):
     )
     assert repository.history()[0].id == renamed.audit_id
     assert repository.history()[0].summary == "название: «Source» → «Renamed»"
+    assert repository.history()[0].details == ("Название магазина: «Source» → «Renamed».",)
 
     alias_added = repository.apply_change(
         "brand_aliases", {"brand_id": source.brand_id, "aliases": ["Alias"]}, 2
     )
     assert repository.history()[0].id == alias_added.audit_id
     assert repository.history()[0].summary == "добавлено название «Alias»"
+    assert repository.history()[0].details == ("Другие названия магазина: нет → «Alias».",)
     alias_removed = repository.apply_change(
         "brand_aliases", {"brand_id": source.brand_id, "aliases": []}, 3
     )
@@ -672,6 +674,41 @@ def test_audit_summary_covers_names_aliases_merge_and_note(repository):
     )
     assert repository.history()[0].id == merged.audit_id
     assert repository.history()[0].summary == "объединён с «Target»"
+    assert "Магазины объединены." in repository.history()[0].details
+
+
+def test_audit_membership_uses_public_store_wording(repository):
+    changes = json.dumps(
+        [
+            {
+                "table": "store_brand_members",
+                "id": 1,
+                "before": {"brand_id": 10},
+                "after": {"brand_id": 20},
+            }
+        ]
+    )
+    with repository.connection() as connection:
+        assert (
+            repository._audit_summary(connection, "set_brand_membership", changes)
+            == "изменена привязка магазина"
+        )
+        assert repository._audit_details(connection, changes) == ("Изменена привязка магазина.",)
+
+
+def test_store_errors_use_public_store_wording(repository):
+    store = add(repository, name="Store", mcc=None)
+
+    with pytest.raises(StoreError, match="Магазин недоступен"):
+        repository.apply_change("rename_brand", {"brand_id": 999999, "name": "Missing"}, 1)
+    with pytest.raises(StoreError, match="существующий магазин"):
+        repository.apply_change("add_mcc_both", {"mcc": "5411"}, 1)
+    with pytest.raises(StoreError, match="магазин с самим собой"):
+        repository.apply_change(
+            "merge_brand",
+            {"brand_id": store.brand_id, "target_id": store.brand_id},
+            1,
+        )
 
 
 def test_public_fact_replace_and_archive_cover_every_internal_source_row(repository):

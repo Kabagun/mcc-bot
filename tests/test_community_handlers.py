@@ -18,7 +18,12 @@ from mcc_bot.community_handlers import (
     GUIDE,
     INFO,
     LEGACY_MINE,
+    MAIN_MENU,
     MANAGE,
+    MANAGE_DIGEST_OFF,
+    MANAGE_DIGEST_ON,
+    MANAGE_HISTORY,
+    MANAGE_ROLES,
     QUEUE,
     SUGGEST,
     VOLUNTEER,
@@ -26,6 +31,7 @@ from mcc_bot.community_handlers import (
     handle_media,
     handle_text,
     keyboard_for,
+    management_keyboard_for,
     show_menu,
 )
 from mcc_bot.stores import StoreRepository
@@ -149,16 +155,16 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     assert keyboard_for(service, 10).is_persistent
     assert [button.text for row in keyboard_for(service, 10).keyboard for button in row] == [
         INFO,
-        GUIDE,
         SUGGEST,
         VOLUNTEER,
+        GUIDE,
     ]
     assert [button.text for row in keyboard_for(service, 2).keyboard for button in row] == [
         INFO,
-        GUIDE,
         ADD,
         QUEUE,
         MANAGE,
+        GUIDE,
     ]
     send(flow, SUGGEST)
     current = service.draft(10)
@@ -181,25 +187,54 @@ def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):
     user_text = user.effective_message.reply_text.await_args.args[0]
     assert "Напишите название магазина" in user_text
     assert "четыре цифры из операции" in user_text
-    assert "Заполните короткую форму" in user_text
+    assert "Предложить исправление" in user_text
+    assert "Скриншот можно приложить" in user_text
 
     helper = send(flow, GUIDE, 2)
     helper_text = helper.effective_message.reply_text.await_args.args[0]
-    assert "закрепится за вами на 15 минут" in helper_text
+    assert "закрепится за вами ровно на 15 минут" in helper_text
     assert "Принять" in helper_text
     assert "Отклонить" in helper_text
     assert "Уточнить" in helper_text
+    assert "Отменить разбор" in helper_text
+    assert "Продлить это время нельзя" in helper_text
 
 
-def test_management_has_no_duplicate_store_editor_and_old_button_explains_the_path(flow):
+def test_management_uses_a_temporary_lower_keyboard_and_restores_main_menu(flow):
+    service = flow.application.bot_data["community"]
     management = send(flow, MANAGE, 2)
-    labels = [button.text for button in all_buttons(management)]
-    assert "Редактировать магазин" not in labels
-    assert "Журнал изменений и восстановление" in labels
+    assert all_buttons(management) == []
+    markup = management.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for row in markup.keyboard for button in row] == [
+        MANAGE_HISTORY,
+        MANAGE_DIGEST_ON,
+        MAIN_MENU,
+    ]
+    assert [
+        button.text for row in management_keyboard_for(service, 1).keyboard for button in row
+    ] == [MANAGE_HISTORY, MANAGE_DIGEST_ON, MANAGE_ROLES, MAIN_MENU]
+
+    toggled = send(flow, MANAGE_DIGEST_ON, 2)
+    assert service.digest_enabled(2)
+    markup = toggled.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert MANAGE_DIGEST_OFF in [button.text for row in markup.keyboard for button in row]
+
+    main = send(flow, MAIN_MENU, 2)
+    markup = main.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for row in markup.keyboard for button in row] == [
+        INFO,
+        ADD,
+        QUEUE,
+        MANAGE,
+        GUIDE,
+    ]
+
+
+def test_old_edit_button_explains_the_store_search_path(flow):
 
     stale = click(flow, "edit", 2)
     assert flow.application.bot_data["community"].draft(2) is None
-    assert "Найдите бренд по названию" in stale.effective_message.reply_text.await_args.args[0]
+    assert "Найдите магазин по названию" in stale.effective_message.reply_text.await_args.args[0]
 
 
 def test_user_flow_allows_no_screenshot_preview_and_submit(flow):
@@ -280,7 +315,7 @@ def test_admin_direct_save_optional_screenshot(flow):
     assert any(button.text == "✅ Сохранить в базу" for button in all_buttons(event))
     saved = draft_click(flow, "submit", 2)
     assert saved.effective_message.reply_text.await_args.args[0] == "Спасибо за добавление!"
-    assert [button.text for button in all_buttons(saved)] == ["🏪 Открыть бренд"]
+    assert [button.text for button in all_buttons(saved)] == ["🏪 Открыть магазин"]
     service = flow.application.bot_data["community"]
     assert service.own_proposals(2)[0].status == "approved"
     assert service.stores.find_exact("Trusted shop", "online")
@@ -349,7 +384,7 @@ def test_private_only_and_effective_user_not_chat_identity(flow):
     event.effective_chat.id = 1
     asyncio.run(callback(event, flow))
     assert flow.application.bot_data["community"].draft(10) is None
-    assert "Найдите бренд" in event.effective_message.reply_text.await_args.args[0]
+    assert "Найдите магазин" in event.effective_message.reply_text.await_args.args[0]
     event = update(user=1, data="community:role:10:0:1", chat_type="supergroup")
     asyncio.run(callback(event, flow))
     assert not flow.application.bot_data["community"].is_admin(10)
@@ -452,7 +487,9 @@ def test_helper_application_main_button_is_idempotent(flow):
         last_name="Smith",
     )
     markup = requested.effective_message.reply_text.await_args.kwargs["reply_markup"]
-    assert [button.text for row in markup.keyboard for button in row][-1] == APPLICATION_PENDING
+    labels = [button.text for row in markup.keyboard for button in row]
+    assert APPLICATION_PENDING in labels
+    assert labels[-1] == GUIDE
     with service.stores.connection() as connection:
         created_at = connection.execute(
             "SELECT created_at FROM community_role_requests WHERE user_id=10"
@@ -612,7 +649,7 @@ def test_editor_shows_current_values_and_selects_one_concrete_fact(flow):
     brand_id = service.stores.brand_for_merchant(merchant_id).id
     editor = click(flow, f"edit:{brand_id}", 2)
     labels = [button.text for button in all_buttons(editor)]
-    assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К бренду"]
+    assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К магазину"]
     editor_text = editor.effective_message.reply_text.await_args.args[0]
     assert "Редактирование: Shop" in editor_text
     assert "🏬 Офлайн: 5411" in editor_text
@@ -677,7 +714,7 @@ def test_clean_editor_text_closes_navigation_and_falls_through_to_search(flow):
     brand_id = service.stores.brand_for_merchant(merchant_id).id
     click(flow, f"edit:{brand_id}", 2)
 
-    event = update(2, text="Другой бренд")
+    event = update(2, text="Другой магазин")
     assert not asyncio.run(handle_text(event, flow))
     assert service.draft(2) is None
     event.effective_message.reply_text.assert_not_awaited()
@@ -700,7 +737,7 @@ def test_dirty_navigation_and_input_stages_still_keep_the_draft(flow):
     draft_click(flow, "back", 2)
     assert service.draft(2).stage == "mcc_fact"
     before = service.draft(2)
-    retained = send(flow, "Другой бренд", 2)
+    retained = send(flow, "Другой магазин", 2)
     assert (
         "Текст на этом шаге не используется"
         in (retained.effective_message.reply_text.await_args.args[0])
@@ -714,7 +751,7 @@ def test_prefilled_brand_and_channel_cancel_without_a_fake_dirty_draft(flow):
     brand_id = service.stores.brand_for_merchant(merchant_id).id
     started = click(flow, f"start:{brand_id}:offline")
     assert service.draft(10).stage == "mcc"
-    assert any(button.text == "⬅️ К бренду" for button in all_buttons(started))
+    assert any(button.text == "⬅️ К магазину" for button in all_buttons(started))
 
     cancelled = draft_click(flow, "cancel")
     assert service.draft(10) is None
@@ -913,7 +950,7 @@ def test_archive_mcc_preview_and_save_target_only_the_selected_fact(flow, chosen
     preview = draft_click(flow, "fact_remove", 2)
     text = preview.effective_message.reply_text.await_args.args[0]
     assert text == (
-        f"Убрать MCC {chosen} у бренда «Shop» (офлайн)?\nДругие MCC останутся без изменений."
+        f"Убрать MCC {chosen} у магазина «Shop» (офлайн)?\nДругие MCC останутся без изменений."
     )
     assert remaining not in text
     assert "Проверьте перед отправкой" not in text
@@ -1171,7 +1208,7 @@ def test_helpers_can_open_all_actions_for_tannei_backed_data(flow):
     more = draft_click(flow, "brand_actions", 2)
     labels = [button.text for button in all_buttons(more)]
     assert "Названия" in labels
-    assert "Объединить бренд" in labels
+    assert "Объединить магазины" in labels
     assert "История / отмена" in labels
 
     service.cancel_draft(2, service.draft(2).id, service.draft(2).version)
@@ -1355,30 +1392,81 @@ def test_history_page_offsets_are_bounded_and_aligned(flow, offset):
     assert "устарела" in text or "недоступна" in text
 
 
-def test_review_reason_and_preview_actions_extend_only_live_lease(flow, monkeypatch):
+def test_review_actions_never_extend_the_fixed_lease(flow, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("mcc_bot.community.time.time", lambda: clock[0])
     proposal = proposal_flow(flow)
     service = flow.application.bot_data["community"]
     click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
     claimed = service.proposal(2, proposal.id)
+    assert claimed.lease_until == 1000
     clock[0] = 200.0
     click(flow, f"q:{proposal.id}:{claimed.version}:reject", 2)
-    assert service.proposal(2, proposal.id).lease_until == 1100
+    assert service.proposal(2, proposal.id).lease_until == 1000
     clock[0] = 300.0
     send(flow, "Incorrect screenshot", 2)
-    assert service.proposal(2, proposal.id).lease_until == 1200
+    assert service.proposal(2, proposal.id).lease_until == 1000
     clock[0] = 400.0
     draft_click(flow, "resume", 2)
-    assert service.proposal(2, proposal.id).lease_until == 1300
+    assert service.proposal(2, proposal.id).lease_until == 1000
     assert service.proposal(2, proposal.id).version == claimed.version
-    clock[0] = 1300.0
+    clock[0] = 1000.0
     event = draft_click(flow, "resume", 2)
     assert "истёк" in event.effective_message.reply_text.await_args.args[0]
-    assert service.proposal(2, proposal.id).lease_until == 1300
+    assert service.proposal(2, proposal.id).lease_until == 1000
 
 
-def test_replace_and_owned_screenshot_extend_but_other_reviewer_does_not(flow, monkeypatch):
+@pytest.mark.parametrize("with_reason", [False, True])
+def test_cancel_rejection_immediately_returns_proposal_without_reason(flow, with_reason):
+    proposal = proposal_flow(flow)
+    service = flow.application.bot_data["community"]
+    click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
+    claimed = service.proposal(2, proposal.id)
+    click(flow, f"q:{proposal.id}:{claimed.version}:reject", 2)
+    if with_reason:
+        send(flow, "Ошибочные данные", 2)
+
+    cancelled = draft_click(flow, "cancel", 2)
+
+    returned = service.proposal(2, proposal.id)
+    assert returned.status == "pending"
+    assert returned.reviewer_id is None
+    assert returned.lease_until is None
+    assert returned.reason is None
+    assert service.draft(2) is None
+    assert (
+        "Разбор отменён. Заявка возвращена в очередь."
+        in (cancelled.effective_message.reply_text.await_args.args[0])
+    )
+    assert any(
+        button.callback_data == f"community:q:{proposal.id}:{returned.version}:claim"
+        for button in all_buttons(cancelled)
+    )
+
+
+def test_review_card_hides_missing_screenshot_and_has_no_renew_button(flow):
+    send(flow, SUGGEST)
+    send(flow, "No photo shop")
+    draft_click(flow, "channel:offline")
+    send(flow, "5411")
+    keep_without_note(flow)
+    draft_click(flow, "preview:evidence")
+    draft_click(flow, "skip")
+    draft_click(flow, "submit")
+    service = flow.application.bot_data["community"]
+    proposal = service.own_proposals(10)[0]
+
+    view = click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
+    labels = [button.text for button in all_buttons(view)]
+
+    assert "Скриншот: Без скриншота" in view.effective_message.reply_text.await_args.args[0]
+    assert "Скриншот" not in labels
+    assert "Без скриншота" not in labels
+    assert "Продлить резерв" not in labels
+    assert "Отменить разбор" in labels
+
+
+def test_screenshot_and_replace_validate_without_extending_the_lease(flow, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("mcc_bot.community.time.time", lambda: clock[0])
     service = flow.application.bot_data["community"]
@@ -1400,21 +1488,21 @@ def test_replace_and_owned_screenshot_extend_but_other_reviewer_does_not(flow, m
     )
     clock[0] = 200.0
     click(flow, f"q:{proposal.id}:{claimed.version}:replace", 2)
-    assert service.proposal(2, proposal.id).lease_until == 1100
+    assert service.proposal(2, proposal.id).lease_until == 1000
     clock[0] = 300.0
     click(flow, f"media:{proposal.id}:{claimed.version}", 2)
-    assert service.proposal(2, proposal.id).lease_until == 1200
+    assert service.proposal(2, proposal.id).lease_until == 1000
     clock[0] = 400.0
     view = click(flow, f"media:{proposal.id}", 3)
     view.effective_message.reply_photo.assert_awaited_once()
-    assert service.proposal(2, proposal.id).lease_until == 1200
+    assert service.proposal(2, proposal.id).lease_until == 1000
     denied = click(flow, f"media:{proposal.id}:{claimed.version}", 3)
     denied.effective_message.reply_photo.assert_not_awaited()
     assert service.proposal(2, proposal.id).reviewer_id == 2
-    clock[0] = 1200.0
+    denied = click(flow, f"q:{proposal.id}:{claimed.version}:renew", 2)
+    assert "больше недоступно" in denied.effective_message.reply_text.await_args.args[0]
+    assert service.proposal(2, proposal.id).lease_until == 1000
+    clock[0] = 1000.0
     denied = click(flow, f"media:{proposal.id}:{claimed.version}", 2)
     denied.effective_message.reply_photo.assert_not_awaited()
-    assert service.proposal(2, proposal.id).lease_until == 1200
-    denied = click(flow, f"q:{proposal.id}:{claimed.version}:renew", 2)
-    assert "истёк" in denied.effective_message.reply_text.await_args.args[0]
-    assert service.proposal(2, proposal.id).lease_until == 1200
+    assert service.proposal(2, proposal.id).lease_until == 1000

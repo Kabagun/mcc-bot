@@ -199,7 +199,7 @@ def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
             card = rendered(calls)[-1]
             buttons = [button for row in card["reply_markup"]["inline_keyboard"] for button in row]
             assert [button["text"] for button in buttons].count("➕ Добавить MCC") == 1
-            edit = next(button for button in buttons if button["text"] == "✏️ Редактировать бренд")
+            edit = next(button for button in buttons if button["text"] == "✏️ Редактировать магазин")
 
             calls.clear()
             await app.process_update(tapped(app, edit["callback_data"], user_id=42, sequence=102))
@@ -212,7 +212,7 @@ def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
                 for row in editor["reply_markup"]["inline_keyboard"]
                 for button in row
             ]
-            assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К бренду"]
+            assert labels == ["➕ Добавить MCC", "✏️ Изменить MCC", "⋯ Ещё", "⬅️ К магазину"]
 
             calls.clear()
             await app.process_update(incoming(app, "Second brand", user_id=42, sequence=103))
