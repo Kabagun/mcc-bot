@@ -40,7 +40,8 @@ async def send_daily_digest(
             continue
         # Recheck immediately before sending, including changes since candidate
         # selection/reservation. No screenshots, author IDs or proposal text here.
-        if not service.digest_enabled(user_id):
+        count = service.refresh_digest_count(user_id, day)
+        if count is None:
             service.finish_digest(user_id, day, "skipped")
             result["skipped"] += 1
             continue
@@ -73,7 +74,9 @@ async def _digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.application.bot_data["community"].expire_media()
+    service = context.application.bot_data["community"]
+    service.requeue_expired_clarifications()
+    service.expire_media()
 
 
 def install_jobs(application: Application) -> None:

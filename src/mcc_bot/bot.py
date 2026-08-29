@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,11 +33,12 @@ from .descriptions import DescriptionCatalog
 from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
 from .store_handlers import handle_store_callback, search_stores
-from .stores import StoreRepository
+from .stores import Brand, StoreRepository, normalize_store_name
 from .users import UserRegistry
 
 LOGGER = logging.getLogger(__name__)
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
+MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
 RESULT_TOO_LONG = (
     "Не удалось показать результат: данные одной карты или описание MCC слишком длинные. "  # noqa: RUF001
     f"Откройте /start и нажмите «{INFO}»."
@@ -54,11 +56,13 @@ def load_environment() -> None:
 
 
 async def _configure_bot_commands(application: Application) -> None:
-    """Expose the supported commands in Telegram's command menu."""
+    """Synchronize the public Telegram profile and supported command menu."""
 
     await application.bot.set_my_commands(
         [BotCommand(command="start", description="Начало и меню")]
     )
+    await application.bot.set_my_name("Какой картой?")
+    await application.bot.set_my_short_description("Подскажет лучшую карту по магазину или MCC.")
 
 
 async def _reply(update: Update, text: str) -> None:
@@ -84,10 +88,16 @@ async def _lookup_and_reply(
     descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
     try:
         normalized_mcc = normalize_mcc(raw_mcc)
-        matches = catalog.lookup(normalized_mcc)
     except InvalidMccError as exc:
         await _reply(update, str(exc))
         return
+    if normalized_mcc not in descriptions:
+        await _reply(
+            update,
+            f"MCC {normalized_mcc} не найден в справочнике. Проверьте код.",
+        )
+        return
+    matches = catalog.lookup(normalized_mcc)
     try:
         pages = format_match_pages(normalized_mcc, matches, descriptions, html=True)
     except ValueError:
@@ -141,6 +151,8 @@ async def toggle_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if page_index >= len(catalog.cards):
         return
     descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
+    if mcc not in descriptions:
+        return
     matches = catalog.lookup(mcc)
     if not matches:
         return
@@ -178,9 +190,112 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not value.isascii() or len(value) != 4:
             await _reply(update, "MCC должен состоять из четырёх цифр, например 5411")
         else:
-            await _lookup_and_reply(update, context, value)
+            await _route_four_digit_text(update, context, value)
     else:
         await search_stores(update, context, value)
+
+
+def _exact_brand_matches(context: ContextTypes.DEFAULT_TYPE, query: str) -> tuple[Brand, ...]:
+    """Return only exact canonical brand-name or alias matches for a numeric query."""
+
+    repository: StoreRepository | None = context.application.bot_data.get("stores")
+    if repository is None:
+        return ()
+    needle = normalize_store_name(query)
+    result = repository.search(query, limit=100)
+    return tuple(
+        brand
+        for brand in result.matches
+        if needle in {normalize_store_name(value) for value in (brand.name, *brand.aliases)}
+    )
+
+
+def _remember_store_search(context: ContextTypes.DEFAULT_TYPE, query: str) -> str:
+    """Keep a bounded callback-safe query for brand selection or creation."""
+
+    token = secrets.token_hex(4)
+    searches = context.user_data.setdefault("store_searches", {})
+    if len(searches) >= 20:
+        searches.pop(next(iter(searches)))
+    searches[token] = query
+    return token
+
+
+async def _route_four_digit_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    value: str,
+) -> None:
+    """Disambiguate an exact numeric brand from a known MCC without fuzzy promotion."""
+
+    descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
+    brands = _exact_brand_matches(context, value)
+    known_mcc = value in descriptions
+    if brands and not known_mcc:
+        await search_stores(update, context, value)
+        return
+    if known_mcc and not brands:
+        await _lookup_and_reply(update, context, value)
+        return
+
+    message = update.effective_message
+    if message is None:
+        return
+    if brands:
+        if len(brands) == 1:
+            brand_callback = f"store:show:{brands[0].id}:0"
+        else:
+            token = _remember_store_search(context, value)
+            brand_callback = f"store:search:{token}:0"
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"🏪 Бренд «{value}»",
+                        callback_data=brand_callback,
+                    )
+                ],
+                [InlineKeyboardButton(f"🧾 MCC {value}", callback_data=f"mcc_lookup:{value}")],
+            ]
+        )
+        await message.reply_text(
+            f"«{value}» есть и среди брендов, и в справочнике MCC. Что открыть?",
+            reply_markup=keyboard,
+        )
+        return
+
+    token = _remember_store_search(context, value)
+    await message.reply_text(
+        f"MCC {value} не найден в справочнике. Проверьте код.\n\n"
+        f"Если «{value}» — название магазина, его можно добавить.",  # noqa: RUF001
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"➕ Добавить бренд «{value}»",  # noqa: RUF001
+                        callback_data=f"community:start:0:{token}",
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+async def lookup_mcc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run the explicitly selected MCC branch of a numeric brand/MCC conflict."""
+
+    query = update.callback_query
+    if query is None:
+        return
+    try:
+        await query.answer()
+    except TelegramError:
+        LOGGER.info("Could not acknowledge an MCC lookup callback")
+        return
+    payload = MCC_LOOKUP_CALLBACK.fullmatch(query.data) if isinstance(query.data, str) else None
+    if payload is None or query.message is None or not query.message.is_accessible:
+        return
+    await _lookup_and_reply(update, context, payload.group(1))
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -268,7 +383,11 @@ def build_application(settings: BotSettings) -> Application:
     user_registry.initialize()
     stores = StoreRepository(settings.stores_path)
     stores.initialize()
-    community = CommunityService(stores, owner_id=settings.owner_telegram_id)
+    community = CommunityService(
+        stores,
+        owner_id=settings.owner_telegram_id,
+        allowed_mccs=descriptions.labels,
+    )
     community.initialize()
     application = (
         ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
@@ -282,6 +401,7 @@ def build_application(settings: BotSettings) -> Application:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
+    application.add_handler(CallbackQueryHandler(lookup_mcc_callback, pattern=r"^mcc_lookup:"))
     application.add_handler(CallbackQueryHandler(handle_store_callback, pattern=r"^store:"))
     application.add_handler(CallbackQueryHandler(community_callback, pattern=r"^community:"))
     application.add_handler(CallbackQueryHandler(expired_callback))

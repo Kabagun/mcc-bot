@@ -15,12 +15,15 @@ import re
 import sqlite3
 import time
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from .descriptions import DescriptionCatalog
 from .stores import StoreRepository
 
 LEASE_SECONDS = 15 * 60
+CLARIFICATION_SECONDS = 24 * 60 * 60
 MEDIA_RETENTION_SECONDS = 5 * 86400
 MAX_COMMENT = 1000
 MAX_NAME = 160
@@ -149,11 +152,24 @@ def _safe_json(data: dict[str, Any]) -> str:
 class CommunityService:
     """Manage contributions and roles in the same database as merchant facts."""
 
-    def __init__(self, stores: StoreRepository, owner_id: int | None = None) -> None:
+    def __init__(
+        self,
+        stores: StoreRepository,
+        owner_id: int | None = None,
+        *,
+        allowed_mccs: Collection[str] | None = None,
+    ) -> None:
         self.stores = stores
         if owner_id is not None and (isinstance(owner_id, bool) or owner_id <= 0):
             raise ValueError("Owner must be an explicit positive Telegram user ID")
         self.owner_id = owner_id
+        source = DescriptionCatalog.from_file().labels if allowed_mccs is None else allowed_mccs
+        self.allowed_mccs = frozenset(source)
+
+    def is_known_mcc(self, mcc: str) -> bool:
+        """Return whether a normalized MCC is allowed in public data."""
+
+        return mcc in self.allowed_mccs
 
     def initialize(self) -> None:
         """Create additive durable state and clean expired screenshot references."""
@@ -628,14 +644,44 @@ class CommunityService:
         """Discard only the active draft shown by a current cancel button."""
 
         with self.stores.transaction() as conn:
-            self._draft(conn, user_id, draft_id, version)
+            draft = self._draft(conn, user_id, draft_id, version)
+            if draft.data.get("response_id"):
+                raise StaleAction("Ответ на уточнение нужно вернуть через cancel_response().")
             self._discard_draft(conn, user_id)
+
+    def cancel_response(self, user_id: int, draft_id: str, version: int) -> Proposal:
+        """Discard a clarification response and return its proposal to review atomically."""
+
+        with self.stores.transaction() as conn:
+            draft = self._draft(conn, user_id, draft_id, version)
+            proposal_id = draft.data.get("response_id")
+            proposal_version = draft.data.get("response_version")
+            if not isinstance(proposal_id, int) or not isinstance(proposal_version, int):
+                raise StaleAction("Ответ на уточнение уже недоступен.")
+            proposal = self._proposal(conn, proposal_id)
+            if (
+                proposal.user_id != user_id
+                or proposal.status != "clarification"
+                or proposal.version != proposal_version
+            ):
+                raise StaleAction("Предложение уже вернулось на проверку.")
+            now = time.time()
+            conn.execute(
+                """UPDATE community_proposals SET status='pending',version=version+1,
+                   reviewer_id=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+                (now, proposal_id),
+            )
+            self._discard_draft(conn, user_id)
+            return self._proposal(conn, proposal_id)
 
     def _validate_payload(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         schemas = {
-            "add_merchant": ({"name", "channel", "mcc"}, {"brand_id", "note"}),
+            "add_merchant": (
+                {"name", "channel", "mcc"},
+                {"brand_id", "note", "aliases"},
+            ),
             "add_mcc": ({"merchant_id", "mcc"}, {"note"}),
-            "add_mcc_both": ({"mcc"}, {"brand_id", "name", "note"}),
+            "add_mcc_both": ({"mcc"}, {"brand_id", "name", "note", "aliases"}),
             "replace_mcc": (
                 {"merchant_id", "old_mcc", "mcc"},
                 {"note", "merchant_ids"},
@@ -697,6 +743,8 @@ class CommunityService:
                 if not isinstance(value, list) or len(value) > 20:
                     raise CommunityError("Можно сохранить не больше 20 названий.")
                 result[key] = [clean_text(alias, maximum=MAX_NAME) for alias in value]
+        if kind in MCC_KINDS and result["mcc"] not in self.allowed_mccs:
+            raise CommunityError(f"MCC {result['mcc']} не найден в справочнике. Проверьте код.")
         _safe_json(result)
         return result
 
@@ -741,15 +789,65 @@ class CommunityService:
             )
             return tuple(self._proposal(conn, row[0]) for row in rows)
 
-    def queue(self, user_id: int, *, offset: int = 0) -> tuple[Proposal, ...]:
-        """Read pending contributions regardless of digest subscription."""
+    def _requeue_expired_clarifications(self, conn: sqlite3.Connection, now: float) -> int:
+        rows = conn.execute(
+            "SELECT id,user_id FROM community_proposals "
+            "WHERE status='clarification' AND updated_at<=?",
+            (now - CLARIFICATION_SECONDS,),
+        ).fetchall()
+        if not rows:
+            return 0
+        proposal_ids = {row["id"] for row in rows}
+        for row in conn.execute("SELECT user_id,data FROM community_drafts").fetchall():
+            try:
+                response_id = json.loads(row["data"]).get("response_id")
+            except (TypeError, json.JSONDecodeError):
+                response_id = None
+            if response_id in proposal_ids:
+                self._discard_draft(conn, row["user_id"])
+        marker = "Пользователь не ответил на уточнение."
+        for proposal_id in proposal_ids:
+            proposal = self._proposal(conn, proposal_id)
+            reason = proposal.reason or ""
+            if marker not in reason:
+                reason = (reason.rstrip() + "\n\n" + marker).strip()
+            conn.execute(
+                """UPDATE community_proposals SET status='pending',version=version+1,
+                   reason=?,reviewer_id=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+                (reason, now, proposal_id),
+            )
+        return len(proposal_ids)
 
-        with self.stores.connection() as conn:
+    def requeue_expired_clarifications(self, *, now: float | None = None) -> int:
+        """Return unanswered clarification requests to review after 24 hours."""
+
+        with self.stores.transaction() as conn:
+            return self._requeue_expired_clarifications(conn, time.time() if now is None else now)
+
+    @staticmethod
+    def _available_queue_count(conn: sqlite3.Connection, now: float) -> int:
+        return int(
+            conn.execute(
+                """SELECT COUNT(*) FROM community_proposals WHERE status='pending'
+                   AND (reviewer_id IS NULL OR lease_until IS NULL OR lease_until<=?)""",
+                (now,),
+            ).fetchone()[0]
+        )
+
+    def queue(
+        self, user_id: int, *, offset: int = 0, now: float | None = None
+    ) -> tuple[Proposal, ...]:
+        """Read only currently available review contributions."""
+
+        current = time.time() if now is None else now
+        with self.stores.transaction() as conn:
             self._require_admin(conn, user_id)
+            self._requeue_expired_clarifications(conn, current)
             rows = conn.execute(
-                "SELECT id FROM community_proposals WHERE status='pending' "
-                "ORDER BY id LIMIT 10 OFFSET ?",
-                (max(0, offset),),
+                """SELECT id FROM community_proposals WHERE status='pending'
+                   AND (reviewer_id IS NULL OR lease_until IS NULL OR lease_until<=?)
+                   ORDER BY id LIMIT 10 OFFSET ?""",
+                (current, max(0, offset)),
             )
             return tuple(self._proposal(conn, row[0]) for row in rows)
 
@@ -762,7 +860,8 @@ class CommunityService:
         replace_old: str | None = None,
         expected: dict[str, Any] | None = None,
     ) -> int:
-        kind, payload = proposal.kind, dict(proposal.payload)
+        kind = proposal.kind
+        payload = self._validate_payload(kind, proposal.payload)
         if (
             kind == "add_merchant"
             and "brand_id" not in payload
@@ -963,33 +1062,42 @@ class CommunityService:
     def respond(self, user_id: int, proposal_id: int, version: int) -> Draft:
         """Create a private clarification draft tied to the current proposal version."""
 
-        proposal = self.proposal(user_id, proposal_id)
-        if (
-            proposal.user_id != user_id
-            or proposal.status != "clarification"
-            or proposal.version != version
-        ):
-            raise StaleAction("Ответ уже получен или предложение закрыто.")
-        current = self.draft(user_id)
-        if current is not None:
+        with self.stores.transaction() as conn:
+            proposal = self._proposal(conn, proposal_id)
             if (
-                current.data.get("response_id") == proposal_id
-                and current.data.get("response_version") == version
+                proposal.user_id != user_id
+                or proposal.status != "clarification"
+                or proposal.version != version
             ):
-                return current
-            raise StaleAction(
-                "У вас есть незавершённое действие. Продолжите или отмените его через /start."
-            )
-        return self.begin(
-            user_id,
-            stage="response",
-            data={
+                if proposal.user_id == user_id and proposal.status == "pending":
+                    raise StaleAction("Заявка уже вернулась на проверку.")
+                raise StaleAction("Ответ уже получен или предложение закрыто.")
+            row = conn.execute(
+                "SELECT 1 FROM community_drafts WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if row:
+                current = self._draft(conn, user_id)
+                if (
+                    current.data.get("response_id") == proposal_id
+                    and current.data.get("response_version") == version
+                ):
+                    return current
+                raise StaleAction(
+                    "У вас есть незавершённое действие. Продолжите или отмените его через /start."
+                )
+            _, epoch = self._role(conn, user_id)
+            draft_id = uuid.uuid4().hex[:12]
+            data = {
                 "kind": proposal.kind,
                 "payload": proposal.payload,
                 "response_id": proposal.id,
                 "response_version": version,
-            },
-        )
+            }
+            conn.execute(
+                """INSERT INTO community_drafts VALUES(?,?,1,'response',?,?,?,?)""",
+                (user_id, draft_id, _safe_json(data), 0, epoch, time.time()),
+            )
+            return self._draft(conn, user_id)
 
     def claim(
         self, actor_id: int, proposal_id: int, version: int, *, now: float | None = None
@@ -1000,10 +1108,16 @@ class CommunityService:
         with self.stores.transaction() as conn:
             self._require_admin(conn, actor_id)
             proposal = self._proposal(conn, proposal_id)
+            if (
+                proposal.status == "pending"
+                and proposal.reviewer_id not in {None, actor_id}
+                and (proposal.lease_until or 0) > now
+            ):
+                raise StaleAction("Заявка уже в работе у другого помощника.")
             if proposal.version != version or proposal.status != "pending":
                 raise StaleAction("Предложение уже изменилось. Обновите очередь.")
             if proposal.reviewer_id not in {None, actor_id} and (proposal.lease_until or 0) > now:
-                raise StaleAction("Предложение уже разбирает другой помощник.")
+                raise StaleAction("Заявка уже в работе у другого помощника.")
             conn.execute(
                 """UPDATE community_proposals SET reviewer_id=?,lease_until=?,version=version+1
                    WHERE id=?""",
@@ -1211,9 +1325,9 @@ class CommunityService:
             row = conn.execute(
                 "SELECT digest FROM community_roles WHERE user_id=?", (user_id,)
             ).fetchone()
-            count = conn.execute(
-                "SELECT COUNT(*) FROM community_proposals WHERE status='pending'"
-            ).fetchone()[0]
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            count = self._available_queue_count(conn, now)
             if not row or not row[0] or not count:
                 return None
             cursor = conn.execute(
@@ -1221,6 +1335,24 @@ class CommunityService:
                 (day, user_id, time.time()),
             )
             return count if cursor.rowcount else None
+
+    def refresh_digest_count(self, user_id: int, day: str) -> int | None:
+        """Recheck consent and the currently available queue immediately before delivery."""
+
+        with self.stores.transaction() as conn:
+            state = conn.execute(
+                "SELECT state FROM community_digests WHERE day=? AND user_id=?",
+                (day, user_id),
+            ).fetchone()
+            role = self._role(conn, user_id)[0]
+            consent = conn.execute(
+                "SELECT digest FROM community_roles WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if not state or state[0] != "intent" or role == "user" or not consent or not consent[0]:
+                return None
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            return self._available_queue_count(conn, now) or None
 
     def finish_digest(self, user_id: int, day: str, state: str) -> None:
         """Record delivery outcome without scheduling retries for uncertain sends."""

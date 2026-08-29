@@ -15,6 +15,7 @@ from mcc_bot.community import CommunityService
 from mcc_bot.community_handlers import (
     ADD,
     APPLICATION_PENDING,
+    GUIDE,
     INFO,
     LEGACY_MINE,
     MANAGE,
@@ -148,11 +149,13 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     assert keyboard_for(service, 10).is_persistent
     assert [button.text for row in keyboard_for(service, 10).keyboard for button in row] == [
         INFO,
+        GUIDE,
         SUGGEST,
         VOLUNTEER,
     ]
     assert [button.text for row in keyboard_for(service, 2).keyboard for button in row] == [
         INFO,
+        GUIDE,
         ADD,
         QUEUE,
         MANAGE,
@@ -171,6 +174,21 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
     )
     assert service.draft(10) == current
     assert any(button.text == "Продолжить" for button in all_buttons(event))
+
+
+def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):
+    user = send(flow, GUIDE, 10)
+    user_text = user.effective_message.reply_text.await_args.args[0]
+    assert "Напишите название магазина" in user_text
+    assert "четыре цифры из операции" in user_text
+    assert "Заполните короткую форму" in user_text
+
+    helper = send(flow, GUIDE, 2)
+    helper_text = helper.effective_message.reply_text.await_args.args[0]
+    assert "закрепится за вами на 15 минут" in helper_text
+    assert "Принять" in helper_text
+    assert "Отклонить" in helper_text
+    assert "Уточнить" in helper_text
 
 
 def test_management_has_no_duplicate_store_editor_and_old_button_explains_the_path(flow):
@@ -207,7 +225,7 @@ def test_user_flow_allows_no_screenshot_preview_and_submit(flow):
     submitted = update(data="community:" + action)
     submitted.callback_query.edit_message_text = AsyncMock()
     asyncio.run(callback(submitted, flow))
-    confirmation = submitted.callback_query.edit_message_text.await_args.args[0]
+    confirmation = submitted.effective_message.reply_text.await_args.args[0]
     assert "Спасибо! Отправлено на проверку" in confirmation
     assert "Мои предложения" not in confirmation
     click(flow, action)
@@ -234,19 +252,61 @@ def test_text_at_evidence_step_repeats_inline_screenshot_choice(flow):
     assert service.draft(10) == before
 
 
+def test_four_digits_are_validated_on_button_steps_but_allowed_in_free_text(flow):
+    send(flow, SUGGEST)
+    send(flow, "Yearly shop")
+    rejected = send(flow, "1233")
+    assert rejected.effective_message.reply_text.await_args.args[0] == (
+        "MCC 1233 не найден в справочнике. Проверьте код."
+    )
+    assert flow.application.bot_data["community"].draft(10).stage == "channel"
+
+    draft_click(flow, "channel:offline")
+    send(flow, "5411")
+    draft_click(flow, "note_edit")
+    preview = send(flow, "2025")
+    assert "Подпись к MCC: 2025" in preview.effective_message.reply_text.await_args.args[0]
+
+
 def test_admin_direct_save_optional_screenshot(flow):
     send(flow, ADD, 2)
     send(flow, "Trusted shop", 2)
     draft_click(flow, "channel:online", 2)
     send(flow, "5812", 2)
     keep_without_note(flow, 2)
-    draft_click(flow, "preview:comment", 2)
-    event = draft_click(flow, "skip", 2)
-    assert any(button.text == "Сохранить в базу" for button in all_buttons(event))
-    draft_click(flow, "submit", 2)
+    event = draft_click(flow, "preview:more", 2)
+    assert all("comment" not in button.callback_data for button in all_buttons(event))
+    event = draft_click(flow, "back", 2)
+    assert any(button.text == "✅ Сохранить в базу" for button in all_buttons(event))
+    saved = draft_click(flow, "submit", 2)
+    assert saved.effective_message.reply_text.await_args.args[0] == "Спасибо за добавление!"
+    assert [button.text for button in all_buttons(saved)] == ["🏪 Открыть бренд"]
     service = flow.application.bot_data["community"]
     assert service.own_proposals(2)[0].status == "approved"
     assert service.stores.find_exact("Trusted shop", "online")
+
+
+def test_new_brand_optional_fields_include_aliases_but_no_helper_comment(flow):
+    send(flow, ADD, 2)
+    send(flow, "Canonical shop", 2)
+    draft_click(flow, "channel:offline", 2)
+    send(flow, "5411", 2)
+    keep_without_note(flow, 2)
+
+    more = draft_click(flow, "preview:more", 2)
+    labels = [button.text for button in all_buttons(more)]
+    assert "Другие названия" in labels
+    assert all("Комментарий проверяющему" not in label for label in labels)
+    draft_click(flow, "more:aliases", 2)
+    preview = send(flow, "Alias one, Другое имя", 2)
+    assert (
+        "Другие названия: Alias one, Другое имя"
+        in (preview.effective_message.reply_text.await_args.args[0])
+    )
+
+    draft_click(flow, "submit", 2)
+    brand = flow.application.bot_data["community"].stores.search("Canonical shop").matches[0]
+    assert brand.aliases == ("Alias one", "Другое имя")
 
 
 def test_context_preselection_and_global_button_starts_from_scratch(flow):
@@ -354,6 +414,31 @@ def test_clarification_answer_and_legacy_cancel_is_inert(flow):
     stale = click(flow, f"cancel:{proposal.id}:{pending.version}")
     assert service.proposal(10, proposal.id).status == "pending"
     assert "/start" in stale.effective_message.reply_text.await_args.args[0]
+
+
+def test_cancel_clarification_answer_returns_the_proposal_to_queue(flow):
+    proposal = proposal_flow(flow)
+    service = flow.application.bot_data["community"]
+    click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
+    claimed = service.proposal(2, proposal.id)
+    click(flow, f"q:{proposal.id}:{claimed.version}:clarify", 2)
+    send(flow, "Какой адрес?", 2)
+    draft_click(flow, "decision", 2)
+    asked = service.proposal(10, proposal.id)
+
+    click(flow, f"respond:{proposal.id}:{asked.version}")
+    cancelled = draft_click(flow, "cancel")
+
+    returned = service.proposal(10, proposal.id)
+    assert returned.status == "pending"
+    assert service.draft(10) is None
+    assert (
+        f"Заявка №{proposal.id} возвращена на проверку"
+        in (cancelled.effective_message.reply_text.await_args.args[0])
+    )
+    queue = send(flow, QUEUE, 2)
+    buttons = all_buttons(queue)
+    assert [button.text for button in buttons] == [f"№{proposal.id} · New shop — добавление MCC"]
 
 
 def test_helper_application_main_button_is_idempotent(flow):
@@ -493,7 +578,7 @@ def test_both_channels_are_one_change_and_preserve_existing_notes(flow):
     brand_id = service.stores.brand_for_merchant(merchant_id).id
 
     started = click(flow, f"start:{brand_id}", 1)
-    assert any(button.text == "🏬🌐 Оба" for button in all_buttons(started))
+    assert any(button.text == "🏬🌐 Офлайн и онлайн" for button in all_buttons(started))
     draft_click(flow, "channel:both", 1)
     send(flow, "5411", 1)
     draft_click(flow, "note_edit", 1)
@@ -547,7 +632,7 @@ def test_editor_shows_current_values_and_selects_one_concrete_fact(flow):
     selected = draft_click(flow, "fact:offline:5411", 2)
     assert service.draft(2).stage == "mcc_fact"
     text = selected.effective_message.reply_text.await_args.args[0]
-    assert "Канал: 🏬 Офлайн" in text
+    assert "Способ оплаты: 🏬 Офлайн" in text
     assert "MCC: 5411" in text
     assert "Подпись: У кассы" in text
     assert [button.text for button in all_buttons(selected)][:3] == [
@@ -835,7 +920,7 @@ def test_archive_mcc_preview_and_save_target_only_the_selected_fact(flow, chosen
     assert "Скриншот" not in text
     assert "комментар" not in text.lower()
     assert [button.text for button in all_buttons(preview)] == [
-        "Сохранить в базу",
+        "✅ Сохранить в базу",
         "⬅️ Назад",
         "Отмена",
     ]
@@ -915,8 +1000,10 @@ def test_editor_archive_history_and_safe_undo(flow):
     click(flow, f"edit:{brand_id}", 2)
     draft_click(flow, "brand_actions", 2)
     history = draft_click(flow, "history", 2)
-    assert "Убран из поиска MCC: 5411" in history.effective_message.reply_text.await_args.args[0]
+    assert any("удалён MCC 5411" in button.text for button in all_buttons(history))
     last = service.stores.history(merchant_id)[0]
+    details = draft_click(flow, f"entry:{last.id}", 2)
+    assert "Убран из поиска MCC: 5411" in details.effective_message.reply_text.await_args.args[0]
     draft_click(flow, f"undo:{last.id}", 2)
     draft_click(flow, "submit", 2)
     assert service.stores.list_mcc(merchant_id)[0].mcc == "5411"
@@ -998,15 +1085,15 @@ def test_back_out_of_legacy_report_never_falls_into_a_blank_brand_prompt(flow):
 def test_archived_store_is_recoverable_from_management_history(flow):
     merchant_id = merchant(flow)
     service = flow.application.bot_data["community"]
-    brand_id = service.stores.brand_for_merchant(merchant_id).id
     service.stores.apply_change("archive_merchant", {"merchant_id": merchant_id}, 1)
     assert service.stores.get(merchant_id) is None
     event = click(flow, "recent", 2)
-    assert any(
-        button.callback_data == f"community:history:{brand_id}" for button in all_buttons(event)
-    )
-    click(flow, f"history:{brand_id}", 2)
     audit_id = service.stores.history(merchant_id)[0].id
+    assert any(
+        button.callback_data == f"community:history_entry:{audit_id}:0"
+        for button in all_buttons(event)
+    )
+    click(flow, f"history_entry:{audit_id}:0", 2)
     draft_click(flow, f"undo:{audit_id}", 2)
     draft_click(flow, "submit", 2)
     assert service.stores.get(merchant_id)
@@ -1038,7 +1125,12 @@ def test_history_shows_one_tannei_snapshot_not_legacy_import_rows(flow):
     assert "Добавлен магазин «Import Shop»" not in text
     assert "Подтверждения tannei.by для MCC 5411: +1" not in text
     assert "Изменил: tannei.by · автоматический импорт" not in text
-    assert "Изменил: @helper_two · Bob Helper · Telegram ID 2" in text
+    manual = service.stores.history(imported.merchant_id)[0]
+    detail = draft_click(flow, f"entry:{manual.id}", 2)
+    assert (
+        "Изменил: @helper_two · Bob Helper · Telegram ID 2"
+        in detail.effective_message.reply_text.await_args.args[0]
+    )
     assert "MCC 5411 · импорт: 1 · 2026-08" in text
     assert "Groceries" not in text
     assert all(
@@ -1072,7 +1164,7 @@ def test_helpers_can_open_all_actions_for_tannei_backed_data(flow):
     assert any(value.endswith(":fact_note") for value in selected_callbacks)
     assert any(value.endswith(":fact_remove") for value in selected_callbacks)
     preview = draft_click(flow, "fact_remove", 2)
-    assert "Сохранить в базу" in [button.text for button in all_buttons(preview)]
+    assert "✅ Сохранить в базу" in [button.text for button in all_buttons(preview)]
 
     service.cancel_draft(2, service.draft(2).id, service.draft(2).version)
     click(flow, f"edit:{brand_id}", 2)
@@ -1172,8 +1264,12 @@ def test_helper_history_offers_revert_for_manual_change_to_imported_public_mcc(f
     history = click(flow, f"history:{imported.merchant_id}", 2)
 
     assert any(
-        button.callback_data.endswith(f":undo:{changed.audit_id}")
+        button.callback_data.endswith(f":entry:{changed.audit_id}")
         for button in all_buttons(history)
+    )
+    detail = draft_click(flow, f"entry:{changed.audit_id}", 2)
+    assert any(
+        button.callback_data.endswith(f":undo:{changed.audit_id}") for button in all_buttons(detail)
     )
 
 
@@ -1185,16 +1281,18 @@ def test_recent_history_page_two_restores_an_older_archived_store(flow):
         merchant(flow, f"Later shop {index}")
     first = click(flow, "recent", 2)
     assert all(
-        button.callback_data != f"community:history:{merchant_id}" for button in all_buttons(first)
+        button.callback_data != f"community:history_entry:{archived.audit_id}:0"
+        for button in all_buttons(first)
     )
     assert any(button.callback_data == "community:recent:10" for button in all_buttons(first))
     second = click(flow, "recent:10", 2)
     assert any(
-        button.callback_data == f"community:history:{merchant_id}" for button in all_buttons(second)
+        button.callback_data == f"community:history_entry:{archived.audit_id}:10"
+        for button in all_buttons(second)
     )
     assert any(button.callback_data == "community:recent:0" for button in all_buttons(second))
     assert all(len(button.callback_data.encode()) <= 64 for button in all_buttons(second))
-    click(flow, f"history:{merchant_id}", 2)
+    click(flow, f"history_entry:{archived.audit_id}:10", 2)
     draft_click(flow, f"undo:{archived.audit_id}", 2)
     draft_click(flow, "submit", 2)
     assert service.stores.get(merchant_id)

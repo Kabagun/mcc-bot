@@ -111,6 +111,23 @@ def test_revoke_between_reserve_and_send_skips(service, monkeypatch):
     bot.send_message.assert_not_awaited()
 
 
+def test_claim_between_reserve_and_send_is_removed_from_digest_count(service, monkeypatch):
+    proposal = pending(service)
+    service.set_digest(2, True)
+    original = service.reserve_digest
+
+    def claim_after_reserve(*args):
+        result = original(*args)
+        service.claim(2, proposal.id, proposal.version)
+        return result
+
+    monkeypatch.setattr(service, "reserve_digest", claim_after_reserve)
+    bot = SimpleNamespace(send_message=AsyncMock())
+
+    assert run(service, bot)["skipped"] == 1
+    bot.send_message.assert_not_awaited()
+
+
 def test_jobqueue_uses_minsk_20_and_no_catchup():
     app = ApplicationBuilder().token("123456:unit-test").build()
     install_jobs(app)

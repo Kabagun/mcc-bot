@@ -353,6 +353,22 @@ def test_history_filtered_pagination_shares_transaction_and_keeps_limit_clamp(re
     assert repository.history(offset=10**100) == ()
 
 
+def test_audit_entry_returns_one_built_entry_or_none(repository):
+    created = add(repository, name="Point lookup", mcc="5411")
+    expected = next(entry for entry in repository.history() if entry.id == created.audit_id)
+
+    assert repository.audit_entry(created.audit_id) == expected
+    assert repository.audit_entry(created.audit_id + 10_000) is None
+    with repository.transaction() as connection:
+        assert repository.audit_entry(created.audit_id, connection=connection) == expected
+
+
+@pytest.mark.parametrize("audit_id", [True, False, 0, -1, 1.0, "1", None])
+def test_audit_entry_rejects_nonpositive_or_noninteger_id(repository, audit_id):
+    with pytest.raises(StoreError, match="положительным целым"):
+        repository.audit_entry(audit_id)
+
+
 @pytest.mark.parametrize("offset", [True, False, 1.5, "10", None])
 def test_history_rejects_noninteger_offsets(repository, offset):
     with pytest.raises(StoreError):
@@ -593,6 +609,71 @@ def test_note_validation_replace_and_audited_group_edit(repository):
     assert repository.list_mcc(merchant.merchant_id)[0].note == "restaurant"
 
 
+def test_audit_summary_covers_mcc_actions_and_channels(repository):
+    merchant = add(repository, name="Online", channel="online", mcc=None)
+    added = repository.apply_change(
+        "add_mcc", {"merchant_id": merchant.merchant_id, "mcc": "5411"}, 1
+    )
+    assert repository.history()[0].id == added.audit_id
+    assert repository.history()[0].summary == "добавлен MCC 5411 · онлайн"
+
+    confirmed = repository.apply_change(
+        "add_mcc", {"merchant_id": merchant.merchant_id, "mcc": "5411"}, 2
+    )
+    assert repository.history()[0].id == confirmed.audit_id
+    assert repository.history()[0].summary == "подтверждён MCC 5411 · онлайн"
+
+    archived = repository.apply_change(
+        "archive_mcc", {"merchant_id": merchant.merchant_id, "mcc": "5411"}, 3
+    )
+    assert repository.history()[0].id == archived.audit_id
+    assert repository.history()[0].summary == "удалён MCC 5411 · онлайн"
+
+    offline = add(repository, name="Offline", mcc="5411")
+    replaced = repository.apply_change(
+        "replace_mcc",
+        {"merchant_id": offline.merchant_id, "old_mcc": "5411", "mcc": "5812"},
+        4,
+    )
+    assert repository.history()[0].id == replaced.audit_id
+    assert repository.history()[0].summary == "MCC 5411 → 5812 · офлайн"
+
+
+def test_audit_summary_covers_names_aliases_merge_and_note(repository):
+    source = add(repository, name="Source", mcc="5411")
+    renamed = repository.apply_change(
+        "rename_brand", {"brand_id": source.brand_id, "name": "Renamed"}, 1
+    )
+    assert repository.history()[0].id == renamed.audit_id
+    assert repository.history()[0].summary == "название: «Source» → «Renamed»"
+
+    alias_added = repository.apply_change(
+        "brand_aliases", {"brand_id": source.brand_id, "aliases": ["Alias"]}, 2
+    )
+    assert repository.history()[0].id == alias_added.audit_id
+    assert repository.history()[0].summary == "добавлено название «Alias»"
+    alias_removed = repository.apply_change(
+        "brand_aliases", {"brand_id": source.brand_id, "aliases": []}, 3
+    )
+    assert repository.history()[0].id == alias_removed.audit_id
+    assert repository.history()[0].summary == "удалено название «Alias»"
+
+    note = repository.apply_change(
+        "edit_mcc_note",
+        {"merchant_id": source.merchant_id, "mcc": "5411", "note": "касса"},
+        4,
+    )
+    assert repository.history()[0].id == note.audit_id
+    assert repository.history()[0].summary == "примечание MCC 5411: «нет» → «касса»"
+
+    target = add(repository, name="Target", mcc=None)
+    merged = repository.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, 5
+    )
+    assert repository.history()[0].id == merged.audit_id
+    assert repository.history()[0].summary == "объединён с «Target»"
+
+
 def test_public_fact_replace_and_archive_cover_every_internal_source_row(repository):
     first = add(repository, name="Grouped", mcc=None)
     second = repository.apply_change(
@@ -814,6 +895,24 @@ def test_add_mcc_both_uses_two_real_channels_and_edit_names_is_one_reversible_au
     repository.apply_change("revert", {"audit_id": edited.audit_id}, 8)
     assert repository.get_brand(created.brand_id).name == "Two channel"
     assert repository.get_brand(created.brand_id).aliases == ()
+
+
+def test_add_mcc_both_new_brand_keeps_aliases_on_brand_and_channel_members(repository):
+    created = repository.apply_change(
+        "add_mcc_both",
+        {"name": "Two channel", "aliases": ["Alias"], "mcc": "5411"},
+        7,
+    )
+
+    assert repository.get_brand(created.brand_id).aliases == ("Alias",)
+    members = [
+        member
+        for channel_members in repository.list_brand_channels(created.brand_id).values()
+        for member in channel_members
+    ]
+    assert {member.channel for member in members} == {"offline", "online"}
+    assert all(member.aliases == ("Alias",) for member in members)
+    assert repository.history()[0].summary == "добавлен MCC 5411 · офлайн и онлайн"
 
 
 def test_add_mcc_both_preserves_existing_fact_note_and_rolls_back_both_on_error(repository):

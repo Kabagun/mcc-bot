@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from mcc_bot.community import (
+    CLARIFICATION_SECONDS,
     LEASE_SECONDS,
     MEDIA_RETENTION_SECONDS,
     AccessDenied,
@@ -258,6 +259,17 @@ def test_claim_lease_renew_and_takeover_boundary(community):
     )
 
 
+def test_live_claim_is_hidden_from_queue_until_the_fifteen_minute_boundary(community):
+    proposal = make_proposal(community)
+    assert [item.id for item in community.queue(3, now=100)] == [proposal.id]
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    assert community.queue(2, now=999) == ()
+    assert community.queue(3, now=999) == ()
+    assert [item.id for item in community.queue(3, now=1000)] == [proposal.id]
+    with pytest.raises(StaleAction, match="другого помощника"):
+        community.claim(3, proposal.id, claimed.version, now=999)
+
+
 def test_one_concurrent_reviewer_wins(community):
     proposal = make_proposal(community)
 
@@ -326,6 +338,57 @@ def test_clarification_response_is_versioned_and_reuses_original_evidence(commun
         community.respond(10, proposal.id, asked.version)
 
 
+def test_cancelled_clarification_response_returns_the_original_proposal(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    asked = community.review(
+        2,
+        proposal.id,
+        claimed.version,
+        "clarification",
+        reason="Which shop?",
+        now=101,
+    )
+    response = community.respond(10, proposal.id, asked.version)
+    with pytest.raises(StaleAction, match="cancel_response"):
+        community.cancel_draft(10, response.id, response.version)
+    returned = community.cancel_response(10, response.id, response.version)
+    assert returned.status == "pending"
+    assert returned.reason == "Which shop?"
+    assert returned.reviewer_id is None
+    assert returned.lease_until is None
+    assert community.draft(10) is None
+    assert [item.id for item in community.queue(3, now=102)] == [proposal.id]
+
+
+def test_unanswered_clarification_is_requeued_after_twenty_four_hours(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version, now=100)
+    asked = community.review(
+        2,
+        proposal.id,
+        claimed.version,
+        "clarification",
+        reason="Which shop?",
+        now=101,
+    )
+    community.respond(10, proposal.id, asked.version)
+    assert community.queue(3, now=101 + CLARIFICATION_SECONDS - 1) == ()
+
+    queued = community.queue(3, now=101 + CLARIFICATION_SECONDS)
+
+    assert [item.id for item in queued] == [proposal.id]
+    restored = community.proposal(3, proposal.id)
+    assert restored.status == "pending"
+    assert restored.reviewer_id is None
+    assert restored.lease_until is None
+    assert restored.reason == (
+        "Which shop?\n\nПользователь не ответил на уточнение."  # noqa: RUF001
+    )
+    assert community.draft(10) is None
+    assert community.requeue_expired_clarifications(now=101 + CLARIFICATION_SECONDS) == 0
+
+
 def test_name_report_is_text_only_and_admin_editor_is_not_public(community):
     merchant = community.stores.apply_change(
         "add_merchant", {"name": "Original", "channel": "offline"}, 1
@@ -385,6 +448,35 @@ def test_payload_and_media_metadata_are_bounded(community):
     draft = make_draft(community, payload={"name": "Shop", "channel": "offline", "mcc": "not-mcc"})
     with pytest.raises(CommunityError):
         community.submit(10, draft.id, draft.version)
+
+
+def test_unknown_mcc_is_rejected_for_users_helpers_and_preexisting_proposals(tmp_path):
+    stores = StoreRepository(tmp_path / "strict.sqlite3")
+    permissive = CommunityService(stores, owner_id=1, allowed_mccs={"5411", "1233"})
+    permissive.initialize()
+    permissive.set_role(1, 2, True)
+    proposal = make_proposal(
+        permissive,
+        payload={"name": "Old proposal", "channel": "offline", "mcc": "1233"},
+    )
+
+    strict = CommunityService(stores, owner_id=1, allowed_mccs={"5411"})
+    strict.initialize()
+    for user_id in (10, 2):
+        draft = make_draft(
+            strict,
+            user_id,
+            payload={"name": f"Unknown {user_id}", "channel": "offline", "mcc": "1233"},
+            media=False,
+        )
+        with pytest.raises(CommunityError, match="MCC 1233 не найден"):
+            strict.submit(user_id, draft.id, draft.version)
+
+    claimed = strict.claim(2, proposal.id, proposal.version)
+    with pytest.raises(CommunityError, match="MCC 1233 не найден"):
+        strict.review(2, proposal.id, claimed.version, "approved")
+    assert strict.proposal(2, proposal.id).status == "pending"
+    assert strict.stores.find_exact("Old proposal", "offline") == ()
 
 
 def test_pending_input_quota(community):

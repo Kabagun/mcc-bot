@@ -1,4 +1,4 @@
-# MCC Moneyback Telegram Bot
+# «Какой картой?» Telegram Bot
 
 Telegram bot and local CLI for looking up cards by a four-digit merchant
 category code (MCC), with a local merchant directory and moderated contributions.
@@ -97,19 +97,22 @@ contract and is not configurable per run.
 
 ## Contributions and moderation
 
-The persistent private-chat keyboard is role-aware:
+The persistent private-chat keyboard is role-aware. Everyone also sees
+`❓ Как пользоваться`, whose short instructions adapt to the current role:
 
 - Everyone: `ℹ️ Информация по картам`.
 - Users: `➕ Предложить MCC магазина`, `🙋 Хочу помогать`.
 - Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
 
-Users choose a merchant (or explicitly create one), payment channel and MCC.
-The channel selector includes `🏬🌐 Оба`; that choice creates one proposal and one
+Users choose a merchant (or explicitly create one), payment method and MCC.
+The selector includes `🏬🌐 Офлайн и онлайн`; that choice creates one proposal and one
 audit operation for the offline and online facts. A proposed public note is used
 only for facts that the operation creates, while notes already stored on either
-channel remain unchanged. Users may then optionally attach a screenshot, review
-the draft, and submit it for approval.
-Subadmins publish directly after confirmation. Forms support back/cancel and
+payment method remain unchanged. New-brand drafts may also include aliases.
+Users may optionally attach a screenshot, review the draft, and submit it for approval.
+Subadmins use a compact preview with brand, MCC/payment method and optional fields;
+their private reviewer comment is omitted. They publish directly after confirmation.
+Forms support back/cancel and
 persist across restarts. After submission, the bot contacts the author only if
 a reviewer needs clarification. Users request subadmin access directly from
 `/start` → `🙋 Хочу помогать`. A pending request is shown as
@@ -129,7 +132,11 @@ read-only snapshot and hides legacy per-import audit rows. Each brand/channel/MC
 combination receives exactly one `импорт: 1` marker; the snapshot's overall source
 count and observation dates are provenance details, not confirmation weight. Manual changes remain
 attributed to the stored user ID and last known helper identity. A
-15-minute renewable review lease prevents overlapping reviews;
+15-minute renewable review lease prevents overlapping reviews. A live claimed
+proposal is hidden from other reviewers and from the digest count. Cancelling a
+clarification answer returns the proposal immediately; no answer within 24 hours
+also returns it with a visible marker. History lists compact, concrete summaries
+and opens authorship, technical details and an available undo action on demand;
 final decisions and publication are atomic. A conflicting code requires an
 explicit choice to add another variant or replace the incorrect code. Duplicate
 confirmations add evidence, not duplicate facts. Reverts preserve independent
@@ -275,8 +282,10 @@ Typed conditions remain in the catalog for validation and future filtering, but
 the user-facing answer does not render those internal conditions or raw notes.
 
 MCC descriptions are loaded from `MCC_DESCRIPTIONS_PATH`, defaulting to the
-bundled `mcc_bot/data/mcc_descriptions.json`. Missing descriptions render as
-`MCC xxxx — описание не найдено`; `5411` is explicitly shown as
+bundled `mcc_bot/data/mcc_descriptions.json`. Lookup and contribution accept only
+codes present in this map; an unknown code is not calculated or stored and asks
+the user to check it. Exact four-digit brand names and aliases are checked before
+the same text is treated as an MCC. `5411` is explicitly shown as
 `Продуктовые магазины`.
 
 The offline description map is derived from the MIT-licensed

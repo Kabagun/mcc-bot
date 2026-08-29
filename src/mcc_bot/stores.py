@@ -111,6 +111,7 @@ class AuditEntry:
     created_at: str
     reverted_by: int | None
     details: tuple[str, ...]
+    summary: str
 
 
 _CYRILLIC = dict(
@@ -1213,12 +1214,22 @@ class StoreRepository:
             ORDER BY id DESC LIMIT ? OFFSET ?""",
             (merchant_id, merchant_id, max(1, min(int(limit), 100)), offset),
         )
-        result = []
-        for row in rows:
-            values = dict(row)
-            values["details"] = self._audit_details(connection, values.pop("changes_json"))
-            result.append(AuditEntry(**values))
-        return tuple(result)
+        return tuple(self._audit_entry_from_row(connection, row) for row in rows)
+
+    def audit_entry(self, audit_id: int, *, connection=None) -> AuditEntry | None:
+        """Return one privacy-safe audit entry, or ``None`` when it does not exist."""
+
+        if isinstance(audit_id, bool) or not isinstance(audit_id, int) or audit_id <= 0:
+            raise StoreError("Номер записи истории должен быть положительным целым числом")
+        if connection is None:
+            with self.connection() as conn:
+                return self.audit_entry(audit_id, connection=conn)
+        row = connection.execute(
+            """SELECT id,kind,merchant_id,brand_id,actor_id,created_at,reverted_by,changes_json
+            FROM store_audit WHERE id=?""",
+            (audit_id,),
+        ).fetchone()
+        return self._audit_entry_from_row(connection, row) if row is not None else None
 
     def brand_history(
         self, brand_id: int, *, limit=20, offset: int = 0, connection=None
@@ -1247,12 +1258,249 @@ class StoreRepository:
             ORDER BY a.id DESC LIMIT ? OFFSET ?""",
             (brand_id, max(1, min(int(limit), 100)), offset),
         )
-        result = []
-        for row in rows:
-            values = dict(row)
-            values["details"] = self._audit_details(connection, values.pop("changes_json"))
-            result.append(AuditEntry(**values))
-        return tuple(result)
+        return tuple(self._audit_entry_from_row(connection, row) for row in rows)
+
+    @classmethod
+    def _audit_entry_from_row(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> AuditEntry:
+        values = dict(row)
+        changes_json = values.pop("changes_json")
+        values["details"] = cls._audit_details(connection, changes_json)
+        values["summary"] = cls._audit_summary(connection, values["kind"], changes_json)
+        return AuditEntry(**values)
+
+    @staticmethod
+    def _audit_summary(connection: sqlite3.Connection, kind: str, changes_json: str) -> str:
+        """Return one stable UI label derived from structured audit snapshots."""
+
+        def clipped(value: Any, maximum: int = 48) -> str:
+            text = " ".join(str(value or "").split())
+            return text if len(text) <= maximum else text[: maximum - 1] + "…"
+
+        def parsed_aliases(raw: str | None) -> list[str]:
+            try:
+                values = json.loads(raw or "[]")
+            except (TypeError, json.JSONDecodeError):
+                return []
+            return [str(value) for value in values] if isinstance(values, list) else []
+
+        try:
+            changes = json.loads(changes_json)
+        except (TypeError, json.JSONDecodeError):
+            changes = []
+        if not isinstance(changes, list):
+            changes = []
+        edits = [edit for edit in changes if isinstance(edit, dict)]
+
+        merchant_states: dict[int, dict] = {}
+        fact_states: dict[int, dict] = {}
+        for edit in edits:
+            state = edit.get("after") or edit.get("before")
+            if not isinstance(state, dict) or not isinstance(edit.get("id"), int):
+                continue
+            if edit.get("table") == "store_merchants":
+                merchant_states[edit["id"]] = state
+            elif edit.get("table") == "store_facts":
+                fact_states[edit["id"]] = state
+
+        def fact_state(fact_id: Any) -> dict:
+            if isinstance(fact_id, int) and fact_id in fact_states:
+                return fact_states[fact_id]
+            if not isinstance(fact_id, int):
+                return {}
+            row = connection.execute(
+                "SELECT merchant_id,mcc FROM store_facts WHERE id=?", (fact_id,)
+            ).fetchone()
+            return dict(row) if row is not None else {}
+
+        def channel_for(state: dict) -> str | None:
+            merchant_id = state.get("merchant_id")
+            merchant = merchant_states.get(merchant_id, {})
+            channel = merchant.get("channel")
+            if channel not in {"offline", "online"} and isinstance(merchant_id, int):
+                row = connection.execute(
+                    "SELECT channel FROM store_merchants WHERE id=?", (merchant_id,)
+                ).fetchone()
+                channel = row["channel"] if row is not None else None
+            return channel if channel in {"offline", "online"} else None
+
+        def channel_suffix(channels: set[str | None]) -> str:
+            labels = [
+                label
+                for value, label in (("offline", "офлайн"), ("online", "онлайн"))
+                if value in channels
+            ]
+            return f" · {' и '.join(labels)}" if labels else ""
+
+        # Merge edits also mutate aliases, so identify the structural operation first.
+        if kind in {"merge_brand", "merge_merchant"}:
+            table = "store_brands" if kind == "merge_brand" else "store_merchants"
+            target_id = None
+            for edit in edits:
+                before, after = edit.get("before"), edit.get("after")
+                if (
+                    edit.get("table") == table
+                    and isinstance(before, dict)
+                    and isinstance(after, dict)
+                    and before.get("merged_into") != after.get("merged_into")
+                    and isinstance(after.get("merged_into"), int)
+                ):
+                    target_id = after["merged_into"]
+                    break
+            if target_id is not None:
+                for edit in edits:
+                    if edit.get("table") != table or edit.get("id") != target_id:
+                        continue
+                    target = edit.get("after") or edit.get("before")
+                    if isinstance(target, dict) and clipped(target.get("name")):
+                        return f"объединён с «{clipped(target['name'])}»"
+            return "бренды объединены"
+
+        for edit in edits:
+            before, after = edit.get("before"), edit.get("after")
+            if (
+                edit.get("table") in {"store_brands", "store_merchants"}
+                and isinstance(before, dict)
+                and isinstance(after, dict)
+                and before.get("name") != after.get("name")
+            ):
+                return f"название: «{clipped(before.get('name'))}» → «{clipped(after.get('name'))}»"
+
+        for edit in edits:
+            before, after = edit.get("before"), edit.get("after")
+            if (
+                edit.get("table") not in {"store_brands", "store_merchants"}
+                or not isinstance(before, dict)
+                or not isinstance(after, dict)
+                or before.get("aliases_json") == after.get("aliases_json")
+            ):
+                continue
+            old_aliases = parsed_aliases(before.get("aliases_json"))
+            new_aliases = parsed_aliases(after.get("aliases_json"))
+            added = [value for value in new_aliases if value not in old_aliases]
+            removed = [value for value in old_aliases if value not in new_aliases]
+            if len(added) == 1 and not removed:
+                return f"добавлено название «{clipped(added[0])}»"
+            if len(removed) == 1 and not added:
+                return f"удалено название «{clipped(removed[0])}»"
+            return "другие названия обновлены"
+
+        added_facts: list[tuple[str, str | None]] = []
+        removed_facts: list[tuple[str, str | None]] = []
+        note_changes: list[tuple[str, str, str]] = []
+        for edit in edits:
+            if edit.get("table") != "store_facts":
+                continue
+            before, after = edit.get("before"), edit.get("after")
+            state = after or before
+            if not isinstance(state, dict):
+                continue
+            mcc = clipped(state.get("mcc"), 12)
+            channel = channel_for(state)
+            if before is None and isinstance(after, dict) and not after.get("archived"):
+                added_facts.append((mcc, channel))
+            elif isinstance(before, dict) and isinstance(after, dict):
+                if not before.get("archived") and after.get("archived"):
+                    removed_facts.append((mcc, channel))
+                elif before.get("archived") and not after.get("archived"):
+                    added_facts.append((mcc, channel))
+                if before.get("note", "") != after.get("note", ""):
+                    note_changes.append(
+                        (
+                            mcc,
+                            clipped(before.get("note")) or "нет",
+                            clipped(after.get("note")) or "нет",
+                        )
+                    )
+
+        added_facts = list(dict.fromkeys(added_facts))
+        removed_facts = list(dict.fromkeys(removed_facts))
+        added_mcc = list(dict.fromkeys(mcc for mcc, _channel in added_facts))
+        removed_mcc = list(dict.fromkeys(mcc for mcc, _channel in removed_facts))
+        if len(added_mcc) == 1 and len(removed_mcc) == 1:
+            channels = {
+                channel
+                for mcc, channel in (*removed_facts, *added_facts)
+                if mcc in {removed_mcc[0], added_mcc[0]}
+            }
+            return f"MCC {removed_mcc[0]} → {added_mcc[0]}{channel_suffix(channels)}"
+        if added_facts:
+            channels = {channel for _mcc, channel in added_facts}
+            label = ", ".join(added_mcc[:3])
+            if len(added_mcc) > 3:
+                label += f" и ещё {len(added_mcc) - 3}"
+            prefix = "добавлен MCC" if len(added_mcc) == 1 else "добавлены MCC"
+            return f"{prefix} {label}{channel_suffix(channels)}"
+        if removed_facts:
+            channels = {channel for _mcc, channel in removed_facts}
+            label = ", ".join(removed_mcc[:3])
+            if len(removed_mcc) > 3:
+                label += f" и ещё {len(removed_mcc) - 3}"
+            prefix = "удалён MCC" if len(removed_mcc) == 1 else "удалены MCC"
+            return f"{prefix} {label}{channel_suffix(channels)}"
+        if note_changes:
+            mcc, old, new = note_changes[0]
+            return f"примечание MCC {mcc}: «{old}» → «{new}»"
+
+        evidence_added: list[tuple[str, str | None]] = []
+        evidence_revoked: list[tuple[str, str | None]] = []
+        for edit in edits:
+            if edit.get("table") != "store_evidence":
+                continue
+            before, after = edit.get("before"), edit.get("after")
+            state = after or before
+            if not isinstance(state, dict):
+                continue
+            fact = fact_state(state.get("fact_id"))
+            value = (clipped(fact.get("mcc"), 12), channel_for(fact))
+            if before is None and isinstance(after, dict) and not after.get("revoked"):
+                evidence_added.append(value)
+            elif (
+                isinstance(before, dict)
+                and isinstance(after, dict)
+                and not before.get("revoked")
+                and after.get("revoked")
+            ):
+                evidence_revoked.append(value)
+        evidence_added = [value for value in dict.fromkeys(evidence_added) if value[0]]
+        evidence_revoked = [value for value in dict.fromkeys(evidence_revoked) if value[0]]
+        if evidence_added:
+            mcc_values = list(dict.fromkeys(mcc for mcc, _channel in evidence_added))
+            channels = {channel for _mcc, channel in evidence_added}
+            label = ", ".join(mcc_values[:3])
+            prefix = "подтверждён MCC" if len(mcc_values) == 1 else "подтверждены MCC"
+            return f"{prefix} {label}{channel_suffix(channels)}"
+        if evidence_revoked:
+            mcc_values = list(dict.fromkeys(mcc for mcc, _channel in evidence_revoked))
+            channels = {channel for _mcc, channel in evidence_revoked}
+            label = ", ".join(mcc_values[:3])
+            return f"подтверждение MCC {label} отменено{channel_suffix(channels)}"
+
+        for edit in edits:
+            before, after = edit.get("before"), edit.get("after")
+            if (
+                edit.get("table") == "store_merchants"
+                and before is None
+                and isinstance(after, dict)
+            ):
+                return f"добавлен магазин{channel_suffix({after.get('channel')})}"
+            if (
+                edit.get("table") == "store_merchants"
+                and isinstance(before, dict)
+                and isinstance(after, dict)
+                and not before.get("archived")
+                and after.get("archived")
+            ):
+                return f"удалён магазин{channel_suffix({after.get('channel')})}"
+            if (
+                edit.get("table") == "store_brand_members"
+                and isinstance(before, dict)
+                and isinstance(after, dict)
+                and before.get("brand_id") != after.get("brand_id")
+            ):
+                return "изменена группа бренда"
+        if any(edit.get("table") == "store_tannei_snapshots" for edit in edits):
+            return "обновлены данные MCC"
+        return "обновлена запись"
 
     @staticmethod
     def _audit_details(connection: sqlite3.Connection, changes_json: str) -> tuple[str, ...]:
@@ -1903,9 +2151,11 @@ class StoreRepository:
         if has_brand:
             brand_id = int(payload["brand_id"])
             brand = self._required_brand(connection, brand_id)
+            aliases: list[str] = []
         else:
             name = _name(payload["name"])
-            brand_id = self._create_brand(connection, changes, name=name)
+            aliases = _aliases(payload.get("aliases", []))
+            brand_id = self._create_brand(connection, changes, name=name, aliases=aliases)
             brand = connection.execute(
                 "SELECT * FROM store_brands WHERE id=?", (brand_id,)
             ).fetchone()
@@ -1925,7 +2175,7 @@ class StoreRepository:
                     "store_merchants",
                     name=brand["name"],
                     channel=channel,
-                    aliases_json="[]",
+                    aliases_json=_json(aliases),
                 )
                 self._attach_brand(connection, changes, merchant_id, brand_id)
             else:

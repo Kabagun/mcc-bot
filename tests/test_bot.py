@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from telegram import BotCommand
@@ -13,7 +13,9 @@ from telegram.ext import CallbackQueryHandler, CommandHandler
 
 from mcc_bot.bot import (
     _configure_bot_commands,
+    _lookup_and_reply,
     build_application,
+    lookup_mcc_callback,
     lookup_text,
     remember_chat,
     start,
@@ -43,10 +45,16 @@ def _context(catalog: CardCatalog) -> SimpleNamespace:
         application=SimpleNamespace(
             bot_data={
                 "catalog": catalog,
-                "descriptions": DescriptionCatalog(labels={"5411": "Продуктовые магазины"}),
+                "descriptions": DescriptionCatalog(
+                    labels={
+                        "5411": "Продуктовые магазины",
+                        "5812": "Места общественного питания",
+                    }
+                ),
             }
         ),
         args=[],
+        user_data={},
     )
 
 
@@ -84,6 +92,149 @@ def test_non_numeric_text_routes_to_store_search(catalog_path, monkeypatch, text
     message.reply_text.assert_not_awaited()
 
 
+def _numeric_brand(brand_id=77, *, name="7745", aliases=()):
+    return SimpleNamespace(id=brand_id, name=name, aliases=tuple(aliases))
+
+
+def _with_store_search(context, *, matches=(), suggestions=()):
+    search = Mock(
+        return_value=SimpleNamespace(
+            matches=tuple(matches),
+            suggestions=tuple(suggestions),
+        )
+    )
+    context.application.bot_data["stores"] = SimpleNamespace(search=search)
+    return search
+
+
+def test_only_exact_numeric_brand_opens_brand_search(catalog_path, monkeypatch) -> None:
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
+    repository_search = _with_store_search(context, matches=(_numeric_brand(),))
+    store_search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)
+    message = SimpleNamespace(text="7745", reply_text=AsyncMock())
+    update = SimpleNamespace(effective_message=message)
+
+    asyncio.run(lookup_text(update, context))
+
+    repository_search.assert_called_once_with("7745", limit=100)
+    store_search.assert_awaited_once_with(update, context, "7745")
+    message.reply_text.assert_not_awaited()
+
+
+def test_exact_numeric_alias_counts_as_brand(catalog_path, monkeypatch) -> None:
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
+    _with_store_search(
+        context,
+        matches=(_numeric_brand(name="Official name", aliases=("7745",)),),
+    )
+    store_search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)
+    update = SimpleNamespace(effective_message=SimpleNamespace(text="7745", reply_text=AsyncMock()))
+
+    asyncio.run(lookup_text(update, context))
+
+    store_search.assert_awaited_once_with(update, context, "7745")
+
+
+def test_only_known_mcc_bypasses_fuzzy_numeric_brand(catalog_path, monkeypatch) -> None:
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(
+        labels={"7745": "Известная категория"}
+    )
+    fuzzy = _numeric_brand(name="77450")
+    _with_store_search(context, matches=(fuzzy,), suggestions=(fuzzy,))
+    lookup = AsyncMock()
+    store_search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot._lookup_and_reply", lookup)
+    monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)
+    update = SimpleNamespace(effective_message=SimpleNamespace(text="7745", reply_text=AsyncMock()))
+
+    asyncio.run(lookup_text(update, context))
+
+    lookup.assert_awaited_once_with(update, context, "7745")
+    store_search.assert_not_awaited()
+
+
+def test_numeric_brand_and_mcc_offer_explicit_choice(catalog_path) -> None:
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(
+        labels={"7745": "Известная категория"}
+    )
+    _with_store_search(context, matches=(_numeric_brand(),))
+    message = SimpleNamespace(text="7745", reply_text=AsyncMock())
+
+    asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
+
+    message.reply_text.assert_awaited_once()
+    rows = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [row[0].text for row in rows] == ["🏪 Бренд «7745»", "🧾 MCC 7745"]
+    assert rows[0][0].callback_data == "store:show:77:0"
+    assert rows[1][0].callback_data == "mcc_lookup:7745"
+
+
+def test_unknown_numeric_input_explains_mcc_and_offers_prefilled_brand(catalog_path) -> None:
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
+    _with_store_search(context)
+    message = SimpleNamespace(text="1233", reply_text=AsyncMock())
+
+    asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
+
+    message.reply_text.assert_awaited_once()
+    text = message.reply_text.await_args.args[0]
+    assert text.splitlines()[0] == "MCC 1233 не найден в справочнике. Проверьте код."
+    assert "Если «1233» — название магазина, его можно добавить." in text  # noqa: RUF001
+    button = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "➕ Добавить бренд «1233»"  # noqa: RUF001
+    _, _, _, token = button.callback_data.split(":")
+    assert context.user_data["store_searches"][token] == "1233"
+
+
+def test_unknown_mcc_lookup_never_calculates_cards() -> None:
+    catalog = SimpleNamespace(lookup=Mock(side_effect=AssertionError("must not calculate")))
+    context = _context(catalog)
+    context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
+    message = SimpleNamespace(reply_text=AsyncMock())
+
+    asyncio.run(
+        _lookup_and_reply(
+            SimpleNamespace(effective_message=message),
+            context,
+            "1233",
+        )
+    )
+
+    catalog.lookup.assert_not_called()
+    message.reply_text.assert_awaited_once_with("MCC 1233 не найден в справочнике. Проверьте код.")
+
+
+def test_explicit_mcc_choice_uses_lookup_without_brand_creation() -> None:
+    catalog = SimpleNamespace(lookup=Mock(side_effect=AssertionError("must not calculate")))
+    context = _context(catalog)
+    context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
+    message = SimpleNamespace(is_accessible=True, reply_text=AsyncMock())
+    query = SimpleNamespace(
+        data="mcc_lookup:1233",
+        message=message,
+        answer=AsyncMock(),
+    )
+
+    asyncio.run(
+        lookup_mcc_callback(
+            SimpleNamespace(callback_query=query, effective_message=message),
+            context,
+        )
+    )
+
+    query.answer.assert_awaited_once()
+    catalog.lookup.assert_not_called()
+    message.reply_text.assert_awaited_once_with("MCC 1233 не найден в справочнике. Проверьте код.")
+    assert "store_searches" not in context.user_data
+
+
 def test_active_form_consumes_numeric_text_before_lookup(catalog_path, isolate_community_dispatch):
     isolate_community_dispatch.return_value = True
     message = SimpleNamespace(text="5411", reply_text=AsyncMock())
@@ -112,13 +263,23 @@ def test_removed_commands_only_explain_supported_input(catalog_path, text):
 
 def test_command_menu_lists_only_start_with_russian_description() -> None:
     set_commands = AsyncMock()
-    application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_commands))
+    set_name = AsyncMock()
+    set_short_description = AsyncMock()
+    application = SimpleNamespace(
+        bot=SimpleNamespace(
+            set_my_commands=set_commands,
+            set_my_name=set_name,
+            set_my_short_description=set_short_description,
+        )
+    )
 
     asyncio.run(_configure_bot_commands(application))
 
     set_commands.assert_awaited_once_with(
         [BotCommand(command="start", description="Начало и меню")]
     )
+    set_name.assert_awaited_once_with("Какой картой?")
+    set_short_description.assert_awaited_once_with("Подскажет лучшую карту по магазину или MCC.")
 
 
 def test_remember_chat_persists_effective_chat_id(catalog_path, tmp_path) -> None:
@@ -211,11 +372,15 @@ def test_invalid_or_empty_lookups_have_no_details_button(catalog_path, raw_mcc) 
     )
 
     message.reply_text.assert_awaited_once()
-    assert "reply_markup" not in message.reply_text.await_args.kwargs
+    assert "parse_mode" not in message.reply_text.await_args.kwargs
     if raw_mcc == "9999":
-        assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
+        assert "reply_markup" in message.reply_text.await_args.kwargs
+        assert (
+            message.reply_text.await_args.args[0].splitlines()[0]
+            == "MCC 9999 не найден в справочнике. Проверьте код."
+        )
     else:
-        assert "parse_mode" not in message.reply_text.await_args.kwargs
+        assert "reply_markup" not in message.reply_text.await_args.kwargs
 
 
 def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_text(catalog_path):
@@ -487,4 +652,4 @@ def test_application_registers_details_callback_handler(catalog_path, tmp_path) 
         for handler in handlers
         if isinstance(handler, CallbackQueryHandler) and handler.pattern
     }
-    assert patterns == {"^mcc_details:", "^store:", "^community:"}
+    assert patterns == {"^mcc_details:", "^mcc_lookup:", "^store:", "^community:"}
