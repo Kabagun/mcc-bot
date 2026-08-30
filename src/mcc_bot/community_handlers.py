@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -30,8 +32,8 @@ from .formatting import format_limits, split_message
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
 GUIDE = "❓ Как пользоваться"
-SUGGEST = "➕ Предложить MCC магазина"
-ADD = "➕ Добавить MCC магазина"
+SUGGEST = "➕ Предложить данные"
+ADD = "➕ Добавить данные"
 VOLUNTEER = "🙋 Хочу помогать"
 APPLICATION_PENDING = "⏳ Заявка отправлена"
 LEGACY_MINE = "👤 Мои предложения"
@@ -42,6 +44,7 @@ MANAGE_DIGEST_ON = "🔕 Включить сводку в 20:00"
 MANAGE_DIGEST_OFF = "🔔 Отключить сводку"
 MANAGE_ROLES = "👥 Помощники и заявки"
 MAIN_MENU = "⬅️ Главное меню"
+CANCEL_DRAFT = "❌ Отменить"
 HISTORY_PAGE_SIZE = 10
 FACT_PAGE_SIZE = 10
 MAX_HISTORY_OFFSET = 1000000
@@ -62,6 +65,7 @@ KINDS = {
     "set_brand_membership": "Изменить способ оплаты",
     "merge_brand": "Объединить магазины",
     "edit_mcc_note": "Изменить подпись к MCC",
+    "card_partnership": "Добавить партнёрство по карте",
 }
 HISTORY_KINDS = {**KINDS, "import": "Импорт данных из tannei.by"}
 CLEAN_NAVIGATION_STAGES = {
@@ -197,7 +201,7 @@ def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup
     """Build a persistent keyboard from the user's current effective role."""
 
     if service.is_admin(user_id):
-        rows = [[INFO], [ADD], [QUEUE], [MANAGE], [GUIDE]]
+        rows = [[INFO], [ADD], [QUEUE, MANAGE], [GUIDE]]
     else:
         application = (
             APPLICATION_PENDING if service.role_request_status(user_id) == "pending" else VOLUNTEER
@@ -206,17 +210,44 @@ def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
-def management_keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup:
-    """Build the temporary lower-keyboard submenu for management actions."""
+def draft_keyboard_for() -> ReplyKeyboardMarkup:
+    """Build the only lower keyboard used while a real form draft is active."""
+
+    return ReplyKeyboardMarkup([[CANCEL_DRAFT]], resize_keyboard=True, is_persistent=True)
+
+
+def _current_reply_keyboard(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup:
+    """Keep a real form in cancel-only mode after recoverable validation errors."""
+
+    try:
+        draft = service.draft(user_id)
+    except CommunityError:
+        draft = None
+    return (
+        draft_keyboard_for()
+        if draft is not None and draft.data.get("draft_mode")
+        else keyboard_for(service, user_id)
+    )
+
+
+def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKeyboardMarkup:
+    """Build role-aware inline management actions without replacing the main menu."""
 
     if not service.is_admin(user_id):
         raise CommunityError("Управление доступно только действующим помощникам.")
-    rows = [[MANAGE_HISTORY]]
-    rows.append([MANAGE_DIGEST_OFF if service.digest_enabled(user_id) else MANAGE_DIGEST_ON])
+    epoch = service.role_epoch(user_id)
+    rows: list[list[tuple[str, str]]] = [[(MANAGE_HISTORY, "recent:0")]]
+    rows.append(
+        [
+            (
+                MANAGE_DIGEST_OFF if service.digest_enabled(user_id) else MANAGE_DIGEST_ON,
+                f"digest:{int(not service.digest_enabled(user_id))}:{epoch}",
+            )
+        ]
+    )
     if service.role(user_id) == "owner":
-        rows.append([MANAGE_ROLES])
-    rows.append([MAIN_MENU])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+        rows.append([(MANAGE_ROLES, "roles:0")])
+    return _keyboard(rows)
 
 
 async def _say(
@@ -259,6 +290,32 @@ async def _say_inline(
     await _say(update, text, markup, parse_mode=parse_mode)
 
 
+async def _say_with_restored_menu(
+    update: Update,
+    text: str,
+    menu: ReplyKeyboardMarkup,
+    inline: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Restore the persistent menu and keep one visible result message.
+
+    Telegram cannot attach a reply keyboard and inline buttons to one send. The
+    initial send restores the persistent keyboard; editing that same bot message
+    then attaches the object action without creating a second visible result.
+    """
+
+    message = update.effective_message
+    if message is None:
+        return
+    sent = await message.reply_text(text, reply_markup=menu)
+    if inline is None:
+        return
+    try:
+        await sent.edit_text(text, reply_markup=inline)
+    except (TelegramError, AttributeError):
+        LOGGER.info("Could not attach the saved-store action to the completion message")
+        await message.reply_text("Открыть магазин:", reply_markup=inline)
+
+
 async def _close_draft(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -278,6 +335,8 @@ async def _close_draft(
     brand_id = draft.data.get("brand_id")
     service.cancel_draft(draft.user_id, draft.id, draft.version)
     if isinstance(brand_id, int):
+        if draft.data.get("draft_mode"):
+            await _say(update, "Действие отменено.", keyboard_for(service, draft.user_id))
         from .store_handlers import _brand_view
 
         brand = _brand(service, brand_id)
@@ -300,17 +359,13 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service = _service(context)
     draft = service.draft(user_id)
     if draft:
+        actions = [("Продолжить", f"d:{draft.id}:{draft.version}:resume")]
+        if not draft.data.get("draft_mode"):
+            actions.append(("Отменить", f"d:{draft.id}:{draft.version}:cancel"))
         await _say(
             update,
             "У вас есть незавершённое действие.",
-            _keyboard(
-                [
-                    [
-                        ("Продолжить", f"d:{draft.id}:{draft.version}:resume"),
-                        ("Отменить", f"d:{draft.id}:{draft.version}:cancel"),
-                    ]
-                ]
-            ),
+            _keyboard([actions]),
         )
     await _say(
         update,
@@ -320,44 +375,71 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👥 Пользователей: "
         f"{context.application.bot_data['user_registry'].private_chat_count()} · "
         f"🤝 Помощников: {service.helper_count()}",
-        keyboard_for(service, user_id),
+        (
+            draft_keyboard_for()
+            if draft and draft.data.get("draft_mode")
+            else keyboard_for(service, user_id)
+        ),
     )
 
 
 def _guide_text(service: CommunityService, user_id: int) -> str:
-    """Return a short role-aware guide written without internal terminology."""
+    """Return the complete role-aware guide in user-facing language."""
 
     if service.is_admin(user_id):
         return (
             "Как пользоваться ботом и помогать\n\n"
-            "Поиск и добавление:\n"
-            "1. Напишите название магазина или четыре цифры MCC.\n"
-            "2. Откройте найденный магазин, чтобы посмотреть или исправить данные.\n"
-            "3. Чтобы внести сведения напрямую, нажмите «➕ Добавить MCC магазина» "
-            "либо найдите магазин и выберите нужное действие.\n\n"
-            "Разбор предложений:\n"
-            "1. Нажмите «📋 Разобрать очередь» и выберите заявку.\n"
-            "2. Заявка закрепится за вами ровно на 15 минут. Продлить это время нельзя.\n"
-            "3. Сверьте магазин, способ оплаты, MCC и приложенный скриншот, если он есть.\n"
-            "4. Всё верно — нажмите «Принять». Данные неверны — «Отклонить» и "
-            "укажите короткую причину. Не хватает сведений — «Уточнить».\n"
-            "5. «Отменить разбор» сразу вернёт заявку в общую очередь без решения.\n"
-            "6. Если ничего не сделать за 15 минут, заявка также вернётся в очередь."
+            "Поиск и выгода\n"
+            "• Отправьте название магазина или четырёхзначный MCC из операции банка.\n"
+            "• Офлайн и онлайн показаны отдельно: у кассы и на сайте одного магазина MCC "
+            "могут различаться.\n"
+            "• Бот складывает совместимые части выгоды. Например, «3% + 5% баллами» "
+            "означает обычное начисление карты и дополнительные баллы; условия, минимальную сумму "
+            "и лимиты смотрите в подробностях. Перед оплатой сверяйте MCC.\n\n"
+            "Добавление и исправление данных\n"
+            "• Нажмите «➕ Добавить данные» и выберите: новый магазин, MCC магазина или "
+            "партнёрство по карте. Из карточки магазина можно сразу открыть нужное изменение.\n"
+            "• Помощник сохраняет проверенные данные сразу. Для партнёрства укажите условия, "
+            "исключения и официальный источник; если ссылки нет, приложите скриншот.\n"
+            "• Пока форма открыта, нижняя кнопка «❌ Отменить» закрывает её; после сохранения "
+            "обычное меню возвращается.\n\n"
+            "Очередь и проверка\n"
+            "• Откройте «📋 Разобрать очередь» и выберите заявку. Она резервируется за вами "
+            "ровно на 15 минут; продлить резерв нельзя.\n"
+            "• Сверьте магазин, офлайн/онлайн, MCC либо карту, партнёра, условия, исключения "
+            "и источник. «Принять» сохраняет данные, «Отклонить» сразу закрывает заявку, "
+            "«Уточнить» отправляет вопрос автору.\n"
+            "• «Отменить разбор» или истечение 15 минут возвращает заявку в общую очередь. "
+            "После ответа на уточнение она снова появится в очереди.\n\n"
+            "Управление\n"
+            "• «⚙️ Управление» открывает inline-действия: историю изменений и отмену доступных "
+            "записей, вечернюю сводку, а у владельца — помощников и заявки.\n"
+            "• История, списки и страницы переключаются кнопками под текущим сообщением."
         )
     return (
         "Как пользоваться ботом\n\n"
-        "Найти выгодную карту:\n"
-        "1. Напишите название магазина, например «Евроопт».\n"
-        "2. Либо отправьте MCC — четыре цифры из операции в приложении банка, "
-        "например 5411.\n"
-        "3. Если найдено несколько магазинов, выберите нужный кнопкой.\n"
-        "4. Бот покажет подходящие карты и выгоду по каждой из них. Перед оплатой "
-        "сверьте MCC в приложении банка: у разных касс он может отличаться.\n\n"
-        "Предложить исправление:\n"
-        "1. Нажмите «➕ Предложить MCC магазина».\n"
-        "2. Укажите магазин, способ оплаты и MCC. Скриншот можно приложить, если он есть.\n"
-        "3. Проверьте данные и отправьте их. Предложение попадёт помощникам на проверку.\n"
-        "4. Если помощник задаст вопрос, бот покажет его здесь — ответьте сообщением."
+        "Поиск и выгода\n"
+        "• Напишите название магазина, например «Евроопт», или отправьте четыре цифры MCC "
+        "из операции в приложении банка, например 5411. Если вариантов несколько, выберите "
+        "нужный кнопкой.\n"
+        "• Офлайн и онлайн показаны отдельно: у кассы и на сайте одного магазина MCC могут "
+        "различаться. Перед оплатой сверяйте MCC в приложении банка.\n"
+        "• Бот складывает совместимые части выгоды. Например, «3% + 5% баллами» означает "
+        "обычное начисление карты и дополнительные баллы. Откройте подробности, чтобы увидеть "
+        "условия, "
+        "минимальную сумму и лимиты.\n\n"
+        "Предложить данные\n"
+        "• Нажмите «➕ Предложить данные» и выберите: новый магазин, MCC магазина или "
+        "партнёрство по карте. Для MCC укажите, относится ли он к офлайн- или онлайн-оплате.\n"
+        "• Для партнёрства укажите карту, партнёра, выгоду, условия и исключения. Нужна "
+        "официальная ссылка или скриншот источника. В остальных формах ссылка или скриншот "
+        "также помогают помощнику проверить сведения.\n"
+        "• Проверьте заполненные данные и отправьте их. Дополнительного подтверждения нет: "
+        "предложение сразу попадёт помощникам на проверку.\n"
+        "• Если помощник попросит уточнение, бот пришлёт вопрос. Ответьте в открывшейся форме; "
+        "после ответа предложение вернётся на проверку.\n"
+        "• Пока форма открыта, нижняя кнопка «❌ Отменить» закрывает её; затем обычное меню "
+        "возвращается."
     )
 
 
@@ -375,12 +457,43 @@ def _draft_buttons(
         navigation.append(("⬅️ Назад", prefix + "back"))
     elif draft.data.get("brand_id"):
         navigation.append(("⬅️ К магазину", prefix + "close"))
-    navigation.append(("Отмена", prefix + "cancel"))
-    result.append(navigation)
+    if not draft.data.get("draft_mode"):
+        navigation.append(("Отмена", prefix + "cancel"))
+    if navigation:
+        result.append(navigation)
     return _keyboard(result)
 
 
 def _display_payload(service: CommunityService, kind: str, payload: dict[str, Any]) -> str:
+    if kind == "card_partnership":
+        brand = _brand(service, payload["brand_id"], include_archived=True)
+        channel = {
+            "offline": "офлайн",
+            "online": "онлайн",
+            "any": "офлайн и онлайн",
+        }[payload["channel"]]
+        reward = "денежный возврат" if payload["reward_kind"] == "cash" else "баллы"
+        mode = (
+            "дополнительно к обычной выгоде"
+            if payload["mode"] == "additional"
+            else "итоговая выгода"
+        )
+        value = payload["tiers"][0]["value"]
+        excluded = (
+            ", ".join(item["mcc"] for item in payload["exclusions"] if item.get("mcc")) or "нет"
+        )
+        return "\n".join(
+            [
+                KINDS[kind],
+                f"Магазин: {brand.name if brand else 'не найден'} (№{payload['brand_id']})",
+                f"Карта: {payload['card_id']}",
+                f"Оплата: {channel}",
+                f"Выгода: {value}% · {reward} · {mode}",
+                f"Условия: {payload['conditions']}",
+                f"Исключённые MCC: {excluded}",
+                "Официальная ссылка: " + (payload["source_url"] or "не указана, приложен скриншот"),
+            ]
+        )
     parts = [KINDS.get(kind, "Предложение")]
     brand_id = payload.get("brand_id")
     if brand_id:
@@ -422,6 +535,8 @@ def _display_payload(service: CommunityService, kind: str, payload: dict[str, An
     if kind == "add_mcc_both":
         parts.append("Способ оплаты: 🏬🌐 Офлайн и онлайн")
         parts.append("Существующие подписи останутся без изменений.")
+    if payload.get("source_url"):
+        parts.append("Официальная ссылка: " + payload["source_url"])
     return "\n".join(parts)
 
 
@@ -684,8 +799,19 @@ async def _render_draft(
         service.validate_review(draft.user_id, data["proposal_id"], data["proposal_version"])
     rows: list[list[tuple[str, str]]] = []
     if stage == "name":
-        text = "Как называется магазин? Введите название (до 160 символов)."
-    elif stage in {"choose", "edit_choose", "target_choose", "preview_choose"}:
+        text = "Как называется новый магазин? Введите название (до 160 символов)."
+    elif stage == "store_name":
+        text = "Как называется магазин, для которого нужно добавить MCC?"
+    elif stage == "partner_store_name":
+        text = "Для какого магазина действует партнёрство по карте? Введите название."
+    elif stage in {
+        "choose",
+        "store_choose",
+        "partner_store_choose",
+        "edit_choose",
+        "target_choose",
+        "preview_choose",
+    }:
         text = "Выберите магазин. Если нужного нет, уточните название сообщением."
         for brand_id in data.get("matches", [])[:10]:
             brand = _brand(service, brand_id)
@@ -700,6 +826,57 @@ async def _render_draft(
                 )
         if stage in {"choose", "preview_choose"}:
             rows.append([("Создать новый магазин", "new")])
+    elif stage == "partner_card":
+        cards = data.get("cards", [])
+        offset = int(data.get("card_offset", 0))
+        page = cards[offset : offset + 10]
+        text = "Выберите карту, для которой действует партнёрство."
+        rows = [
+            [(card["name"][:48], f"partner_card:{offset + index}")]
+            for index, card in enumerate(page)
+        ]
+        navigation = []
+        if offset:
+            navigation.append(("⬅️ Назад", f"partner_card_page:{max(0, offset - 10)}"))
+        if len(cards) > offset + 10:
+            navigation.append(("Дальше ➡️", f"partner_card_page:{offset + 10}"))
+        if navigation:
+            rows.append(navigation)
+    elif stage == "partner_channel":
+        text = "Где действует партнёрство?"
+        rows = [
+            [("🏬🌐 Офлайн и онлайн", "partner_channel:any")],
+            [("🏬 Офлайн", "partner_channel:offline"), ("🌐 Онлайн", "partner_channel:online")],
+        ]
+    elif stage == "partner_mode":
+        text = "Как учитывать партнёрскую выгоду?"
+        rows = [
+            [("➕ Добавляется к обычной", "partner_mode:additional")],
+            [("= Это итоговая выгода", "partner_mode:total")],
+        ]
+    elif stage == "partner_reward_kind":
+        text = "В чём начисляется партнёрская выгода?"
+        rows = [
+            [("💵 Денежный возврат", "partner_reward:cash")],
+            [("🟡 Баллы", "partner_reward:points")],
+        ]
+    elif stage == "partner_value":
+        text = "Введите процент партнёрской выгоды, например 5 или 2,5."
+    elif stage == "partner_conditions":
+        text = (
+            "Опишите условия партнёрства: минимальную сумму, лимит, нужную оплату или другие "
+            "важные ограничения (до 1000 символов)."
+        )
+    elif stage == "partner_exclusions":
+        text = (
+            "Перечислите исключённые MCC через запятую, например 4814, 4900. "
+            "Если исключений нет, отправьте «нет»."
+        )
+    elif stage == "partner_source":
+        text = (
+            "Пришлите полную официальную ссылку на условия (http:// или https://) либо "
+            "скриншот официального источника фотографией."
+        )
     elif stage == "channel":
         text = f"Выберите способ оплаты для MCC у магазина «{data['name']}»:"
         rows = [
@@ -755,7 +932,20 @@ async def _render_draft(
             "Скриншот увидят только вы и действующие помощники; ссылка удалится "
             "через 5 дней после завершения проверки."
         )
-        rows = [[("Без скриншота", "skip")]]
+        if (
+            stage == "response_evidence"
+            or service.is_admin(draft.user_id)
+            or data.get("source_url")
+        ):
+            rows = [[("Без скриншота", "skip")]]
+        else:
+            rows = [[("🔗 Указать официальную ссылку", "source")]]
+    elif stage == "source_url":
+        text = (
+            "Пришлите полную официальную ссылку на страницу с этими данными "
+            "(http:// или https://). Вместо ссылки можно сразу прислать скриншот фотографией."
+        )
+        rows = [[("📷 Приложить скриншот", "source_screenshot")]]
     elif stage == "note":
         current = data.get("note", "")
         text = (
@@ -797,6 +987,14 @@ async def _render_draft(
             ]
         )
         rows.append([("Скриншот", "more:evidence")])
+        rows.append(
+            [
+                (
+                    "✏️ Официальная ссылка" if data.get("source_url") else "🔗 Официальная ссылка",
+                    "more:source",
+                )
+            ]
+        )
         if not service.is_admin(draft.user_id) and not data.get("response_id"):
             rows.append([("Комментарий проверяющему", "more:comment")])
     elif stage == "new_aliases":
@@ -868,6 +1066,10 @@ async def _render_draft(
                     )
                 ],
             ]
+            if data.get("source_url"):
+                rows.insert(-1, [("🔗 Изменить источник", "preview:source")])
+            elif not direct and not service.draft_has_media(draft.user_id, draft.id):
+                rows.insert(-1, [("🔗 Добавить источник", "preview:source")])
         else:
             rows = [[("Сохранить в базу" if direct else "Отправить на проверку", "submit")]]
     elif stage == "cancel_confirm":
@@ -1062,11 +1264,7 @@ async def _render_draft(
         if "recent_offset" in data:
             rows.append([("⬅️ К списку изменений", "recent_back")])
     elif stage == "reason":
-        text = (
-            "Напишите причину отказа."
-            if data["decision"] == "rejected"
-            else "Что нужно уточнить у автора?"
-        )
+        text = "Что нужно уточнить у автора?"
     elif stage == "review_preview":
         text = "Проверьте сообщение автору:\n\n" + data["reason"]
         rows = [[("Отправить решение", "decision")]]
@@ -1074,7 +1272,14 @@ async def _render_draft(
         raise CommunityError("Неизвестный шаг. Отмените действие и начните заново.")
     if notice:
         text = notice + "\n\n" + text
-    await _say_inline(update, text, _draft_buttons(draft, rows))
+    markup: Any = _draft_buttons(draft, rows)
+    if draft.data.get("draft_mode") and not rows:
+        markup = draft_keyboard_for()
+    await (
+        _say(update, text, markup)
+        if isinstance(markup, ReplyKeyboardMarkup)
+        else _say_inline(update, text, markup)
+    )
 
 
 async def _queue(
@@ -1099,7 +1304,7 @@ async def _queue(
         rows.append([("⬅️ Назад", f"queue:{max(0, offset - 10)}")])
     if len(proposals) == 10:
         rows.append([("Дальше ➡️", f"queue:{offset + 10}")])
-    await _say(
+    await _say_inline(
         update,
         ((notice + "\n\n") if notice else "")
         + ("Выберите предложение для разбора." if proposals else "Очередь пуста."),
@@ -1131,6 +1336,7 @@ def _queue_proposal_label(service: CommunityService, proposal: Proposal) -> str:
         "edit_brand_names": "изменение названия",
         "merge_merchant": "объединение магазинов",
         "merge_brand": "объединение магазинов",
+        "card_partnership": "партнёрство по карте",
     }
     return f"№{proposal.id} · {name[:32]} — {actions.get(proposal.kind, 'изменение данных')}"
 
@@ -1154,7 +1360,7 @@ async def _review_view(update: Update, service: CommunityService, proposal: Prop
     if has_media:
         rows.append([("Скриншот", f"media:{proposal.id}:{proposal.version}")])
     rows.append([("Отменить разбор", prefix + "release")])
-    await _say(update, text, _keyboard(rows))
+    await _say_inline(update, text, _keyboard(rows))
 
 
 async def _recent_history(
@@ -1181,6 +1387,7 @@ async def _recent_history(
         navigation.append(("Следующая страница ➡️", f"recent:{offset + HISTORY_PAGE_SIZE}"))
     if navigation:
         rows.append(navigation)
+    rows.append([("⬅️ К управлению", "manage")])
     await _say_inline(
         update,
         f"Изменения, включая скрытые магазины · страница {offset // HISTORY_PAGE_SIZE + 1}."
@@ -1193,10 +1400,23 @@ async def _recent_history(
 async def _management(update: Update, service: CommunityService, user_id: int) -> None:
     if not service.is_admin(user_id):
         raise CommunityError("Управление доступно только действующим помощникам.")
-    await _say(
+    await _say_inline(update, "Управление", management_keyboard_for(service, user_id))
+
+
+async def _add_menu(update: Update, service: CommunityService, user_id: int) -> None:
+    """Show the one role-aware entry point for all supported contribution kinds."""
+
+    verb = "Добавить" if service.is_admin(user_id) else "Предложить"
+    await _say_inline(
         update,
-        "Выберите действие на нижней клавиатуре.",
-        management_keyboard_for(service, user_id),
+        f"Что хотите {verb.lower()}?",
+        _keyboard(
+            [
+                [("🏪 Новый магазин", "add:new_store")],
+                [("🧾 MCC магазина", "add:store_mcc")],
+                [("🤝 Партнёрство по карте", "add:partner")],
+            ]
+        ),
     )
 
 
@@ -1221,9 +1441,10 @@ async def _role_list(
         rows.append([("⬅️ Назад", f"roles:{max(0, offset - 10)}")])
     if len(candidates) > offset + 10:
         rows.append([("Дальше ➡️", f"roles:{offset + 10}")])
-    await _say(
+    rows.append([("⬅️ К управлению", "manage")])
+    await _say_inline(
         update,
-        "Помощники и заявки" if rows else "Заявок и помощников пока нет.",
+        "Помощники и заявки" if candidates else "Заявок и помощников пока нет.",
         _keyboard(rows),
     )
 
@@ -1281,6 +1502,7 @@ async def begin_contribution(
     brand_id: int | None = None,
     channel: str | None = None,
     name: str | None = None,
+    flow_kind: str = "new_store",
 ) -> None:
     """Start a contribution with optional brand, channel, or search-name context."""
 
@@ -1288,8 +1510,12 @@ async def begin_contribution(
     user_id = _identity(update)
     if user_id is None:
         raise CommunityError("Добавление доступно в личном чате с ботом.")
-    data: dict[str, Any] = {"dirty": False}
+    if flow_kind not in {"new_store", "store_mcc"}:
+        raise CommunityError("Неизвестный вид данных.")
+    data: dict[str, Any] = {"dirty": False, "draft_mode": True, "flow_kind": flow_kind}
     stage = "name"
+    if flow_kind == "store_mcc" and brand_id is None and not name:
+        stage = "store_name"
     if brand_id is not None:
         brand = _brand(service, brand_id)
         if brand is None:
@@ -1308,6 +1534,35 @@ async def begin_contribution(
             data["merchant_id"] = member.id
         stage = "mcc"
     draft = service.begin(user_id, stage=stage, data=data, privileged=service.is_admin(user_id))
+    if stage not in {"name", "store_name"}:
+        await _say(update, "Добавление данных начато.", draft_keyboard_for())
+    await _render_draft(update, service, draft)
+
+
+async def begin_partner_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start the fixed-tier card-partnership proposal form."""
+
+    service = _service(context)
+    user_id = _identity(update)
+    if user_id is None:
+        raise CommunityError("Добавление доступно в личном чате с ботом.")
+    catalog = context.application.bot_data.get("catalog")
+    cards = getattr(catalog, "cards", ())
+    if not cards:
+        raise CommunityError("Список карт сейчас недоступен.")
+    data = {
+        "dirty": False,
+        "draft_mode": True,
+        "flow_kind": "partner",
+        "cards": [{"id": card.id, "name": card.name} for card in cards],
+        "card_offset": 0,
+    }
+    draft = service.begin(
+        user_id,
+        stage="partner_store_name",
+        data=data,
+        privileged=service.is_admin(user_id),
+    )
     await _render_draft(update, service, draft)
 
 
@@ -1361,6 +1616,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             MANAGE_DIGEST_OFF,
             MANAGE_ROLES,
             MAIN_MENU,
+            CANCEL_DRAFT,
         }:
             await _say(update, "Откройте личный чат с ботом.")
             return True
@@ -1369,13 +1625,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     try:
         if text == INFO:
             catalog = context.application.bot_data["catalog"]
-            await _say(update, format_limits(catalog.cards), keyboard_for(service, user_id))
+            await _say(
+                update,
+                format_limits(catalog.cards),
+                _current_reply_keyboard(service, user_id),
+            )
         elif text == GUIDE:
-            await _say(update, _guide_text(service, user_id), keyboard_for(service, user_id))
+            await _say(
+                update,
+                _guide_text(service, user_id),
+                _current_reply_keyboard(service, user_id),
+            )
         elif text in {ADD, SUGGEST}:
             if text == ADD and not service.is_admin(user_id):
-                raise CommunityError("Роль изменилась. Используйте «Предложить MCC магазина».")
-            await begin_contribution(update, context)
+                raise CommunityError("Роль изменилась. Используйте «➕ Предложить данные».")
+            await _add_menu(update, service, user_id)
         elif text in {VOLUNTEER, APPLICATION_PENDING}:
             await _request_helper_role(update, service, user_id)
         elif text == LEGACY_MINE:
@@ -1399,6 +1663,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             await _role_list(update, service, user_id)
         elif text == MAIN_MENU:
             await show_menu(update, context)
+        elif text == CANCEL_DRAFT:
+            draft = service.draft(user_id)
+            if draft is None or not draft.data.get("draft_mode"):
+                await show_menu(update, context)
+            else:
+                await _draft_callback(update, context, service, draft, ["cancel"])
         else:
             draft = service.draft(user_id)
             if draft is None:
@@ -1425,7 +1695,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
         else:
             await _render_draft(update, service, draft, notice=str(exc))
     except (CommunityError, ValueError) as exc:
-        await _say(update, str(exc), keyboard_for(service, user_id))
+        await _say(update, str(exc), _current_reply_keyboard(service, user_id))
     return True
 
 
@@ -1472,7 +1742,48 @@ def _sync_mcc_payload(data: dict[str, Any]) -> None:
             payload["brand_id"] = data["brand_id"]
     if data.get("kind") in {"replace_mcc", "edit_mcc_note"} and data.get("merchant_ids"):
         payload["merchant_ids"] = list(data["merchant_ids"])
+    if data.get("source_url"):
+        payload["source_url"] = data["source_url"]
     data["payload"] = payload
+
+
+def _sync_partner_payload(data: dict[str, Any]) -> None:
+    """Build the JSON-safe fixed-tier payload accepted by ``PartnerRepository``."""
+
+    data["kind"] = "card_partnership"
+    data["payload"] = {
+        "brand_id": data["brand_id"],
+        "card_id": data["card_id"],
+        "channel": data["channel"],
+        "mode": data["mode"],
+        "reward_kind": data["reward_kind"],
+        "starts_on": None,
+        "ends_on": None,
+        "conditions": data["conditions"],
+        "source_url": data.get("source_url", ""),
+        "tiers": [
+            {
+                "value": data["value"],
+                "min_purchase": None,
+                "max_purchase": None,
+                "per_transaction_cap": None,
+            }
+        ],
+        "exclusions": [
+            {
+                "brand_id": data["brand_id"],
+                "card_id": data["card_id"],
+                "reward_kind": data["reward_kind"],
+                "channel": data["channel"],
+                "mcc": mcc,
+                "starts_on": None,
+                "ends_on": None,
+                "reason": "Партнёрство не действует для MCC",
+                "source_url": data.get("source_url", ""),
+            }
+            for mcc in data.get("excluded_mccs", [])
+        ],
+    }
 
 
 def _consume_text(
@@ -1480,10 +1791,14 @@ def _consume_text(
 ) -> Draft:
     stage, data = draft.stage, dict(draft.data)
     if stage == "name":
-        data = {}
+        data = {key: value for key, value in data.items() if key in {"draft_mode", "flow_kind"}}
     if stage in {
         "name",
         "choose",
+        "store_name",
+        "store_choose",
+        "partner_store_name",
+        "partner_store_choose",
         "edit_name",
         "edit_choose",
         "target_name",
@@ -1501,6 +1816,16 @@ def _consume_text(
             data.pop("brand_id", None)
             data.pop("selected_brand_id", None)
             stage = "choose" if matches else "channel"
+        elif stage in {"store_name", "store_choose"}:
+            if not matches:
+                raise CommunityError(
+                    "Магазин не найден. Проверьте название или сначала добавьте новый магазин."
+                )
+            stage = "store_choose"
+        elif stage in {"partner_store_name", "partner_store_choose"}:
+            if not matches:
+                raise CommunityError("Магазин не найден. Сначала добавьте его в базу.")
+            stage = "partner_store_choose"
         elif stage in {"edit_name", "edit_choose"}:
             stage = "edit_choose"
         elif stage in {"preview_brand", "preview_choose"}:
@@ -1530,6 +1855,47 @@ def _consume_text(
         data["dirty"] = True
         _sync_mcc_payload(data)
         stage = "preview"
+    elif stage in {"source_url", "partner_source"}:
+        if len(text) > 2048:
+            raise CommunityError("Официальная ссылка слишком длинная.")
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise CommunityError("Укажите полную официальную ссылку с http:// или https://.")
+        data["source_url"] = text
+        data["dirty"] = True
+        if data.get("flow_kind") == "partner":
+            _sync_partner_payload(data)
+        else:
+            _sync_mcc_payload(data)
+        stage = "preview"
+    elif stage == "partner_value":
+        normalized = text.replace(",", ".")
+        if not re.fullmatch(r"(?:[0-9]{1,2}(?:\.[0-9]{1,4})?|100(?:\.0{1,4})?)", normalized):
+            raise CommunityError("Введите процент числом от 0 до 100.")
+        value = Decimal(normalized)
+        if value <= 0:
+            raise CommunityError("Процент должен быть больше 0.")
+        data["value"] = format(value.normalize(), "f")
+        data["dirty"] = True
+        stage = "partner_conditions"
+    elif stage == "partner_conditions":
+        data["conditions"] = clean_text(text)
+        data["dirty"] = True
+        stage = "partner_exclusions"
+    elif stage == "partner_exclusions":
+        if text.casefold() in {"нет", "-", "без исключений"}:
+            excluded = []
+        else:
+            excluded = [value.strip() for value in text.split(",")]
+            if len(excluded) > 50 or any(
+                not re.fullmatch(r"[0-9]{4}", value) for value in excluded
+            ):
+                raise CommunityError("Перечислите не больше 50 MCC из четырёх цифр через запятую.")
+            excluded = list(dict.fromkeys(excluded))
+        data["excluded_mccs"] = excluded
+        data["dirty"] = True
+        _sync_partner_payload(data)
+        stage = "partner_source"
     elif stage == "new_aliases":
         aliases = (
             []
@@ -1616,7 +1982,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
         draft = service.draft(user_id)
         if draft is None:
             return False
-        if draft.stage not in {"evidence", "response_evidence"}:
+        if draft.stage not in {"evidence", "response_evidence", "source_url", "partner_source"}:
             raise CommunityError("Сейчас вложение не требуется. Продолжите текущий шаг.")
         message = update.effective_message
         photos = getattr(message, "photo", None)
@@ -1675,7 +2041,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _dispatch_callback(update, context, service, user_id, parts)
     except (CommunityError, ValueError, KeyError, IndexError) as exc:
         text = str(exc) if isinstance(exc, ValueError) else "Кнопка устарела. Откройте меню заново."
-        await _say(update, text, keyboard_for(service, user_id))
+        await _say(update, text, _current_reply_keyboard(service, user_id))
 
 
 async def _dispatch_callback(
@@ -1694,7 +2060,23 @@ async def _dispatch_callback(
             name = context.user_data.get("store_searches", {}).get(parts[2])
             if name is None:
                 raise StaleAction("Поиск устарел. Отправьте название магазина ещё раз.")
-        await begin_contribution(update, context, brand_id=brand_id, channel=channel, name=name)
+        await begin_contribution(
+            update,
+            context,
+            brand_id=brand_id,
+            channel=channel,
+            name=name,
+            flow_kind="store_mcc",
+        )
+    elif action == "add":
+        if len(parts) != 2:
+            raise CommunityError("Выберите вид данных заново.")
+        if parts[1] in {"new_store", "store_mcc"}:
+            await begin_contribution(update, context, flow_kind=parts[1])
+        elif parts[1] == "partner":
+            await begin_partner_contribution(update, context)
+        else:
+            raise CommunityError("Выберите вид данных заново.")
     elif action == "open_brand":
         from .store_handlers import _brand_view
 
@@ -1830,7 +2212,7 @@ async def _dispatch_callback(
         if not candidate["active"]:
             rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
         rows.append([("⬅️ К списку", "roles:0")])
-        await _say(update, f"{state}\n\n{_role_identity(candidate)}", _keyboard(rows))
+        await _say_inline(update, f"{state}\n\n{_role_identity(candidate)}", _keyboard(rows))
     elif action == "role":
         if parts[3] not in {"0", "1"}:
             raise CommunityError("Некорректная роль.")
@@ -1850,7 +2232,7 @@ async def _dispatch_callback(
             if parts[3] == "1"
             else "Доступ помощника отозван. Предложения доступны как обычно.",
         )
-        await _say(
+        await _say_inline(
             update,
             (
                 "Роль обновлена. Пользователь уведомлён."
@@ -1858,6 +2240,7 @@ async def _dispatch_callback(
                 else "Роль обновлена, но уведомление пользователю не доставлено."
             )
             + " Вечерняя сводка выключена до нового согласия помощника.",
+            _keyboard([[("⬅️ К списку", "roles:0")]]),
         )
     elif action == "decline":
         target_id = int(parts[1])
@@ -1868,7 +2251,11 @@ async def _dispatch_callback(
             target_id,
             "Ваша заявка в помощники пока не принята. Вы можете предлагать данные как обычно.",
         )
-        await _say(update, "Заявка отклонена.")
+        await _say_inline(
+            update,
+            "Заявка отклонена.",
+            _keyboard([[("⬅️ К списку", "roles:0")]]),
+        )
     elif action == "edit":
         if len(parts) != 2:
             raise CommunityError(
@@ -1901,6 +2288,12 @@ async def _draft_callback(
     if action in {"cancel", "close"}:
         if isinstance(data.get("proposal_id"), int):
             released = service.cancel_review_draft(draft.user_id, draft.id, draft.version)
+            if draft.data.get("draft_mode"):
+                await _say(
+                    update,
+                    "Разбор отменён." if released is not None else "Разбор уже изменился.",
+                    keyboard_for(service, draft.user_id),
+                )
             await _queue(
                 update,
                 service,
@@ -1951,7 +2344,12 @@ async def _draft_callback(
         rows: list[list[tuple[str, str]]] = []
         if brand_id:
             rows.append([("🏪 Открыть магазин", f"open_brand:{brand_id}")])
-        await _say_inline(update, "Спасибо за добавление!", _keyboard(rows))
+        await _say_with_restored_menu(
+            update,
+            "Спасибо за добавление!",
+            keyboard_for(service, draft.user_id),
+            _keyboard(rows) if rows else None,
+        )
         return
     if action == "decision" and stage == "review_preview":
         proposal = service.review(
@@ -1963,7 +2361,7 @@ async def _draft_callback(
         )
         service.cancel_draft(draft.user_id, draft.id, draft.version)
         await _notify(context, proposal)
-        await _say(update, "Решение сохранено.")
+        await _say(update, "Решение сохранено.", keyboard_for(service, draft.user_id))
         return
     if action == "back":
         history = data.get("back", [])
@@ -1976,6 +2374,8 @@ async def _draft_callback(
         return
     if action == "select" and stage in {
         "choose",
+        "store_choose",
+        "partner_store_choose",
         "edit_choose",
         "target_choose",
         "preview_choose",
@@ -2006,7 +2406,12 @@ async def _draft_callback(
             stage = "preview"
         else:
             data.update(brand_id=brand.id, selected_brand_id=brand.id, name=brand.name)
-            stage = "editor" if stage == "edit_choose" else "channel"
+            if stage == "edit_choose":
+                stage = "editor"
+            elif stage == "partner_store_choose":
+                stage = "partner_card"
+            else:
+                stage = "channel"
     elif action == "new" and stage in {"choose", "preview_choose"}:
         data.pop("brand_id", None)
         data.pop("selected_brand_id", None)
@@ -2035,6 +2440,36 @@ async def _draft_callback(
             stage = "preview"
         else:
             stage = "mcc"
+    elif action == "partner_card_page" and stage == "partner_card":
+        offset = int(parts[1])
+        cards = data.get("cards", [])
+        if offset < 0 or offset % 10 or offset >= len(cards):
+            raise StaleAction("Страница карт недоступна.")
+        data["card_offset"] = offset
+    elif action == "partner_card" and stage == "partner_card":
+        index = int(parts[1])
+        cards = data.get("cards", [])
+        if not 0 <= index < len(cards):
+            raise StaleAction("Карта больше недоступна в текущем списке.")
+        data["card_id"] = cards[index]["id"]
+        data["card_name"] = cards[index]["name"]
+        data["dirty"] = True
+        stage = "partner_channel"
+    elif action == "partner_channel" and stage == "partner_channel":
+        if parts[1] not in {"offline", "online", "any"}:
+            raise CommunityError("Выберите способ оплаты.")
+        data["channel"] = parts[1]
+        stage = "partner_mode"
+    elif action == "partner_mode" and stage == "partner_mode":
+        if parts[1] not in {"additional", "total"}:
+            raise CommunityError("Выберите способ учёта выгоды.")
+        data["mode"] = parts[1]
+        stage = "partner_reward_kind"
+    elif action == "partner_reward" and stage == "partner_reward_kind":
+        if parts[1] not in {"cash", "points"}:
+            raise CommunityError("Выберите денежный возврат или баллы.")
+        data["reward_kind"] = parts[1]
+        stage = "partner_value"
     elif action == "skip" and stage in {
         "comment",
         "private_comment",
@@ -2050,11 +2485,15 @@ async def _draft_callback(
             data["note"] = ""
             _sync_mcc_payload(data)
         stage = "preview"
+    elif action == "source" and stage in {"evidence", "preview"}:
+        stage = "source_url"
+    elif action == "source_screenshot" and stage == "source_url":
+        stage = "evidence"
     elif action == "preview" and stage == "preview":
         field = parts[1]
         if data.get("editing"):
             allowed_fields = (
-                {"payment", "channel", "mcc", "more", "note", "evidence"}
+                {"payment", "channel", "mcc", "more", "note", "evidence", "source"}
                 if data.get("kind") in {"add_mcc", "add_mcc_both"} and not data.get("selected_mcc")
                 else {"note"}
             )
@@ -2067,12 +2506,13 @@ async def _draft_callback(
             stage = "channel"
         elif field == "more":
             stage = "preview_more"
-        elif field in {"note", "evidence", "comment"}:
+        elif field in {"note", "evidence", "comment", "source"}:
             # Keep buttons rendered by the previous release usable.
             stage = {
                 "note": "note",
                 "evidence": "evidence",
                 "comment": "private_comment",
+                "source": "source_url",
             }[field]
         else:
             raise StaleAction("Поле недоступно.")
@@ -2084,6 +2524,8 @@ async def _draft_callback(
             stage = "note"
         elif field == "evidence":
             stage = "evidence"
+        elif field == "source":
+            stage = "source_url"
         elif field == "comment" and not service.is_admin(draft.user_id):
             stage = "private_comment"
         else:
@@ -2341,7 +2783,9 @@ async def _review_callback(
         or proposal.reviewer_id != user_id
     ):
         raise StaleAction("Предложение уже изменилось. Откройте очередь.")
-    if action in {"approve", "replace_confirm"}:
+    if action == "view":
+        await _review_view(update, service, proposal)
+    elif action in {"approve", "replace_confirm"}:
         proposal = service.review(
             user_id,
             proposal_id,
@@ -2350,7 +2794,12 @@ async def _review_callback(
             replace_old=parts[3] if action == "replace_confirm" else None,
         )
         await _notify(context, proposal)
-        await _say(update, "Предложение принято и сохранено в базе.")
+        await _queue(
+            update,
+            service,
+            user_id,
+            notice="Предложение принято и сохранено в базе.",
+        )
     elif action == "replace" and proposal.kind == "add_mcc":
         service.validate_review(user_id, proposal_id, version)
         rows = [
@@ -2363,14 +2812,30 @@ async def _review_callback(
             for fact in service.stores.list_mcc(proposal.payload["merchant_id"])
             if fact.mcc != proposal.payload["mcc"]
         ]
-        await _say(
+        rows.append(
+            [
+                (
+                    "⬅️ Назад к заявке",
+                    f"q:{proposal.id}:{proposal.version}:view",
+                )
+            ]
+        )
+        await _say_inline(
             update,
             "Какой старый MCC подтверждён как ошибочный? Кнопка сохранит замену."
             if rows
             else "Нет другого MCC для замены.",
             _keyboard(rows),
         )
-    elif action in {"reject", "clarify"}:
+    elif action == "reject":
+        service.review(user_id, proposal_id, version, "rejected")
+        await _queue(
+            update,
+            service,
+            user_id,
+            notice="Предложение отклонено.",
+        )
+    elif action == "clarify":
         service.validate_review(user_id, proposal_id, version)
         draft = service.begin(
             user_id,
@@ -2379,7 +2844,8 @@ async def _review_callback(
             data={
                 "proposal_id": proposal_id,
                 "proposal_version": version,
-                "decision": "rejected" if action == "reject" else "clarification",
+                "decision": "clarification",
+                "draft_mode": True,
             },
         )
         await _render_draft(update, service, draft)

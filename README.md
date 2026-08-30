@@ -1,8 +1,9 @@
 # «Какой картой?» Telegram Bot
 
 Telegram bot and local CLI for looking up cards by a four-digit merchant
-category code (MCC), with a local store directory and moderated contributions.
-Results are sorted by gross reward percentage. The bot
+category code (MCC), with a local store directory, store-specific partner
+rewards, and moderated contributions. Results are sorted by total gross reward
+percentage. The bot
 uses long polling, so it does not need a public HTTP endpoint. The layout keeps
 settings, the catalog domain, and Telegram handlers separate, following the
 concise patterns of [gippo-bot](https://github.com/Kabaye/gippo-bot).
@@ -64,6 +65,20 @@ online-payment variants are grouped into separate sections inside it. Empty
 sections are not shown. Similar names are suggestions, never automatic merges,
 and imported source records keep their exact source identities.
 
+A store lookup may apply an active partner reward for the selected store and
+payment method. An additional reward remains a separate component, for example
+`Витамин Д — 3% + 5% баллами`; it is ranked as an 8% total but is never rendered
+as a misleading `8%`. A total partner rate replaces the ordinary result for that
+card. Short conditions and validity dates are displayed below the
+card. A plain MCC lookup never applies store-specific partner data because the
+store is unknown. If a store has a confirmed partner reward but no confirmed MCC,
+the partner card is shown with a warning that ordinary cards cannot yet be
+compared.
+
+Partner-program exclusions are stored independently. They suppress only the
+excluded program component, not the card itself: for example, a Plushki
+exclusion removes Vitamin D points while preserving its ordinary MCC cash reward.
+
 An MCC belongs to one confirmed payment channel and may have a short public note,
 for example `MCC 5411 · Оплата товаров на Европочте`. The reviewer-only comment is
 stored separately and is never displayed on the public store card. A screenshot
@@ -98,11 +113,20 @@ contract and is not configurable per run.
 ## Contributions and moderation
 
 The persistent private-chat keyboard is role-aware. Everyone also sees
-`❓ Как пользоваться`, whose short instructions adapt to the current role:
+`❓ Как пользоваться` as the final button; its instructions adapt to the current
+role and explain stacked partner rewards and online/offline differences:
 
 - Everyone: `ℹ️ Информация по картам`.
-- Users: `➕ Предложить MCC магазина`, `🙋 Хочу помогать`.
-- Subadmins/owner: `➕ Добавить MCC магазина`, `📋 Разобрать очередь`, `⚙️ Управление`.
+- Users: `➕ Предложить данные`, `🙋 Хочу помогать`.
+- Subadmins/owner: `➕ Добавить данные`, `📋 Разобрать очередь`, `⚙️ Управление`.
+
+The single add button opens an inline choice for a new store, a store MCC, or a
+card partnership. The ordinary keyboard stays short and stable while navigation,
+lists, back buttons and object-specific actions stay under the current message.
+Only an active multi-step form temporarily replaces the keyboard with
+`❌ Отменить`; completing or cancelling the form restores the ordinary keyboard.
+Management opens as an inline menu and does not install a separate reply
+keyboard.
 
 Users choose a store (or explicitly create one), payment method and MCC.
 The selector includes `🏬🌐 Офлайн и онлайн`; that choice creates one proposal and one
@@ -110,6 +134,9 @@ audit operation for the offline and online facts. A proposed public note is used
 only for facts that the operation creates, while notes already stored on either
 payment method remain unchanged. New-store drafts may also include aliases.
 Users may optionally attach a screenshot, review the draft, and submit it for approval.
+Partner proposals collect the card, total-or-additional rate, cash-or-points
+kind, payment method, conditions and an official URL or screenshot. Subadmins and
+the owner publish the same data directly with an audit entry.
 Subadmins use a compact preview with store, MCC/payment method and optional fields;
 their private reviewer comment is omitted. They publish directly after confirmation.
 Forms support back/cancel and
@@ -192,6 +219,27 @@ Progress is emitted during the run and checkpoints remain in the selected
 database. The equivalent installed command is `mcc-import-stores`. A nonzero
 exit code reports source errors or blocked access; inspect the counters before
 continuing. Do not schedule this importer as a periodic bot job.
+
+## Partner reward data
+
+Store-specific rewards and exclusions live in additive tables in the same
+merchant SQLite database. Offers retain a stable store, card, total/additional
+mode, cash/points kind, payment method, one or more amount/date tiers, limits,
+conditions and source. Human changes are audited and are not overwritten by the
+reviewed static package.
+
+The dated package is an explicit one-shot release operation, not a startup job
+or periodic parser. Stable source keys make a second run a no-op and preserve
+later moderator edits and archives:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcc_bot.partner_seed_20260830 --database var/stores.sqlite3
+```
+
+The equivalent installed command is `mcc-apply-partner-seed-20260830`. Apply it
+only after a consistent SQLite backup. The reviewed sources, inclusion rules,
+counts and deliberately omitted conflicts are documented in
+[docs/PARTNER_DATA_SOURCE.md](docs/PARTNER_DATA_SOURCE.md).
 
 ## Version 2 catalog contract
 
@@ -342,6 +390,12 @@ repository as one transaction after the code migration:
 
 ```bash
 mcc-apply-curated-stores-20260828 --database /srv/bots/mcc-bot/var/stores.sqlite3
+```
+
+The reviewed partner package is applied separately and is also safe to rerun:
+
+```bash
+mcc-apply-partner-seed-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3
 ```
 
 The command reads the audit actor from `BOT_OWNER_TELEGRAM_ID`, validates the

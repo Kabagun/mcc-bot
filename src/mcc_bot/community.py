@@ -17,7 +17,10 @@ import time
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Any
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
 from .stores import StoreRepository
@@ -31,7 +34,7 @@ MAX_NOTE = 48
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
 MCC_KINDS = frozenset({"add_merchant", "add_mcc", "add_mcc_both", "replace_mcc"})
-PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant"}
+PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant", "card_partnership"}
 EDIT_KINDS = PUBLIC_KINDS | {
     "aliases",
     "archive_merchant",
@@ -73,6 +76,19 @@ class AccessDenied(CommunityError):
 
 class StaleAction(CommunityError):
     """The version or review lease no longer matches the displayed action."""
+
+
+class PartnerPublisher(Protocol):
+    """Atomic adapter required for publishing a reviewed card partnership."""
+
+    def create_offer(
+        self,
+        payload: Any,
+        *,
+        actor_id: int,
+        connection: sqlite3.Connection | None = None,
+    ) -> Any:
+        """Create and audit one partner offer in the caller's transaction."""
 
 
 @dataclass(frozen=True)
@@ -158,11 +174,13 @@ class CommunityService:
         owner_id: int | None = None,
         *,
         allowed_mccs: Collection[str] | None = None,
+        partners: PartnerPublisher | None = None,
     ) -> None:
         self.stores = stores
         if owner_id is not None and (isinstance(owner_id, bool) or owner_id <= 0):
             raise ValueError("Owner must be an explicit positive Telegram user ID")
         self.owner_id = owner_id
+        self.partners = partners
         source = DescriptionCatalog.from_file().labels if allowed_mccs is None else allowed_mccs
         self.allowed_mccs = frozenset(source)
 
@@ -678,13 +696,16 @@ class CommunityService:
         schemas = {
             "add_merchant": (
                 {"name", "channel", "mcc"},
-                {"brand_id", "note", "aliases"},
+                {"brand_id", "note", "aliases", "source_url"},
             ),
-            "add_mcc": ({"merchant_id", "mcc"}, {"note"}),
-            "add_mcc_both": ({"mcc"}, {"brand_id", "name", "note", "aliases"}),
+            "add_mcc": ({"merchant_id", "mcc"}, {"note", "source_url"}),
+            "add_mcc_both": (
+                {"mcc"},
+                {"brand_id", "name", "note", "aliases", "source_url"},
+            ),
             "replace_mcc": (
                 {"merchant_id", "old_mcc", "mcc"},
-                {"note", "merchant_ids"},
+                {"note", "merchant_ids", "source_url"},
             ),
             "rename_merchant": ({"merchant_id", "name"}, set()),
             "merge_merchant": ({"merchant_id", "target_id"}, set()),
@@ -698,6 +719,22 @@ class CommunityService:
             "merge_brand": ({"brand_id", "target_id"}, set()),
             "edit_mcc_note": ({"merchant_id", "mcc", "note"}, {"merchant_ids"}),
             "revert": ({"audit_id"}, set()),
+            "card_partnership": (
+                {
+                    "brand_id",
+                    "card_id",
+                    "channel",
+                    "mode",
+                    "reward_kind",
+                    "starts_on",
+                    "ends_on",
+                    "conditions",
+                    "source_url",
+                    "tiers",
+                    "exclusions",
+                },
+                set(),
+            ),
         }
         if kind not in schemas:
             raise CommunityError("Неполные данные предложения. Начните заново.")
@@ -729,8 +766,12 @@ class CommunityService:
                     raise CommunityError("MCC должен состоять из четырёх цифр.")
             elif key == "name":
                 result[key] = clean_text(value, maximum=MAX_NAME)
-            elif key == "channel" and value not in {"offline", "online"}:
-                raise CommunityError("Выберите офлайн или онлайн.")
+            elif key == "channel" and value not in (
+                {"offline", "online", "any"}
+                if kind == "card_partnership"
+                else {"offline", "online"}
+            ):
+                raise CommunityError("Выберите допустимый способ оплаты.")
             elif key == "note":
                 if (
                     not isinstance(value, str)
@@ -743,6 +784,75 @@ class CommunityService:
                 if not isinstance(value, list) or len(value) > 20:
                     raise CommunityError("Можно сохранить не больше 20 названий.")
                 result[key] = [clean_text(alias, maximum=MAX_NAME) for alias in value]
+            elif key == "source_url":
+                if not isinstance(value, str) or len(value) > 2048:
+                    raise CommunityError("Официальная ссылка слишком длинная.")
+                value = value.strip()
+                if value:
+                    parsed = urlparse(value)
+                    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                        raise CommunityError(
+                            "Укажите полную официальную ссылку с http:// или https://."
+                        )
+                result[key] = value
+            elif kind == "card_partnership" and key == "card_id":
+                result[key] = clean_text(value, maximum=160)
+            elif kind == "card_partnership" and key == "mode":
+                if value not in {"additional", "total"}:
+                    raise CommunityError("Выберите, складывается ли партнёрская выгода.")
+            elif kind == "card_partnership" and key == "reward_kind":
+                if value not in {"cash", "points"}:
+                    raise CommunityError("Выберите денежный возврат или баллы.")
+            elif kind == "card_partnership" and key in {"starts_on", "ends_on"}:
+                if value is not None:
+                    try:
+                        date.fromisoformat(value)
+                    except (TypeError, ValueError) as exc:
+                        raise CommunityError("Дата партнёрства указана неверно.") from exc
+            elif kind == "card_partnership" and key == "conditions":
+                result[key] = clean_text(value)
+            elif kind == "card_partnership" and key == "tiers":
+                if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+                    raise CommunityError("Укажите одну величину партнёрской выгоды.")
+                tier = value[0]
+                if set(tier) != {
+                    "value",
+                    "min_purchase",
+                    "max_purchase",
+                    "per_transaction_cap",
+                }:
+                    raise CommunityError("Величина партнёрской выгоды указана неверно.")
+                try:
+                    amount = Decimal(str(tier["value"]))
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise CommunityError("Введите процент выгоды числом.") from exc
+                if not amount.is_finite() or amount <= 0 or amount > 100:
+                    raise CommunityError("Процент выгоды должен быть больше 0 и не больше 100.")
+                result[key] = [{**tier, "value": str(amount.normalize())}]
+            elif kind == "card_partnership" and key == "exclusions":
+                if not isinstance(value, list) or len(value) > 50:
+                    raise CommunityError("Слишком много исключений партнёрства.")
+                cleaned = []
+                for exclusion in value:
+                    if not isinstance(exclusion, dict) or set(exclusion) != {
+                        "brand_id",
+                        "card_id",
+                        "reward_kind",
+                        "channel",
+                        "mcc",
+                        "starts_on",
+                        "ends_on",
+                        "reason",
+                        "source_url",
+                    }:
+                        raise CommunityError("Исключение партнёрства указано неверно.")
+                    mcc = exclusion.get("mcc")
+                    if mcc is not None and (
+                        not isinstance(mcc, str) or not re.fullmatch(r"[0-9]{4}", mcc)
+                    ):
+                        raise CommunityError("MCC в исключении должен состоять из четырёх цифр.")
+                    cleaned.append({**exclusion, "reason": clean_text(exclusion["reason"])})
+                result[key] = cleaned
         if kind in MCC_KINDS and result["mcc"] not in self.allowed_mccs:
             raise CommunityError(f"MCC {result['mcc']} не найден в справочнике. Проверьте код.")
         _safe_json(result)
@@ -862,6 +972,81 @@ class CommunityService:
     ) -> int:
         kind = proposal.kind
         payload = self._validate_payload(kind, proposal.payload)
+        if kind == "card_partnership":
+            self._require_admin(conn, actor_id)
+            if self.partners is None:
+                raise CommunityError("Хранилище партнёрств пока недоступно.")
+            try:
+                from .partner_rewards import (
+                    PartnerExclusionInput,
+                    PartnerOfferInput,
+                    PartnerTierInput,
+                )
+            except ImportError as exc:  # pragma: no cover - wiring guard for partial installs
+                raise CommunityError("Хранилище партнёрств пока недоступно.") from exc
+            offer_input = PartnerOfferInput(
+                brand_id=payload["brand_id"],
+                card_id=payload["card_id"],
+                channel=payload["channel"],
+                mode=payload["mode"],
+                reward_kind=payload["reward_kind"],
+                starts_on=(
+                    date.fromisoformat(payload["starts_on"]) if payload["starts_on"] else None
+                ),
+                ends_on=(date.fromisoformat(payload["ends_on"]) if payload["ends_on"] else None),
+                conditions=payload["conditions"],
+                source_url=payload["source_url"],
+                tiers=tuple(
+                    PartnerTierInput(
+                        value=Decimal(tier["value"]),
+                        min_purchase=(
+                            Decimal(tier["min_purchase"])
+                            if tier["min_purchase"] is not None
+                            else None
+                        ),
+                        max_purchase=(
+                            Decimal(tier["max_purchase"])
+                            if tier["max_purchase"] is not None
+                            else None
+                        ),
+                        per_transaction_cap=(
+                            Decimal(tier["per_transaction_cap"])
+                            if tier["per_transaction_cap"] is not None
+                            else None
+                        ),
+                        starts_on=None,
+                        ends_on=None,
+                    )
+                    for tier in payload["tiers"]
+                ),
+                exclusions=tuple(
+                    PartnerExclusionInput(
+                        brand_id=exclusion["brand_id"],
+                        card_id=exclusion["card_id"],
+                        reward_kind=exclusion["reward_kind"],
+                        channel=exclusion["channel"],
+                        mcc=exclusion["mcc"],
+                        starts_on=(
+                            date.fromisoformat(exclusion["starts_on"])
+                            if exclusion["starts_on"]
+                            else None
+                        ),
+                        ends_on=(
+                            date.fromisoformat(exclusion["ends_on"])
+                            if exclusion["ends_on"]
+                            else None
+                        ),
+                        reason=exclusion["reason"],
+                        source_url=exclusion["source_url"],
+                    )
+                    for exclusion in payload["exclusions"]
+                ),
+            )
+            offer = self.partners.create_offer(offer_input, actor_id=actor_id, connection=conn)
+            identifier = getattr(offer, "id", getattr(offer, "offer_id", None))
+            if not isinstance(identifier, int):
+                raise CommunityError("Партнёрство сохранено без корректного идентификатора.")
+            return identifier
         if (
             kind == "add_merchant"
             and "brand_id" not in payload
@@ -885,7 +1070,10 @@ class CommunityService:
                     "Откройте редактирование или возьмите предложение в разбор заново."
                 )
         if kind in MCC_KINDS:
+            source_url = payload.pop("source_url", "")
             payload["evidence"] = {"submission_id": proposal.id, "source": "community"}
+            if source_url:
+                payload["evidence"]["source_url"] = source_url
         return self.stores.apply_change(kind, payload, actor_id, connection=conn).audit_id
 
     def _authorize_store_change(
@@ -1002,6 +1190,20 @@ class CommunityService:
             if comment:
                 comment = clean_text(comment)
             response_id = draft.data.get("response_id")
+            media = conn.execute(
+                "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
+            ).fetchone()
+            if (
+                role == "user"
+                and kind == "card_partnership"
+                and not response_id
+                and not draft.data.get("source_url")
+                and not payload.get("source_url")
+                and not media
+            ):
+                raise CommunityError(
+                    "Добавьте официальную ссылку или скриншот источника перед отправкой."
+                )
             if not response_id and role == "user":
                 active_count = conn.execute(
                     "SELECT COUNT(*) FROM community_proposals WHERE user_id=? "
@@ -1019,9 +1221,6 @@ class CommunityService:
                 or original.version != draft.data.get("response_version")
             ):
                 raise StaleAction("Предложение уже изменилось.")
-            media = conn.execute(
-                "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
-            ).fetchone()
             now = time.time()
             if original:
                 proposal_id = original.id
@@ -1092,6 +1291,7 @@ class CommunityService:
                 "payload": proposal.payload,
                 "response_id": proposal.id,
                 "response_version": version,
+                "draft_mode": True,
             }
             conn.execute(
                 """INSERT INTO community_drafts VALUES(?,?,1,'response',?,?,?,?)""",
@@ -1220,8 +1420,13 @@ class CommunityService:
         now = time.time() if now is None else now
         if decision not in {"approved", "rejected", "clarification"}:
             raise CommunityError("Неизвестное решение.")
-        if decision != "approved":
+        if decision == "clarification":
             reason = clean_text(reason)
+        elif decision == "rejected":
+            # A reviewer may reject an unusable proposal in one tap. Clarifications
+            # still require a concrete question, but rejection has no user-facing
+            # comment contract.
+            reason = ""
         with self.stores.transaction() as conn:
             proposal = self._validate_review(conn, actor_id, proposal_id, version, now)
             snapshot = conn.execute(

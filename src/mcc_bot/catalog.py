@@ -164,7 +164,12 @@ class Card:
 
 @dataclass(frozen=True, slots=True)
 class RewardComponent:
-    """One resolved reward component in a card match."""
+    """One resolved reward component in a card match.
+
+    ``display_kind`` is an optional presentation override used by store-only
+    partner composition.  ``None`` keeps ordinary catalog formatting, an empty
+    string hides the kind, and values such as ``" баллами"`` make it explicit.
+    """
 
     program_id: str
     kind: str
@@ -172,6 +177,7 @@ class RewardComponent:
     tax_exempt: bool
     unit: str = "percent"
     currency: str | None = None
+    display_kind: str | None = None
 
     @property
     def gross_percent(self) -> Decimal:
@@ -202,11 +208,16 @@ class RewardComponent:
 
 @dataclass(frozen=True, slots=True)
 class CardMatch:
-    """A card and all reward components effective for one MCC."""
+    """A card and all reward components effective for one MCC.
+
+    ``context_lines`` carries verified store-only conditions or exclusions.
+    Raw MCC catalog matches always leave it empty.
+    """
 
     card: Card
     mcc: str
     components: tuple[RewardComponent, ...]
+    context_lines: tuple[str, ...] = ()
 
     @property
     def gross_percent(self) -> Decimal:

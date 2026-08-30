@@ -48,8 +48,8 @@ def _component_label(component: RewardComponent, *, show_kind: bool = False) -> 
         currency = component.currency or ""
         return f"{_format_decimal(component.gross_value)} {currency}".strip()
     value = _format_decimal(component.gross_value)
-    kind_label = ""
-    if show_kind:
+    kind_label = component.display_kind or ""
+    if component.display_kind is None and show_kind:
         kind_label = " деньгами" if component.kind == "cash" else " баллами"
     result = f"{value}%{kind_label}"
     if not component.tax_exempt and component.gross_value > PERCENT_TAX_THRESHOLD:
@@ -250,12 +250,16 @@ def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> 
     if html:
         marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
     summary = f"{index}. {marker} {name} — {reward}"
+    context_lines = list(match.context_lines)
+    if html:
+        context_lines = [escape(line) for line in context_lines]
+    summary_lines = [summary, *(f"   {line}" for line in context_lines)]
     if not details:
-        return summary
+        return "\n".join(summary_lines)
     lines = _match_details(match)
     if html:
         lines = [f"<i>{escape(lines[0])}</i>", *(escape(line) for line in lines[1:])]
-    return "\n".join([summary, *(f"   {line}" for line in lines)])
+    return "\n".join([*summary_lines, *(f"   {line}" for line in lines)])
 
 
 def _telegram_length(text: str) -> int:

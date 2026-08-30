@@ -1,0 +1,4158 @@
+{
+  "version": 1,
+  "offers": [
+    {
+      "source_key": "cactus:3f64e65511b60eb7241e",
+      "brand_key": "brand:ba7c1e9b6060d42bf957",
+      "brand": "Сеть магазинов \"Соседи\"",
+      "aliases": [
+        "Соседи"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:d0d12817341642d33986",
+      "brand_key": "brand:fe13bb3c58103cbe8841",
+      "brand": "Сеть магазинов \"ОМА\"",
+      "aliases": [
+        "ОМА"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c5634ac367cb93cabd43",
+      "brand_key": "brand:47045aedaee1e694fe36",
+      "brand": "Сеть магазинов сотовой связи \"На связи\"",
+      "aliases": [
+        "На связи"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:da742f9c1e3932da0f50",
+      "brand_key": "brand:c9b9abbf7381e90ea7ea",
+      "brand": "Сеть ветеринарных клиник и аптек \"Доктор Вет\"",
+      "aliases": [
+        "Доктор Вет"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:9731b83a61f0a2e432e8",
+      "brand_key": "brand:a491154c801885daed47",
+      "brand": "Сеть ювелирных магазинов \"7 карат\"",
+      "aliases": [
+        "7 карат"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:317fca0b5dbcbe9e092e",
+      "brand_key": "brand:fd01661575563d8c2cd2",
+      "brand": "Сеть ювелирных магазинов \"Золотов\"",
+      "aliases": [
+        "Золотов"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:faec999a2c733d512b77",
+      "brand_key": "brand:d6e18f5eb51593c42b57",
+      "brand": "Сеть ювелирных магазинов \"Diamante\"",
+      "aliases": [
+        "Diamante"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:ea611c7583badaea88af",
+      "brand_key": "brand:6d60d944faef05a8ed11",
+      "brand": "Автозапчасти \"Армтек\"",
+      "aliases": [
+        "Армтек"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:505393774c8dfeebe69d",
+      "brand_key": "brand:ad8f5affee02bc839150",
+      "brand": "Магазины модной одежды \"Sisters\"",
+      "aliases": [
+        "Sisters"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:82db96e20d804c463931",
+      "brand_key": "brand:7277905fa09af7faae90",
+      "brand": "Сеть пиццерий \"Пицца Темпо\"",
+      "aliases": [
+        "Пицца Темпо"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:4f7394eff43dc49a6516",
+      "brand_key": "brand:fa88496347213c9547ca",
+      "brand": "Сеть ресторанов \"Васильки\"",
+      "aliases": [
+        "Васильки"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:7106410b9abac3a46804",
+      "brand_key": "brand:1578aa7a40a11124b285",
+      "brand": "Независимая лаборатория \"Инвитро\"",
+      "aliases": [
+        "Инвитро"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:90d779ebbdd393810dbf",
+      "brand_key": "brand:9335942d7834fea7d91b",
+      "brand": "Страховая компания \"Таск\"",
+      "aliases": [
+        "Таск"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:2f23a4f73e3876a3a528",
+      "brand_key": "brand:e97e579792a31f322ece",
+      "brand": "Ресторан паназиатской кухни \"Marumi\"",
+      "aliases": [
+        "Marumi"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:406edb01133fb9f35c6e",
+      "brand_key": "brand:3454668d355b8bbfd9a3",
+      "brand": "Сеть фитнес-клубов \"Адреналин\"",
+      "aliases": [
+        "Адреналин"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:fbb94781a69d722fa0b4",
+      "brand_key": "brand:09cd3608a219fc351a9e",
+      "brand": "Ремонт окон и продажа натяжных потолков",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "4.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0b9c6c76e52b858d8ada",
+      "brand_key": "brand:56ba41e627aec04c7616",
+      "brand": "Каршеринг \"HELLO\"",
+      "aliases": [
+        "HELLO"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:984e95b89e9ead47a768",
+      "brand_key": "brand:97dd8c031692326576e4",
+      "brand": "Афиша Минска и билеты \"24afisha.by\"",
+      "aliases": [
+        "24afisha.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f872efbde02293251651",
+      "brand_key": "brand:510e85208c8bf665591d",
+      "brand": "Туроператор \"TravelHub\"",
+      "aliases": [
+        "TravelHub"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:db91dd9bdc71c0f58ee9",
+      "brand_key": "brand:52bc228e64d3012c80de",
+      "brand": "Интернет-магазин шин и дисков \"proshina.by\"",
+      "aliases": [
+        "proshina.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/",
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:5cceb601a3fbadb2a153",
+      "brand_key": "brand:272b9c376fca4c858c2e",
+      "brand": "Мебельные магазины \"Королевство сна\"",
+      "aliases": [
+        "Королевство сна"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:98a24394a997885823fc",
+      "brand_key": "brand:ceb90392011c993bfb08",
+      "brand": "Магазин женского нижнего белья Elegance girls",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:6146dbbc1031f92df242",
+      "brand_key": "brand:805c1e59934f8ecdcacc",
+      "brand": "Сеть магазинов вейпов и кальянов Стимторг",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c408e8ad4348de724758",
+      "brand_key": "brand:56e3e10f85f33eeab4d6",
+      "brand": "Цветочный магазин \"MixFlowers\"",
+      "aliases": [
+        "MixFlowers"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:bed7ddc40b26d5fb47ba",
+      "brand_key": "brand:07edbd6784c734affca7",
+      "brand": "Изготовление кухонь на заказ DrKitchen",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:4738bec30979bf80ed96",
+      "brand_key": "brand:7a3ec4b05a46e5633376",
+      "brand": "Отопительное оборудование ТК ТЕРМОБЕЛ",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:5c08cd62dc4b54d2ff3f",
+      "brand_key": "brand:88229dd515e59983baa1",
+      "brand": "Оптика Prosvet",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f77ef40122732e25065d",
+      "brand_key": "brand:608dedcefa3753710198",
+      "brand": "Магазин мужской одежды MONDO",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:a92dc706bcc318a351cb",
+      "brand_key": "brand:c3a89019a33f643f4a09",
+      "brand": "Аквапарк \"Лебяжий\"",
+      "aliases": [
+        "Лебяжий"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:81415a90ecabeae920dd",
+      "brand_key": "brand:2b75223b7ce41437e08a",
+      "brand": "Отели \"Аква-Минск\"",
+      "aliases": [
+        "Аква-Минск"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:bb7c5f2e3492dcbaa835",
+      "brand_key": "brand:69f8d947608c584ffa1e",
+      "brand": "Клиника \"Аква-Минск\"",
+      "aliases": [
+        "Аква-Минск"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:4096a9188140eb8337d9",
+      "brand_key": "brand:2682852ad7fb497cfbc6",
+      "brand": "Многофункциональный комплекс «Мандарин»",
+      "aliases": [
+        "Мандарин"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f4833a8bc49c708453a2",
+      "brand_key": "brand:fa327563361a72956660",
+      "brand": "Теннисный центр \"Аква-Минск\"",
+      "aliases": [
+        "Аква-Минск"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c8dba2fe91918a3ea725",
+      "brand_key": "brand:d266d13ed3b7a005721d",
+      "brand": "ФОК  «Серебрянка»",
+      "aliases": [
+        "Серебрянка"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:5fe14f84a95e23367e17",
+      "brand_key": "brand:c8be57618f0c48e39a91",
+      "brand": "Теннисные корты \"Аква-Минск\"",
+      "aliases": [
+        "Аква-Минск"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:3186f0ff9bd406068aa8",
+      "brand_key": "brand:700473a932d46cd4fd5d",
+      "brand": "Самокаты Halten в Минске",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:89aa3c6afba190330e9e",
+      "brand_key": "brand:92908e0243bc9a98e62a",
+      "brand": "Магазин фруктов и овощей \"Редиска\"",
+      "aliases": [
+        "Редиска"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0b264d823adeaa2690e4",
+      "brand_key": "brand:9785850c8c787a187720",
+      "brand": "Студия-школа перманентного макияжа Студия WOW",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:acea9d02ef95ad2992c1",
+      "brand_key": "brand:50d6acf4cf0744102b5f",
+      "brand": "Магазин \"Сантехника\"",
+      "aliases": [
+        "Сантехника"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-2",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:284f4ae6b49a64d67c71",
+      "brand_key": "brand:62e8377fc4d37167995e",
+      "brand": "Курсы араторского и актерского мастерства \"Курсы Харизма\"",
+      "aliases": [
+        "Курсы Харизма"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:079b235c079be51e3b0a",
+      "brand_key": "brand:75be2dd732eb0a2ecd9f",
+      "brand": "Психологический центр Квант-Элит",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:8ae299f446601f440179",
+      "brand_key": "brand:411881ccba227c132d13",
+      "brand": "Интернет-магазин подарочных наборов Inclip.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:3f19c0f05c048cc8d8ad",
+      "brand_key": "brand:9b1a77798d6b660c10d3",
+      "brand": "Студия красоты «Beauty Mafia Studio»",
+      "aliases": [
+        "Beauty Mafia Studio"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f7193c1a3d337114dbe4",
+      "brand_key": "brand:7f5b2d30cb5f56b1df2d",
+      "brand": "Бутик профессиональной косметики для волос, лица и тела «Beauty Mafia»",
+      "aliases": [
+        "Beauty Mafia"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:394b1405fd581ee80476",
+      "brand_key": "brand:1dca8a2816f81d0c1652",
+      "brand": "Cалон верхней женской одежды и аксессуаров Be Happy",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:1990e3ab24e640a71433",
+      "brand_key": "brand:b58dcf04d4f562f24186",
+      "brand": "Свадебный салон «Жемчуг»",
+      "aliases": [
+        "Жемчуг"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f0bb02db45442def1273",
+      "brand_key": "brand:301ddd68947441261440",
+      "brand": "Салон цветов «Ветка сакуры»",
+      "aliases": [
+        "Ветка сакуры"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:344b5829724524846d10",
+      "brand_key": "brand:1fb4a660a7975348679e",
+      "brand": "Центр красоты и татуировки \"Лея\"",
+      "aliases": [
+        "Лея"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f9f1ba619738e1fc8908",
+      "brand_key": "brand:eda6ce65a637bab9c95b",
+      "brand": "Напольные покрытия \"FINEFLOOR\"",
+      "aliases": [
+        "FINEFLOOR"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:56837ded95d11be05023",
+      "brand_key": "brand:70435e362b029bfc7d8d",
+      "brand": "Магазин чайно-кофейной продукции Chayeved.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:4dcb2184cbd1ae114b12",
+      "brand_key": "brand:4d8b73a46d2547d8bf3a",
+      "brand": "Магазин немецкой обуви SHOES TERRA",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:25969d7c378965453722",
+      "brand_key": "brand:809c35cd9ad238a43554",
+      "brand": "Магазин профессиональной косметики БьютиЛавка",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:74e9e33aa96ca3c4e5be",
+      "brand_key": "brand:637d0f13710336feb8c1",
+      "brand": "Доставка цветов Florance",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:463f3a3a4c83d62d49e9",
+      "brand_key": "brand:a8e993b459578d5c5e82",
+      "brand": "Оборудование для медицинских центров E-Medical Group",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:90a3d15862d576616ed7",
+      "brand_key": "brand:070735a5dc25a529b5bd",
+      "brand": "Белорусский бренд одежды \"МаСкори\"",
+      "aliases": [
+        "МаСкори"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0ae34c98318b12159493",
+      "brand_key": "brand:a6ee2e5724928d980fcc",
+      "brand": "Салон обуви Fresko",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:7b400ab9b7f1fc024dc4",
+      "brand_key": "brand:48bc3e48a3f114da8ffe",
+      "brand": "Интернет-магазин по продаже теплиц и мебели для сада Polik.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:bf7a192af6f9bfeaaf10",
+      "brand_key": "brand:ab5fd5bf1b21ba7ac1bf",
+      "brand": "Стоматологический центр \"Космос Плюс\"",
+      "aliases": [
+        "Космос Плюс"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f05193dca175318adb7b",
+      "brand_key": "brand:59bc3958fe2b539e3a32",
+      "brand": "Интернет-магазин Инструмент-минск.бел",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-3",
+      "tiers": [
+        {
+          "value": "3.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:ffc9e727772cba71b091",
+      "brand_key": "brand:4cfb7a64cb8ad315e75d",
+      "brand": "Интернет-магазин Apple \"Мobilworld.by\"",
+      "aliases": [
+        "Мobilworld.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:2403b2a3d7f996ce61c8",
+      "brand_key": "brand:f36e2dda0794110ca548",
+      "brand": "Интернет- магазин электроскутеров Kugoo \"Citycoco.by\"",
+      "aliases": [
+        "Citycoco.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f6f2e64c67322ef38e98",
+      "brand_key": "brand:a89c6b7090a3db91383c",
+      "brand": "Сеть автозаправочных станций \"ЛУКОЙЛ\"",
+      "aliases": [
+        "ЛУКОЙЛ"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:705501ea316b51009808",
+      "brand_key": "brand:3656371edbe1ff0ae4b7",
+      "brand": "Магазин климатической техники \"Метаклимат\"",
+      "aliases": [
+        "Метаклимат"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:40ab72a1836080b733b7",
+      "brand_key": "brand:c75eeb6113689183be2e",
+      "brand": "Стоматология \"Норимед\"",
+      "aliases": [
+        "Норимед"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:08c57aa51ee70561fbcb",
+      "brand_key": "brand:3e2128cd92d7fccab5b5",
+      "brand": "Парилка Вейп Стор",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:7797a157d6889918a9af",
+      "brand_key": "brand:9f29f8cefb55c2bb907e",
+      "brand": "Мебельный интернет-магазин MODERNO.BY",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:1acea5bcd2d141d20937",
+      "brand_key": "brand:1f6ffbdecb64c44616da",
+      "brand": "Мебельный интернет-магазин VIRANDO.BY",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c59e99fb5552e87d16b2",
+      "brand_key": "brand:ea5d6410ea96fb2dc6e1",
+      "brand": "Эйвон",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:bac311ed1fbf2a5e9b1a",
+      "brand_key": "brand:53d19b9050e65157e61b",
+      "brand": "Климатическая комания \"KLIMAT TEHNO\"",
+      "aliases": [
+        "KLIMAT TEHNO"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:6b91c671f971916012ee",
+      "brand_key": "brand:df276be3952dfde1d504",
+      "brand": "Салон дизайнерской мебели VERA CASA",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:92f0d4a1237b5dd2b7e3",
+      "brand_key": "brand:0b530f18fed4d2d226af",
+      "brand": "Салон красоты HQ",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:1137dd2d6a28b7c6a353",
+      "brand_key": "brand:03a21e69f789bb6010c8",
+      "brand": "StopPotop.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:25273a1817969c274010",
+      "brand_key": "brand:105c8a63955a56bedcbd",
+      "brand": "Честный мастер",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:46aba16984f669c27688",
+      "brand_key": "brand:9d25a8452b576904d188",
+      "brand": "Служба переездов ПЕРЕЕЗДИК",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c009148dfc758f3145e1",
+      "brand_key": "brand:466ec9ca641ab28a662f",
+      "brand": "Магазин женской одежды \"PIRS\"",
+      "aliases": [
+        "PIRS"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:cabd80e26abde6cac5b4",
+      "brand_key": "brand:f41c0e4bdcac185560a9",
+      "brand": "Магазин женской одежды и аксессуаров LineStyle",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0b07e0683df27fed4477",
+      "brand_key": "brand:d153d5439cecc3f5d766",
+      "brand": "Магазин «My Biusty»",
+      "aliases": [
+        "My Biusty"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:489f83999d7c19406789",
+      "brand_key": "brand:c6a4c9abf5bfb2fc26a0",
+      "brand": "kravatkiby.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-4",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:baca6875fc2dfbcd9cd1",
+      "brand_key": "brand:702e83be4f680889ca05",
+      "brand": "Центр современной косметологии АС КЛИНИК",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:91e66d33d0760073e285",
+      "brand_key": "brand:9bdb2472a5bd14a06d57",
+      "brand": "Образовательные услуги otlichnik.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:07f18b268d8b230c5efc",
+      "brand_key": "brand:5336e3e6c9d93fa388d2",
+      "brand": "Интернет-магазин сантехники AQUA Business",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:6ab62c44a378cffa4f03",
+      "brand_key": "brand:d6ecc39ba68cc365b805",
+      "brand": "Магазин женских сумочек Dziva_bags",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "5.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:ad4ab7550e176b3945d2",
+      "brand_key": "brand:c9378f08bc7f45b4d077",
+      "brand": "Салон красоты “Barbie”",
+      "aliases": [
+        "Barbie"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:8a4652aa279d98bab7dc",
+      "brand_key": "brand:30640a0c128c76bf64fe",
+      "brand": "Магазин дизайнерского женского нижнего белья и одежды для дома \"Еtеreoamor.com\"",
+      "aliases": [
+        "Еtеreoamor.com"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:46e7913df3ea4ff83c9c",
+      "brand_key": "brand:8edb5cb0e4774efffcd5",
+      "brand": "Изготовление мебели по индивидуальному заказу «FABRICA MEBELI»",
+      "aliases": [
+        "FABRICA MEBELI"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:183a982b289f62c4c064",
+      "brand_key": "brand:0d54df33cdb1dfb664b0",
+      "brand": "Магазин женской одежды Топ Стайл Компани",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:ca22b6c22b0fb270c27a",
+      "brand_key": "brand:a04262f92bc2b5eb44b4",
+      "brand": "Магазин \"Все для дома\"",
+      "aliases": [
+        "Все для дома"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:643d18fdd4b1ab6ee6d2",
+      "brand_key": "brand:26967baa310162acd51f",
+      "brand": "Медицинский центр \"Клиника Каскад\"",
+      "aliases": [
+        "Клиника Каскад"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:98e136e2c7816359f0d5",
+      "brand_key": "brand:24402f0261613169450d",
+      "brand": "Кафе-пекарня \"Пчелы\"",
+      "aliases": [
+        "Пчелы"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:8a950de0e1e6bd0bb214",
+      "brand_key": "brand:575f1a05146b4ca29478",
+      "brand": "Магазин «Уют»",
+      "aliases": [
+        "Уют"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:5c48b5904e80dc69fc15",
+      "brand_key": "brand:496cabf3b2d5089899f4",
+      "brand": "Интернет-магазин \"Статус Мебель\"",
+      "aliases": [
+        "Статус Мебель"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:9198cf6a1d0a76a37c3a",
+      "brand_key": "brand:60ad423d0fa9444b8bd3",
+      "brand": "Магазин климатической техники ВудАльфа",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "5.0"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f32c72c4634927f405bc",
+      "brand_key": "brand:8160ab0c08d43c68e174",
+      "brand": "В Мире Самоцветов",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "3.0"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:6f4104b1e65fa0a8eeb0",
+      "brand_key": "brand:446edad462226febb22b",
+      "brand": "Интернет-магазин детских товаров \"7 деток\"",
+      "aliases": [
+        "7 деток"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:716baaf668670d779a9e",
+      "brand_key": "brand:993861504730b83b1217",
+      "brand": "Магазин климатической техники vtc.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:277e28b974f87d1d5fba",
+      "brand_key": "brand:b3090b1d304f139ffad3",
+      "brand": "Магазин электронных парогенераторов \"Sigaretnet.by\"",
+      "aliases": [
+        "Sigaretnet.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-5",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0e0a92ab435ab8ed05a6",
+      "brand_key": "brand:769c94db5ed0ce0e4570",
+      "brand": "Интернет-магазин «Кarcher-bipart.by»",
+      "aliases": [
+        "Кarcher-bipart.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:0cb497818c869e2e9c92",
+      "brand_key": "brand:7226db65b90e4f09be2c",
+      "brand": "\"STATUS\" Гардеробные системы",
+      "aliases": [
+        "STATUS"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:a9926ebb95bb6de3e770",
+      "brand_key": "brand:7ac67f430329ab0fcae6",
+      "brand": "Рынок «Алексеевский»",
+      "aliases": [
+        "Алексеевский"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:76ea5fa3957e4a29ffc7",
+      "brand_key": "brand:db911346fa7d1697ec63",
+      "brand": "Клуб красоты \"Саввали\"",
+      "aliases": [
+        "Саввали"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:9fb5ad24127e86b929cb",
+      "brand_key": "brand:5311943ff9d6960528f2",
+      "brand": "Онлайн-магазин велосипедов ProVelo.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:d82b3493172a6705ceff",
+      "brand_key": "brand:651ba2619e3c91022314",
+      "brand": "\"Дом Обоев\" магазин обоев",
+      "aliases": [
+        "Дом Обоев"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:94c65cb69ce6a1d0ce6c",
+      "brand_key": "brand:c3f82c89afae01265fb5",
+      "brand": "Центр онлайн-обучения Татьяны Сеген",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:bc29a78dac91180a10c0",
+      "brand_key": "brand:c1b3c6be04e81d81db64",
+      "brand": "Медицинский центр НЕО",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:a170a5f535b0b5681edb",
+      "brand_key": "brand:0a2ea4e5d9d38a26fe30",
+      "brand": "Веломагазин Желтый",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:e520c564cc2d3be92d9f",
+      "brand_key": "brand:3dcf9bd9a4158cc4bff7",
+      "brand": "Магазин мебели Goldmebel.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:c73f612dae31f65305e5",
+      "brand_key": "brand:fbfe96a17bcfe7924e41",
+      "brand": "Магазин мебели 7mebel.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:db04dc2c37c4bafd3c5d",
+      "brand_key": "brand:4648697a78684f7c0e4e",
+      "brand": "Интернет-магазин косметики от ведущих мировых брендов \"Пудра.by\"",
+      "aliases": [
+        "Пудра.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:2841e135032586bd3787",
+      "brand_key": "brand:2bf003424642d1504af8",
+      "brand": "Магазин здорового питания \"Gerkules\"",
+      "aliases": [
+        "Gerkules"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:f563443a152f85384c54",
+      "brand_key": "brand:ee3e1693911f929fad97",
+      "brand": "Интерент-магазин \"Greenery.by\"",
+      "aliases": [
+        "Greenery.by"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:b3d43b4ca7bcd68c47f4",
+      "brand_key": "brand:3295b6fd52034e651107",
+      "brand": "Салон-магазин Good zone",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:50044b22c10f4b44f85c",
+      "brand_key": "brand:4532316e9afff53dd327",
+      "brand": "Чемоданы sta.by",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:045a0609691d1b9c8b63",
+      "brand_key": "brand:ecedd5ad024ebfc958d5",
+      "brand": "Ваша оптика",
+      "aliases": [],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cactus:25a9d978cfa5dc4abda0",
+      "brand_key": "brand:a56f3416d502606a2990",
+      "brand": "Магазин женской одежды \"NOVAYA\"",
+      "aliases": [
+        "NOVAYA"
+      ],
+      "card_id": "cactus_mtbank",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "points",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Требуется подключить бесплатную функцию «Партнёрская сеть».",
+      "source_url": "https://www.mtbank.by/cards/cactus/part/?cpage=page-6",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:21vek-by",
+      "brand_key": "brand:cashalot:21vek-by",
+      "brand": "21vek",
+      "aliases": [
+        "21vek.by"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/21vek-by/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:green",
+      "brand_key": "brand:cashalot:green",
+      "brand": "Green",
+      "aliases": [
+        "Green"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/green/?city=501",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:gippo",
+      "brand_key": "brand:cashalot:gippo",
+      "brand": "Гиппо",
+      "aliases": [
+        "Гиппо"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/gippo/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:belmarket",
+      "brand_key": "brand:cashalot:belmarket",
+      "brand": "Белмаркет",
+      "aliases": [
+        "Белмаркет"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/belmarket/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:ami-mebel",
+      "brand_key": "brand:cashalot:ami-mebel",
+      "brand": "AMI мебель",
+      "aliases": [
+        "AMI Мебель"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/ami-mebel/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:tsum-minsk",
+      "brand_key": "brand:cashalot:tsum-minsk",
+      "brand": "ЦУМ Минск",
+      "aliases": [
+        "ЦУМ Минск"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/tsum-minsk/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:bild",
+      "brand_key": "brand:cashalot:bild",
+      "brand": "БИЛД",
+      "aliases": [
+        "БИЛД"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/bild/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:santa",
+      "brand_key": "brand:cashalot:santa",
+      "brand": "Сеть магазинов «Санта»",
+      "aliases": [
+        "Санта"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/santa/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:belarus",
+      "brand_key": "brand:cashalot:belarus",
+      "brand": "универмаг Беларусь",
+      "aliases": [
+        "Беларусь"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/belarus/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:dorors",
+      "brand_key": "brand:cashalot:dorors",
+      "brand": "Дорорс",
+      "aliases": [
+        "ДорОрс"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/dorors/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:na-svyazi-1",
+      "brand_key": "brand:cashalot:na-svyazi-1",
+      "brand": "На связи",
+      "aliases": [
+        "НА'СВЯЗИ"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/na-svyazi-1/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:7-karat",
+      "brand_key": "brand:cashalot:7-karat",
+      "brand": "7 карат",
+      "aliases": [
+        "7 Карат"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/7-karat/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:defacto",
+      "brand_key": "brand:cashalot:defacto",
+      "brand": "DeFacto",
+      "aliases": [
+        "DeFacto"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/defacto/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:alfaapteka",
+      "brand_key": "brand:cashalot:alfaapteka",
+      "brand": "Альфа аптека",
+      "aliases": [
+        "АльфаАптека"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/alfaapteka/",
+      "tiers": [
+        {
+          "value": "1.01"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:xistore-by",
+      "brand_key": "brand:cashalot:xistore-by",
+      "brand": "Xistore.by",
+      "aliases": [
+        "Xistore.by"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/xistore-by/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:eliz-1",
+      "brand_key": "brand:cashalot:eliz-1",
+      "brand": "ELIZ",
+      "aliases": [
+        "ЭЛИЗ"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/eliz-1/",
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:iskamed",
+      "brand_key": "brand:cashalot:iskamed",
+      "brand": "Искамед",
+      "aliases": [
+        "Искамед"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/iskamed/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:7745-bolshoy-magazin",
+      "brand_key": "brand:cashalot:7745-bolshoy-magazin",
+      "brand": "7745.by",
+      "aliases": [
+        "7745-Большой магазин"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/7745-bolshoy-magazin/",
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:kirmash",
+      "brand_key": "brand:cashalot:kirmash",
+      "brand": "Кирмаш",
+      "aliases": [
+        "Кирмаш"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/kirmash/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:invitro",
+      "brand_key": "brand:cashalot:invitro",
+      "brand": "ИНВИТРО",
+      "aliases": [
+        "INVITRO"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/invitro/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:shagovita",
+      "brand_key": "brand:cashalot:shagovita",
+      "brand": "Shagovita",
+      "aliases": [
+        "SHAGOVITA"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/shagovita/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:sem-pyatnits",
+      "brand_key": "brand:cashalot:sem-pyatnits",
+      "brand": "Семь пятниц",
+      "aliases": [
+        "Сеть магазинов «Семь пятниц»",
+        "7пятниц"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/sem-pyatnits/",
+      "tiers": [
+        {
+          "value": "1.01"
+        }
+      ]
+    },
+    {
+      "source_key": "cashalot:unistore-opt-roznitsa",
+      "brand_key": "brand:cashalot:unistore-opt-roznitsa",
+      "brand": "Unistore опт&розница",
+      "aliases": [
+        "UNISTORE опт&розница",
+        "Юнисторе"
+      ],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/unistore-opt-roznitsa/",
+      "tiers": [
+        {
+          "value": "1.01"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:a72c0ccd",
+      "brand_key": "brand:bnb:a1799d4e",
+      "brand": "21vek",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:b1ec686e",
+      "brand_key": "brand:bnb:bc4d1f79",
+      "brand": "PIZHON",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:478b9e8f",
+      "brand_key": "brand:bnb:d321b614",
+      "brand": "СТРЕЛКА",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "4% в зоомагазине, 6% за ветеринарные услуги.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "6"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:5be5e7fc",
+      "brand_key": "brand:bnb:37d55512",
+      "brand": "Aqara.by",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:9761f02b",
+      "brand_key": "brand:bnb:42a042b5",
+      "brand": "ОМА",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:955dae3a",
+      "brand_key": "brand:bnb:4f9f2cab",
+      "brand": "Hello",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Только онлайн-оплата поездок.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:48adab4b",
+      "brand_key": "brand:bnb:386317f8",
+      "brand": "ИНВИТРО",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:6dda38a8",
+      "brand_key": "brand:bnb:cfaa6c29",
+      "brand": "Delivio",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:ddb78d03",
+      "brand_key": "brand:bnb:2367990c",
+      "brand": "Anytime",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:43434619",
+      "brand_key": "brand:bnb:b8c455ae",
+      "brand": "7 КАРАТ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:ad7b0d0d",
+      "brand_key": "brand:bnb:4e4618fb",
+      "brand": "НА СВЯЗИ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:4e0ffdb7",
+      "brand_key": "brand:bnb:220eb34c",
+      "brand": "Универмаг БЕЛАРУСЬ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:1df9bd99",
+      "brand_key": "brand:bnb:bca5c277",
+      "brand": "ELIZ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:8ecbd68f",
+      "brand_key": "brand:bnb:9472ee14",
+      "brand": "DIAMANTE",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:23d9a82d",
+      "brand_key": "brand:bnb:a7ab9e1b",
+      "brand": "KINGSTYLE",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:6a6bb354",
+      "brand_key": "brand:bnb:5155ba1a",
+      "brand": "ELEMA/ETELIER",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:19a5c3d6",
+      "brand_key": "brand:bnb:a41dfcf1",
+      "brand": "ORO",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:e9d0ba91",
+      "brand_key": "brand:bnb:bcbb0976",
+      "brand": "FUNtastik",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:caea3c7e",
+      "brand_key": "brand:bnb:87e460a9",
+      "brand": "LUVAL",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:b2ac15f2",
+      "brand_key": "brand:bnb:d3ce1864",
+      "brand": "Удачник",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:5f4aa97c",
+      "brand_key": "brand:bnb:4f0194d7",
+      "brand": "VplabOutlet",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:374aef72",
+      "brand_key": "brand:bnb:968a59e4",
+      "brand": "i-Store",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:c16c5a9e",
+      "brand_key": "brand:bnb:8a9439c9",
+      "brand": "ЗОЛОТОВ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:4cd010d5",
+      "brand_key": "brand:bnb:44def153",
+      "brand": "MebelArt",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "6"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:67729371",
+      "brand_key": "brand:bnb:b0417d0a",
+      "brand": "ИНТЕРСИТИ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:e4467627",
+      "brand_key": "brand:bnb:199adfa8",
+      "brand": "Домотехника",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:a2a0480d",
+      "brand_key": "brand:bnb:0cbda3fb",
+      "brand": "ARFEKA",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:2c2880f7",
+      "brand_key": "brand:bnb:05ad6181",
+      "brand": "ZORG",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:fd046f19",
+      "brand_key": "brand:bnb:460d5eae",
+      "brand": "Inglot",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:852426ad",
+      "brand_key": "brand:bnb:460d5eae",
+      "brand": "Inglot",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:dc17ff17",
+      "brand_key": "brand:bnb:33a2e8ac",
+      "brand": "meko.by",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "8"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:c3b8eb56",
+      "brand_key": "brand:bnb:c521b471",
+      "brand": "ШайнЭст",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:86fa95d9",
+      "brand_key": "brand:bnb:b65c886e",
+      "brand": "People Travel",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:0f36f236",
+      "brand_key": "brand:bnb:86e11e51",
+      "brand": "Мастодонт",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "6"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:e2452e65",
+      "brand_key": "brand:bnb:6e41df23",
+      "brand": "e-koleso.by",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:ed2d7f1a",
+      "brand_key": "brand:bnb:99e9c90b",
+      "brand": "FloVi.Studio",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "8"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:b666c037",
+      "brand_key": "brand:bnb:5d17ef38",
+      "brand": "MANGOBUKET",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "8"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:de3dad6c",
+      "brand_key": "brand:bnb:9ce5eb67",
+      "brand": "Savvali",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "8"
+        }
+      ]
+    },
+    {
+      "source_key": "bnb-1-2-3:9d22c4cc",
+      "brand_key": "brand:bnb:bb45be62",
+      "brand": "КАК В АПТЕКЕ",
+      "aliases": [],
+      "card_id": "bnb_1_2_3",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:01",
+      "brand_key": "brand:plushki:1cf0c01d",
+      "brand": "21 век",
+      "aliases": [
+        "21vek"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "online",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-02-01",
+      "ends_on": "2026-10-31",
+      "conditions": "Только при онлайн-оплате",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "5",
+          "min_purchase": "100",
+          "per_transaction_cap": "50"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:02",
+      "brand_key": "brand:plushki:208e557f",
+      "brand": "Zoobazar",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2025-09-01",
+      "ends_on": "2026-10-31",
+      "conditions": "Ставка зависит от суммы операции",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "1",
+          "min_purchase": "20",
+          "max_purchase": "69.99"
+        },
+        {
+          "value": "3",
+          "min_purchase": "70",
+          "max_purchase": "149.99"
+        },
+        {
+          "value": "5",
+          "min_purchase": "150"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:03",
+      "brand_key": "brand:plushki:62ac1687",
+      "brand": "HELIX",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-04-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:04",
+      "brand_key": "brand:plushki:0d75e1b8",
+      "brand": "Хвіліна",
+      "aliases": [
+        "Hvilina"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-08-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:05",
+      "brand_key": "brand:plushki:4e4618fb",
+      "brand": "На связи",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-10-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "5"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:06",
+      "brand_key": "brand:plushki:ab8e0440",
+      "brand": "Verally",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-10-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:07",
+      "brand_key": "brand:plushki:3d12e962",
+      "brand": "MI.BY",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2025-12-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "1.5"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:08",
+      "brand_key": "brand:plushki:b8070cd4",
+      "brand": "Химчистка-прачечная «Акватория»",
+      "aliases": [
+        "Акватория"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-03-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "20"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:09",
+      "brand_key": "brand:plushki:e5ecb2e2",
+      "brand": "Makey",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-06-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "2"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:10",
+      "brand_key": "brand:plushki:c5f5bb8c",
+      "brand": "ЭЛИЗ",
+      "aliases": [
+        "ELIZ"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-06-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:11",
+      "brand_key": "brand:plushki:bc4d1f79",
+      "brand": "Pizhon",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-07-01",
+      "ends_on": "2026-10-31",
+      "conditions": "",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:12",
+      "brand_key": "brand:plushki:220eb34c",
+      "brand": "Универмаг Беларусь",
+      "aliases": [
+        "Торговый дом На Немиге",
+        "Блискавица"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "any",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-08-01",
+      "ends_on": "2026-10-31",
+      "conditions": "УП «УНИВЕРМАГ БЕЛАРУСЬ», включая перечисленные официальные магазины",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "4"
+        }
+      ]
+    },
+    {
+      "source_key": "plushki:promo:13",
+      "brand_key": "brand:plushki:1439478d",
+      "brand": "ОККО",
+      "aliases": [
+        "OKKO"
+      ],
+      "card_id": "vitamin_d",
+      "channel": "online",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2026-08-01",
+      "ends_on": "2026-10-31",
+      "conditions": "С 1 октября — только первая бонусная операция после 01.10.2026 либо регистрации",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [
+        {
+          "value": "5",
+          "starts_on": "2026-08-01",
+          "ends_on": "2026-09-30"
+        },
+        {
+          "value": "20",
+          "starts_on": "2026-10-01",
+          "ends_on": "2026-10-31"
+        }
+      ]
+    },
+    {
+      "source_key": "izi:409446:7-karat",
+      "brand_key": "brand:izi:7-karat",
+      "brand": "7 КАРАТ",
+      "aliases": ["7 карат"],
+      "card_id": "belarusbank_izi",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Точная сеть; MCC 5944.",
+      "source_url": "https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/detail/409446/",
+      "tiers": [{"value": "1"}]
+    },
+    {
+      "source_key": "izi:409446:diamante",
+      "brand_key": "brand:izi:diamante",
+      "brand": "DIAMANTE",
+      "aliases": ["Diamante"],
+      "card_id": "belarusbank_izi",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Точная сеть; MCC 5944.",
+      "source_url": "https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/detail/409446/",
+      "tiers": [{"value": "1"}]
+    },
+    {
+      "source_key": "izi:409446:zolotov",
+      "brand_key": "brand:izi:zolotov",
+      "brand": "ЗОЛОТОВ",
+      "aliases": ["Золотов"],
+      "card_id": "belarusbank_izi",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Точная сеть; MCC 5944.",
+      "source_url": "https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/detail/409446/",
+      "tiers": [{"value": "1"}]
+    },
+    {
+      "source_key": "izi:434621:semya-market",
+      "brand_key": "brand:izi:semya-market",
+      "brand": "Семья Маркет",
+      "aliases": [],
+      "card_id": "belarusbank_izi",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Точная сеть; MCC 5399.",
+      "source_url": "https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/detail/434621/",
+      "tiers": [{"value": "1"}]
+    },
+    {
+      "source_key": "combo:2026-07:veloplaneta",
+      "brand_key": "brand:combo:veloplaneta",
+      "brand": "Велопланета",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 2,4%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "2.4"}]
+    },
+    {
+      "source_key": "combo:2026-07:sst",
+      "brand_key": "brand:combo:sst",
+      "brand": "SST",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 2,2%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "2.2"}]
+    },
+    {
+      "source_key": "combo:2026-07:top-wheels",
+      "brand_key": "brand:combo:top-wheels",
+      "brand": "Top Wheels",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 5%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "5"}]
+    },
+    {
+      "source_key": "combo:2026-07:velodom",
+      "brand_key": "brand:combo:velodom",
+      "brand": "Велодом",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 2,4%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "2.4"}]
+    },
+    {
+      "source_key": "combo:2026-07:voka-dent",
+      "brand_key": "brand:combo:voka-dent",
+      "brand": "Voka Dent",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 2,2%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "2.2"}]
+    },
+    {
+      "source_key": "combo:2026-07:voka",
+      "brand_key": "brand:combo:voka",
+      "brand": "VOKA",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 2,2%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "2.2"}]
+    },
+    {
+      "source_key": "combo:2026-07:has-brand",
+      "brand_key": "brand:combo:has-brand",
+      "brand": "HAS brand",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-07-03",
+      "ends_on": null,
+      "conditions": "До 5%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/iyul/novye-partnery-kombokarty-v-iyule-eshche-bolshe-vygody-kazhdyy-den/",
+      "tiers": [{"value": "5"}]
+    },
+    {
+      "source_key": "combo:2026-04:dns",
+      "brand_key": "brand:combo:dns",
+      "brand": "ДНС",
+      "aliases": ["DNS"],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-04-08",
+      "ends_on": null,
+      "conditions": "До 2,5%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/aprel/novye-partnery-kombokarty-eshchye-bolshe-vygod-kazhdyy-den/",
+      "tiers": [{"value": "2.5"}]
+    },
+    {
+      "source_key": "combo:2026-04:fermerskiy-park",
+      "brand_key": "brand:combo:fermerskiy-park",
+      "brand": "Фермерский парк",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-04-08",
+      "ends_on": null,
+      "conditions": "До 3,2%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/aprel/novye-partnery-kombokarty-eshchye-bolshe-vygod-kazhdyy-den/",
+      "tiers": [{"value": "3.2"}]
+    },
+    {
+      "source_key": "combo:2026-04:cyber-x-green",
+      "brand_key": "brand:combo:cyber-x-green",
+      "brand": "Cyber X Green",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-04-08",
+      "ends_on": null,
+      "conditions": "До 4,2%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/aprel/novye-partnery-kombokarty-eshchye-bolshe-vygod-kazhdyy-den/",
+      "tiers": [{"value": "4.2"}]
+    },
+    {
+      "source_key": "combo:2026-04:xfit",
+      "brand_key": "brand:combo:xfit",
+      "brand": "XFIT",
+      "aliases": [],
+      "card_id": "paritet_combo",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": "2026-04-08",
+      "ends_on": null,
+      "conditions": "До 3,6%; условия партнёра",
+      "source_url": "https://www.paritetbank.by/about/news/2026/aprel/novye-partnery-kombokarty-eshchye-bolshe-vygod-kazhdyy-den/",
+      "tiers": [{"value": "3.6"}]
+    },
+    {
+      "source_key": "statuskarta:21vek:2026-08-30",
+      "brand_key": "brand:statuskarta:21vek",
+      "brand": "21 век",
+      "aliases": ["21vek"],
+      "card_id": "statusbank_statuskarta",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Только при онлайн-оплате",
+      "source_url": "https://stbank.by/",
+      "tiers": [{"value": "3.2"}]
+    }
+  ],
+  "exclusions": [
+    {
+      "source_key": "plushki:exclusion:1",
+      "brand_key": "brand:plushki-exclusion:1",
+      "brand": "Unistore",
+      "aliases": [
+        "Uni store"
+      ],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": null,
+      "starts_on": "2021-11-15",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "С 15.11.2021 бонусные баллы не начисляются",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:2",
+      "brand_key": "brand:plushki-exclusion:2",
+      "brand": "МТС",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": null,
+      "starts_on": "2021-11-15",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Merchant ID 82119100, 82140000",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:3",
+      "brand_key": "brand:plushki-exclusion:3",
+      "brand": "Белпочта",
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": null,
+      "starts_on": "2022-04-01",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Merchant ID 0001991–0001997",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:4:4111",
+      "brand_key": null,
+      "brand": null,
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": "4111",
+      "starts_on": "2023-11-09",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Организации, осуществляющие пассажирские перевозки",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:4:4112",
+      "brand_key": null,
+      "brand": null,
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": "4112",
+      "starts_on": "2023-11-09",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Организации, осуществляющие пассажирские перевозки",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:4:4121",
+      "brand_key": null,
+      "brand": null,
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": "4121",
+      "starts_on": "2023-11-09",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Организации, осуществляющие пассажирские перевозки",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    },
+    {
+      "source_key": "plushki:exclusion:4:4131",
+      "brand_key": null,
+      "brand": null,
+      "aliases": [],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": "4131",
+      "starts_on": "2023-11-09",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "Организации, осуществляющие пассажирские перевозки",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    }
+  ]
+}

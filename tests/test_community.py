@@ -27,7 +27,10 @@ def community(tmp_path):
 
 def make_draft(service, user_id=10, *, kind="add_merchant", payload=None, media=True):
     payload = payload or {"name": "Test Shop", "channel": "offline", "mcc": "5411"}
-    draft = service.begin(user_id, stage="evidence", data={"kind": kind, "payload": payload})
+    data = {"kind": kind, "payload": payload}
+    if not media and not service.is_admin(user_id):
+        data["source_url"] = "https://example.com/official-source"
+    draft = service.begin(user_id, stage="evidence", data=data)
     return service.advance(
         user_id,
         draft.id,
@@ -185,7 +188,9 @@ def test_draft_restart_and_duplicate_updates(community):
         community.advance(11, moved.id, moved.version, "preview", {})
 
 
-def test_screenshot_optional_for_users_and_admins(community):
+def test_official_url_can_replace_screenshot_for_users_and_screenshot_is_optional_for_admins(
+    community,
+):
     draft = make_draft(community, media=False)
     queued = community.submit(10, draft.id, draft.version)
     assert queued.status == "pending"
@@ -194,6 +199,50 @@ def test_screenshot_optional_for_users_and_admins(community):
     assert saved.status == "approved"
     assert saved.audit_id is not None
     assert len(community.stores.find_exact("Test Shop", "offline")) == 1
+
+
+def test_new_user_store_proposal_does_not_require_source(community):
+    payload = {"name": "No source", "channel": "offline", "mcc": "5411"}
+    draft = community.begin(10, stage="preview", data={"kind": "add_merchant", "payload": payload})
+
+    queued = community.submit(10, draft.id, draft.version)
+
+    assert queued.status == "pending"
+
+
+def test_new_user_partnership_requires_official_url_or_screenshot(community):
+    payload = {
+        "brand_id": community.stores.apply_change(
+            "add_merchant",
+            {"name": "Partner shop", "channel": "offline", "mcc": "5411"},
+            1,
+        ).brand_id,
+        "card_id": "vitamin_d",
+        "channel": "online",
+        "mode": "additional",
+        "reward_kind": "points",
+        "starts_on": None,
+        "ends_on": None,
+        "conditions": "Только онлайн",
+        "source_url": "",
+        "tiers": [
+            {
+                "value": "5",
+                "min_purchase": None,
+                "max_purchase": None,
+                "per_transaction_cap": None,
+            }
+        ],
+        "exclusions": [],
+    }
+    draft = community.begin(
+        10,
+        stage="preview",
+        data={"kind": "card_partnership", "payload": payload},
+    )
+
+    with pytest.raises(CommunityError, match="официальную ссылку или скриншот"):
+        community.submit(10, draft.id, draft.version)
 
 
 def test_direct_save_repeated_callback_does_not_duplicate_fact(community):
@@ -231,15 +280,11 @@ def test_screenshot_access_current_role_and_submitter_only(community):
         community.media_for(2, proposal.id)
 
 
-def test_reject_requires_reason_and_expiry_is_five_days(community):
+def test_reject_needs_no_reason_and_expiry_is_five_days(community):
     proposal = make_proposal(community)
     claimed = community.claim(2, proposal.id, proposal.version, now=100)
-    with pytest.raises(CommunityError):
-        community.review(2, proposal.id, claimed.version, "rejected", now=101)
-    result = community.review(
-        2, proposal.id, claimed.version, "rejected", reason="Unreadable", now=101
-    )
-    assert result.reason == "Unreadable"
+    result = community.review(2, proposal.id, claimed.version, "rejected", now=101)
+    assert result.reason is None
     assert community.expire_media(now=101 + MEDIA_RETENTION_SECONDS - 1) == 0
     assert community.expire_media(now=101 + MEDIA_RETENTION_SECONDS) == 1
 

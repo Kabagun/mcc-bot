@@ -32,6 +32,7 @@ from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
 from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
+from .partner_rewards import PartnerRepository
 from .store_handlers import handle_store_callback, search_stores
 from .stores import Brand, StoreRepository, normalize_store_name
 from .users import UserRegistry
@@ -325,7 +326,7 @@ async def lookup_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Pass screenshots only to an active contribution or clarification form."""
 
     if not await handle_community_media(update, context):
-        await _reply(update, "Для отправки скриншота сначала нажмите «Предложить MCC магазина».")
+        await _reply(update, "Для отправки скриншота сначала нажмите «Предложить данные».")
 
 
 async def expired_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -383,10 +384,13 @@ def build_application(settings: BotSettings) -> Application:
     user_registry.initialize()
     stores = StoreRepository(settings.stores_path)
     stores.initialize()
+    partners = PartnerRepository(stores)
+    partners.initialize()
     community = CommunityService(
         stores,
         owner_id=settings.owner_telegram_id,
         allowed_mccs=descriptions.labels,
+        partners=partners,
     )
     community.initialize()
     application = (
@@ -396,6 +400,7 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["descriptions"] = descriptions
     application.bot_data["user_registry"] = user_registry
     application.bot_data["stores"] = stores
+    application.bot_data["partners"] = partners
     application.bot_data["community"] = community
     application.add_handler(TypeHandler(Update, remember_chat), group=-1)
     application.add_handler(CommandHandler("start", start))

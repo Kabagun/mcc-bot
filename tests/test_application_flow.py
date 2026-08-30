@@ -101,6 +101,7 @@ def test_registered_dispatcher_routes_numbers_text_and_removed_commands(telegram
                 replies = rendered(calls)
                 assert replies, text
                 assert all("Beta Card" not in item["text"] for item in replies), text
+            await app.process_update(incoming(app, "❌ Отменить", sequence=8))
             calls.clear()
             await app.process_update(incoming(app, "/start", sequence=9))
             keyboard = rendered(calls)[-1]["reply_markup"]["keyboard"]
@@ -159,7 +160,7 @@ def test_owner_menu_and_sensitive_actions_reject_group_chat(telegram_app):
             assert "📋 Разобрать очередь" in labels
             calls.clear()
             await app.process_update(
-                incoming(app, "➕ Добавить MCC магазина", user_id=42, group=True, sequence=2)
+                incoming(app, "➕ Добавить данные", user_id=42, group=True, sequence=2)
             )
             assert app.bot_data["community"].draft(42) is None
             assert rendered(calls)

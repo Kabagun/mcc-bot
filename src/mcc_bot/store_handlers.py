@@ -16,6 +16,11 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from .formatting import format_match_pages
+from .partner_rewards import (
+    PartnerRepository,
+    format_partner_offer_context,
+    resolve_store_matches,
+)
 from .stores import StoreRepository, normalize_store_name
 
 LOGGER = logging.getLogger(__name__)
@@ -94,11 +99,51 @@ def _fact_label(fact, descriptions) -> str:
     return f"MCC {fact.mcc} — {description}"
 
 
+def _number(value) -> str:
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered.replace(".", ",")
+
+
+def _partner_offer_lines(partners: PartnerRepository | None, catalog, brand_id: int) -> list[str]:
+    if partners is None:
+        return []
+    cards = {card.id: card for card in catalog.cards}
+    lines = []
+    for offer, tier in partners.list_active_offers(brand_id):
+        card = cards.get(offer.card_id)
+        card_name = card.name if card is not None else offer.card_id
+        prefix = "+" if offer.mode == "additional" else ""
+        kind = "баллами" if offer.reward_kind == "points" else "деньгами"
+        tier_prefix = "до " if len(offer.tiers) > 1 else ""
+        headline = f"• {card_name} — {prefix}{tier_prefix}{_number(tier.value)}% {kind}"
+        metadata = [
+            _channel_label(offer.channel, short=True)
+            if offer.channel != "any"
+            else "офлайн и онлайн"
+        ]
+        headline += " · " + " · ".join(item for item in metadata if item)
+        lines.append(headline)
+        details = (
+            format_partner_offer_context(offer, tier)
+            .removeprefix("Партнёрское предложение")
+            .removeprefix(" · ")
+        )
+        if details:
+            lines.append(f"  {details}")
+    return lines
+
+
 def _brand_view(repository, brand, page, context, user_id, *, private=True):
     """Render a brand card as Telegram HTML with its inline keyboard."""
 
     admin = private and _is_admin(context, user_id)
     descriptions = context.application.bot_data["descriptions"]
+    catalog = context.application.bot_data["catalog"]
+    partner_lines = _partner_offer_lines(
+        context.application.bot_data.get("partners"), catalog, brand.id
+    )
     grouped = [
         (channel, facts)
         for channel in _CHANNELS
@@ -134,7 +179,14 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 )
     if not observed:
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
-    text += f"\n\n<i>{_WARNING}</i>"
+    if partner_lines:
+        text += "\n\n<b>🎁 Партнёрские предложения</b>\n" + "\n".join(
+            escape(line) for line in partner_lines
+        )
+    if not observed and partner_lines:
+        text += "\n\n<i>MCC магазина пока не подтверждён — обычные карты не сравниваются.</i>"
+    else:
+        text += f"\n\n<i>{_WARNING}</i>"
     if private:
         rows.append(
             [
@@ -350,11 +402,17 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if mcc not in facts:
             return
         catalog = context.application.bot_data["catalog"]
+        partners = context.application.bot_data.get("partners")
+        matches = (
+            resolve_store_matches(catalog, partners, brand_id, channel, mcc)
+            if partners is not None
+            else catalog.lookup(mcc)
+        )
         prefix = _header(brand, channel) + f"\n<i>{_WARNING}</i>\n\n"
         try:
             pages = format_match_pages(
                 mcc,
-                catalog.lookup(mcc),
+                matches,
                 context.application.bot_data["descriptions"],
                 html=True,
                 max_length=3900 - len(prefix.encode("utf-16-le")) // 2,
