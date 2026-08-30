@@ -986,11 +986,19 @@ def _display_decimal(value: Decimal) -> str:
 
 
 def format_partner_offer_context(offer: PartnerOffer, tier: PartnerTier) -> str:
-    """Render conditions, the selected amount tier, cap, and active dates."""
+    """Render only purchase constraints that matter for the selected store MCC."""
 
-    details = ["Партнёрское предложение"]
-    if offer.conditions:
-        details.append(offer.conditions)
+    details = []
+    condition = offer.conditions.strip().rstrip(".")
+    normalized_condition = condition.casefold().translate({0x451: 0x435})
+    redundant_conditions = {
+        "только при онлайн-оплате",
+        "только при офлайн-оплате",
+        "только у партнера",  # noqa: RUF001
+        "общий максимальный манибэк у партнера по карте 1-2-3",  # noqa: RUF001
+    }
+    if condition and normalized_condition not in redundant_conditions:
+        details.append(condition)
     if tier.min_purchase is not None and tier.max_purchase is not None:
         details.append(
             f"сумма {_display_decimal(tier.min_purchase)}–{_display_decimal(tier.max_purchase)} BYN"  # noqa: RUF001
@@ -1002,13 +1010,8 @@ def format_partner_offer_context(offer: PartnerOffer, tier: PartnerTier) -> str:
     if tier.per_transaction_cap is not None:
         unit = "баллов" if offer.reward_kind == "points" else "BYN"
         details.append(f"не больше {_display_decimal(tier.per_transaction_cap)} {unit} за операцию")
-    starts_on = tier.starts_on or offer.starts_on
     ends_on = tier.ends_on or offer.ends_on
-    if starts_on and ends_on:
-        details.append(f"{starts_on.strftime('%d.%m.%Y')}–{ends_on.strftime('%d.%m.%Y')}")  # noqa: RUF001
-    elif starts_on:
-        details.append(f"с {starts_on.strftime('%d.%m.%Y')}")  # noqa: RUF001
-    elif ends_on:
+    if ends_on:
         details.append(f"по {ends_on.strftime('%d.%m.%Y')}")
     return " · ".join(details)
 
@@ -1097,7 +1100,9 @@ def resolve_store_matches(
             )
             components.append(component)
             card = replace(card, reward_programs=(*card.reward_programs, _partner_program(offer)))
-            context_lines.append(format_partner_offer_context(offer, tier))
+            offer_context = format_partner_offer_context(offer, tier)
+            if offer_context:
+                context_lines.append(offer_context)
         if components:
             results.append(
                 CardMatch(

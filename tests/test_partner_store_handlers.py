@@ -65,9 +65,7 @@ def _offer(brand_id: int, *, channel: str = "any", value: str = "3") -> PartnerO
     )
 
 
-def test_partner_only_store_is_searchable_and_warns_without_card_comparison(
-    tmp_path, catalog_path
-) -> None:
+def test_partner_only_store_is_searchable_without_offer_dump(tmp_path, catalog_path) -> None:
     _stores, partners, brand_id, update, context = _context(
         tmp_path, catalog_path, brand_name="Partner Only", mcc=None
     )
@@ -76,13 +74,14 @@ def test_partner_only_store_is_searchable_and_warns_without_card_comparison(
     asyncio.run(search_stores(update, context, "Partner Only"))
     text = update.effective_message.reply_text.await_args.args[0]
 
-    assert "🎁 Партнёрские предложения" in text
-    assert "Alpha Card — 3% деньгами · офлайн и онлайн" in text
-    assert "Только у партнёра" in text
-    assert "MCC магазина пока не подтверждён — обычные карты не сравниваются" in text
+    assert "🏪 <b>Partner Only</b>" in text
+    assert "Наблюдений по офлайн- и онлайн-оплате пока нет" in text
+    assert "🎁 Партнёрские предложения" not in text
+    assert "Alpha Card" not in text
+    assert "Только у партнёра" not in text
 
 
-def test_store_overview_keeps_trailing_zeroes_in_whole_percent(tmp_path, catalog_path) -> None:
+def test_store_overview_never_exposes_partner_percent(tmp_path, catalog_path) -> None:
     _stores, partners, brand_id, update, context = _context(
         tmp_path, catalog_path, brand_name="Twenty Percent", mcc=None
     )
@@ -91,8 +90,8 @@ def test_store_overview_keeps_trailing_zeroes_in_whole_percent(tmp_path, catalog
     asyncio.run(search_stores(update, context, "Twenty Percent"))
     text = update.effective_message.reply_text.await_args.args[0]
 
-    assert "Alpha Card — 20% деньгами" in text
-    assert "Alpha Card — 2% деньгами" not in text
+    assert "20% деньгами" not in text
+    assert "Alpha Card" not in text
 
 
 def test_store_card_callback_is_partner_aware_but_raw_mcc_is_not(tmp_path, catalog_path) -> None:
@@ -109,4 +108,5 @@ def test_store_card_callback_is_partner_aware_but_raw_mcc_is_not(tmp_path, catal
     text = update.callback_query.edit_message_text.await_args.args[0]
 
     assert "Alpha Card</b> — 3% деньгами" in text
-    assert "Партнёрское предложение · Только у партнёра" in text
+    assert "Партнёрское предложение" not in text
+    assert "Только у партнёра" not in text

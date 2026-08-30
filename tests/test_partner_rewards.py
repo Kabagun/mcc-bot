@@ -140,10 +140,9 @@ def test_additional_points_are_composed_displayed_once_and_ranked(tmp_path) -> N
     assert format_moneyback(resolved[0]) == "3% + 5% баллами"
     rendered = format_matches("1234", resolved, {"1234": "Покупка"})
     assert "Витамин Д — 3% + 5% баллами" in rendered
-    assert (
-        "Партнёрское предложение · Только при онлайн-оплате · сумма от 100 BYN · "
-        "не больше 50 баллов за операцию"
-    ) in rendered
+    assert ("сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026") in rendered
+    assert "Партнёрское предложение" not in rendered
+    assert "Только при онлайн-оплате" not in rendered
 
 
 def test_online_partner_points_do_not_apply_to_offline_payment(tmp_path) -> None:
@@ -163,6 +162,27 @@ def test_online_partner_points_do_not_apply_to_offline_payment(tmp_path) -> None
     assert vitamin.gross_value == Decimal("3")
     assert format_moneyback(vitamin) == "3% баллами"
     assert vitamin.context_lines == ()
+
+
+def test_actionable_partner_condition_stays_in_compact_context(tmp_path) -> None:
+    _stores, partners, brand_id = _repositories(tmp_path)
+    partners.create_offer(
+        _offer(
+            brand_id,
+            conditions="Требуется подключить бесплатную функцию «Партнёрская сеть».",
+        ),
+        actor_id=1,
+    )
+
+    resolved = resolve_store_matches(
+        _catalog(tmp_path), partners, brand_id, "online", "1234", on_date=date(2026, 8, 30)
+    )
+    vitamin = next(match for match in resolved if match.card.id == "vitamin_d")
+
+    assert vitamin.context_lines == (
+        "Требуется подключить бесплатную функцию «Партнёрская сеть» · "
+        "сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026",
+    )
 
 
 def test_points_exclusion_falls_back_to_ordinary_money_with_reason(tmp_path) -> None:
