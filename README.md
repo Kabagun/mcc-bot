@@ -92,7 +92,7 @@ inactive reward programs are not displayed. Long lists use stable card pages,
 each with its own button, so opening details does not send additional messages.
 
 MCC replies use bold headings and card names, and italic bank names.
-All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,44%)`,
+All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,435%)`,
 and `1% + 3% баллами`. Both views keep the same layout and card order. Catalog
 text is escaped for Telegram HTML; the local CLI and information view stay plain text.
 
@@ -235,12 +235,14 @@ later moderator edits and archives:
 ```powershell
 .\.venv\Scripts\python.exe -m mcc_bot.partner_cleanup_20260830 --database var/stores.sqlite3
 .\.venv\Scripts\python.exe -m mcc_bot.partner_seed_20260830 --database var/stores.sqlite3
+.\.venv\Scripts\python.exe -m mcc_bot.partner_cleanup_20260831 --database var/stores.sqlite3
+.\.venv\Scripts\python.exe -m mcc_bot.partner_seed_20260831 --database var/stores.sqlite3
 ```
 
-The equivalent installed commands are `mcc-reconcile-partners-20260830` and
-`mcc-apply-partner-seed-20260830`. Apply them in that order and only after a
-consistent SQLite backup. The reviewed sources, inclusion rules, counts and
-deliberately omitted conflicts are documented in
+The latest correction commands are `mcc-reconcile-partners-20260831` and
+`mcc-apply-partner-seed-20260831`. Apply each dated cleanup before its matching
+seed and only after a consistent SQLite backup. The reviewed sources, inclusion
+rules, counts and deliberately omitted conflicts are documented in
 [docs/PARTNER_DATA_SOURCE.md](docs/PARTNER_DATA_SOURCE.md).
 
 ## Version 2 catalog contract
@@ -258,6 +260,7 @@ must explicitly contain `"version": 2`:
       "name": "Card shown to users",
       "issuer": "Bank name",
       "emoji": "💳",
+      "partner_policy": {"mode": "total", "reward_kind": "cash"},
       "condition": {"kind": "selected_category"},
       "reward_programs": [
         {
@@ -288,6 +291,11 @@ supported when a three-letter `currency` code is supplied. `offers` may be
 replaced or supplemented by grouped `rules` such as
 `{"mccs": ["5411", "5422"], "value": 2}`. Duplicate MCCs within one program
 are rejected.
+
+Every bundled card declares a `partner_policy`. Its `mode` is `total` when a
+partner rate replaces the ordinary result or `additional` when it stacks; its
+`reward_kind` is `cash` or `points`. This policy is the fixed default for partner
+proposals and is not inferred from free text.
 
 `minimum_payment` stores the smallest payment eligible for a reward.
 `maximum_reward` stores the monthly finite `currency` or `points` cap, or an
@@ -322,8 +330,9 @@ all effective values for one MCC must share the same `(unit, currency)`
 dimensions before they can be compared.
 
 Percentage tax is applied to each component separately: the first 2 percentage
-points are tax-free and only the remainder is reduced by 13%. Thus 3% becomes
-`3% (2,87%)` and a tax-exempt 3% points reward remains
+points are tax-free and only the remainder is reduced by 13%. Net values are
+shown with up to three decimals, so 2.5% becomes `2,5% (2,435%)`, 3% becomes
+`3% (2,87%)`, and a tax-exempt 3% points reward remains
 `3% баллами`. Points rewards are always marked with `баллами`. Display uses
 comma decimals and never prints raw catalog notes. For stacked cash and points
 programs, the information view renders their payment thresholds and maximums
@@ -400,6 +409,8 @@ reviewed partner package. Both commands are safe to rerun:
 ```bash
 mcc-reconcile-partners-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3
 mcc-apply-partner-seed-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3
+mcc-reconcile-partners-20260831 --database /srv/bots/mcc-bot/var/stores.sqlite3
+mcc-apply-partner-seed-20260831 --database /srv/bots/mcc-bot/var/stores.sqlite3
 ```
 
 The command reads the audit actor from `BOT_OWNER_TELEGRAM_ID`, validates the

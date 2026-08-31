@@ -22,6 +22,12 @@ SUPPORTED_REWARD_CAP_UNITS = frozenset({"currency", "points"})
 SUPPORTED_REWARD_LIMIT_PERIODS = frozenset({"transaction", "week"})
 PERCENT_TAX_THRESHOLD = Decimal("2")
 PERCENT_TAX_RATE = Decimal("0.13")
+KNOWN_PARTNER_POLICIES = {
+    "vitamin_d": ("additional", "points"),
+    "cactus_mtbank": ("total", "points"),
+    "mtkarta": ("total", "points"),
+    "kufar": ("total", "points"),
+}
 
 
 class CatalogError(ValueError):
@@ -144,6 +150,14 @@ class RewardProgram:
 
 
 @dataclass(frozen=True, slots=True)
+class PartnerPolicy:
+    """Static composition rules for a card's store partnership rewards."""
+
+    mode: str
+    reward_kind: str
+
+
+@dataclass(frozen=True, slots=True)
 class Card:
     """A card, its display metadata, conditions, and reward programs."""
 
@@ -154,6 +168,8 @@ class Card:
     condition: CardCondition | None
     reward_limits: tuple[RewardLimit, ...]
     reward_programs: tuple[RewardProgram, ...]
+    partner_policy: PartnerPolicy = PartnerPolicy("total", "cash")
+    partner_policy_explicit: bool = False
 
     @property
     def offers(self) -> tuple[RewardOffer, ...]:
@@ -644,7 +660,16 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
         raise CatalogError(f"{prefix} должен быть объектом")
     _reject_unknown(
         raw_card,
-        {"id", "name", "issuer", "emoji", "condition", "reward_limits", "reward_programs"},
+        {
+            "id",
+            "name",
+            "issuer",
+            "emoji",
+            "condition",
+            "reward_limits",
+            "reward_programs",
+            "partner_policy",
+        },
         prefix,
     )
     card_id = _text(raw_card.get("id"), f"{prefix}.id")
@@ -665,6 +690,32 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
             raise CatalogError(f"{prefix} содержит дублирующую программу {program.id!r}")
         seen_program_ids.add(program.id)
         programs.append(program)
+    raw_partner_policy = raw_card.get("partner_policy")
+    if raw_partner_policy is None:
+        known = KNOWN_PARTNER_POLICIES.get(card_id)
+        kinds = {program.kind for program in programs}
+        if known is not None:
+            partner_mode, partner_reward_kind = known
+        elif len(kinds) == 1:
+            partner_mode, partner_reward_kind = "total", next(iter(kinds))
+        else:
+            partner_mode = "total"
+            partner_reward_kind = "cash" if "cash" in kinds else sorted(kinds)[0]
+    else:
+        if not isinstance(raw_partner_policy, dict):
+            raise CatalogError(f"{prefix}.partner_policy должен быть объектом")
+        _reject_unknown(raw_partner_policy, {"mode", "reward_kind"}, f"{prefix}.partner_policy")
+        partner_mode = _text(raw_partner_policy.get("mode"), f"{prefix}.partner_policy.mode")
+        partner_reward_kind = _text(
+            raw_partner_policy.get("reward_kind"), f"{prefix}.partner_policy.reward_kind"
+        )
+        assert partner_mode is not None and partner_reward_kind is not None
+        partner_mode = partner_mode.lower()
+        partner_reward_kind = partner_reward_kind.lower()
+    if partner_mode not in {"additional", "total"}:
+        raise CatalogError(f"{prefix}.partner_policy.mode должен быть additional или total")
+    if partner_reward_kind not in SUPPORTED_PROGRAM_KINDS:
+        raise CatalogError(f"{prefix}.partner_policy.reward_kind должен быть cash или points")
     return Card(
         id=card_id,
         name=name,
@@ -673,6 +724,8 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
         condition=condition,
         reward_limits=reward_limits,
         reward_programs=tuple(programs),
+        partner_policy=PartnerPolicy(partner_mode, partner_reward_kind),
+        partner_policy_explicit=raw_partner_policy is not None,
     )
 
 

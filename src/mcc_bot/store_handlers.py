@@ -177,7 +177,15 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         text += "\n\n<b>" + _channel_label(scope) + "</b>"
         for fact in scoped_facts:
             note = getattr(fact, "note", "")
-            text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
+            channel_notes = tuple(getattr(fact, "channel_notes", ()))
+            if channel_notes and len({value for _channel, value in channel_notes}) > 1:
+                rendered_notes = " · ".join(
+                    f"{_channel_choice_label(channel)} {escape(value) if value else 'без подписи'}"
+                    for channel, value in channel_notes
+                )
+                text += f"\n• MCC {fact.mcc} — {rendered_notes}"
+            else:
+                text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
             if scope == "both":
                 channel_matches = {
                     channel: _resolved_matches(context, brand.id, channel, fact.mcc)
@@ -227,6 +235,21 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 )
     if not facts:
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
+        partners = context.application.bot_data.get("partners")
+        offers = partners.list_active_offers(brand.id) if partners is not None else ()
+        if offers:
+            cards = {card.id: card for card in context.application.bot_data["catalog"].cards}
+            text += "\n\n<b>🎁 Партнёрская выгода</b>"
+            for offer, tier in offers:
+                card = cards.get(offer.card_id)
+                card_name = card.name if card else offer.card_id
+                reward = "баллами" if offer.reward_kind == "points" else "деньгами"
+                mode = "дополнительно" if offer.mode == "additional" else "итоговая выгода"
+                value = format(tier.value.normalize(), "f").replace(".", ",")
+                text += f"\n• {escape(card_name)} — {value}% {reward} · {mode}"
+                if offer.conditions:
+                    text += f"\n  {escape(offer.conditions)}"
+            text += "\n\n⚠️ MCC магазина пока не указан; перед оплатой проверьте его в банке."
     text += f"\n\n<i>{_WARNING}</i>"
     if private:
         rows.append(
@@ -255,11 +278,21 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         )
     if navigation:
         rows.append(navigation)
-    if admin:
+    if private:
         rows.append(
             [
                 InlineKeyboardButton(
                     "✏️ Редактировать магазин", callback_data=f"community:edit:{brand.id}"
+                )
+            ]
+        )
+    pending = _pending_for_brand(context, brand.id)
+    if pending:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"⚠️ Неподтверждённые предложения · {len(pending)}",
+                    callback_data=f"community:pending:{brand.id}",
                 )
             ]
         )
@@ -277,6 +310,163 @@ def _search_entities(repository: StoreRepository, query: str):
     )
     # Compatibility with repositories that used to mix exact and partial rows.
     return (exact or matches), tuple(result.suggestions)
+
+
+def _effect_brand_ids(context, effect: dict) -> set[int]:
+    """Resolve confirmed source and target stores touched by one pending effect."""
+
+    payload = effect["payload"]
+    result = {payload["brand_id"]} if isinstance(payload.get("brand_id"), int) else set()
+    repository = context.application.bot_data["stores"]
+    if isinstance(payload.get("merchant_id"), int):
+        brand = _brand_for_merchant(repository, payload["merchant_id"])
+        if brand:
+            result.add(brand.id)
+    if isinstance(payload.get("offer_id"), int):
+        partners = context.application.bot_data.get("partners")
+        offer = partners.get_offer(payload["offer_id"], include_archived=True) if partners else None
+        if offer:
+            result.add(offer.brand_id)
+    return result
+
+
+def _pending_for_brand(context, brand_id: int) -> tuple[dict, ...]:
+    service = context.application.bot_data.get("community")
+    if service is None:
+        return ()
+    return tuple(
+        effect
+        for effect in service.pending_effects()
+        if brand_id in _effect_brand_ids(context, effect)
+    )
+
+
+def _pending_new_stores(context, query: str) -> tuple[dict, ...]:
+    """Return pending-only new stores, newest proposal winning the normalized name."""
+
+    service = context.application.bot_data.get("community")
+    if service is None:
+        return ()
+    needle = normalize_store_name(query)
+    by_name: dict[str, dict] = {}
+    for effect in service.pending_effects():
+        payload = effect["payload"]
+        if effect["kind"] != "mcc_save" or not isinstance(payload.get("name"), str):
+            continue
+        key = normalize_store_name(payload["name"])
+        if needle in key:
+            by_name[key] = effect
+    return tuple(by_name.values())
+
+
+def pending_overlay(context, brand_id: int) -> tuple[str, int, tuple[int, ...]]:
+    """Fold pending effects over confirmed data in creation order for public preview."""
+
+    repository = context.application.bot_data["stores"]
+    brand = _get_brand(repository, brand_id)
+    if brand is None:
+        raise ValueError("Магазин больше недоступен.")
+    facts: dict[tuple[str, str], str] = {}
+    for item in _brand_fact_groups(repository, brand_id):
+        for channel in item.channels:
+            note = dict(getattr(item, "channel_notes", ())).get(channel, item.note)
+            facts[(channel, item.mcc)] = note
+    partners = context.application.bot_data.get("partners")
+    offers: dict[tuple[str, str], dict] = {}
+    if partners is not None:
+        for offer, tier in partners.list_active_offers(brand_id):
+            offers[(offer.card_id, offer.channel)] = {
+                "card_id": offer.card_id,
+                "channel": offer.channel,
+                "value": format(tier.value.normalize(), "f"),
+                "conditions": offer.conditions,
+            }
+    name, aliases = brand.name, list(brand.aliases)
+    relevant = _pending_for_brand(context, brand_id)
+    for effect in relevant:
+        kind, payload = effect["kind"], effect["payload"]
+        source_ids = _effect_brand_ids(context, effect)
+        target_id = payload.get("brand_id")
+        if kind == "store_metadata" and target_id == brand_id:
+            name, aliases = payload["name"], list(payload.get("aliases", []))
+        elif kind == "mcc_delete" and brand_id in source_ids:
+            source = repository.get(payload["merchant_id"])
+            channels = payload.get("channels") or ([source.channel] if source else [])
+            for channel in channels:
+                facts.pop((channel, payload["mcc"]), None)
+        elif kind == "mcc_save":
+            if isinstance(payload.get("merchant_id"), int) and brand_id in source_ids:
+                source = repository.get(payload["merchant_id"])
+                channels = payload.get("channels") or ([source.channel] if source else [])
+                for channel in channels:
+                    facts.pop((channel, payload.get("old_mcc", payload["mcc"])), None)
+            if target_id == brand_id:
+                channels = (
+                    ("offline", "online")
+                    if payload["channel"] == "both"
+                    else (payload["channel"],)
+                )
+                for channel in channels:
+                    facts[(channel, payload["mcc"])] = payload.get("note", "")
+        elif kind == "partner_delete" and brand_id in source_ids and partners is not None:
+            offer = partners.get_offer(payload["offer_id"], include_archived=True)
+            if offer:
+                offers.pop((offer.card_id, offer.channel), None)
+        elif kind == "partner_save":
+            if isinstance(payload.get("offer_id"), int) and brand_id in source_ids and partners:
+                old = partners.get_offer(payload["offer_id"], include_archived=True)
+                if old:
+                    offers.pop((old.card_id, old.channel), None)
+            if target_id == brand_id:
+                offers[(payload["card_id"], payload["channel"])] = payload
+    lines = [f"🏪 <b>{escape(name)}</b>"]
+    if aliases:
+        lines.append("Другие названия: " + escape(", ".join(aliases)))
+    for channel in ("offline", "online"):
+        channel_facts = sorted(
+            ((mcc, note) for (item_channel, mcc), note in facts.items() if item_channel == channel)
+        )
+        if channel_facts:
+            lines.extend(("", f"<b>{_channel_label(channel)}</b>"))
+            lines.extend(
+                f"• MCC {mcc}" + (f" — {escape(note)}" if note else "")
+                for mcc, note in channel_facts
+            )
+    if offers:
+        cards = {card.id: card for card in context.application.bot_data["catalog"].cards}
+        lines.extend(("", "<b>🎁 Партнёрская выгода</b>"))
+        for payload in offers.values():
+            card = cards.get(payload["card_id"])
+            lines.append(
+                f"• {escape(card.name if card else payload['card_id'])} — "
+                f"{escape(str(payload['value']).replace('.', ','))}%"
+            )
+    if not facts:
+        lines.extend(("", "⚠️ MCC магазина пока не указан."))
+    lines.extend(("", "<i>Так будет выглядеть результат, если принять все предложения.</i>"))
+    return "\n".join(lines), len(relevant), tuple(effect["id"] for effect in relevant)
+
+
+def pending_new_overlay(context, proposal_id: int) -> tuple[str, tuple[int, ...]]:
+    """Render a pending-only new store without exposing its author publicly."""
+
+    effects = context.application.bot_data["community"].pending_effects()
+    target = next((item for item in effects if item["id"] == proposal_id), None)
+    if target is None or target["kind"] != "mcc_save" or "name" not in target["payload"]:
+        raise ValueError("Предложение больше недоступно.")
+    payload = target["payload"]
+    channels = (
+        ("offline", "online") if payload["channel"] == "both" else (payload["channel"],)
+    )
+    lines = [f"🏪 <b>{escape(payload['name'])}</b>"]
+    for channel in channels:
+        lines.extend(
+            ("", f"<b>{_channel_label(channel)}</b>", f"• MCC {payload['mcc']}")
+        )
+    lines.extend(
+        ("", "<i>Магазин появится в подтверждённых данных после проверки предложения.</i>")
+    )
+    return "\n".join(lines), (proposal_id,)
 
 
 def _search_view(repository, query, page, token):
@@ -334,10 +524,12 @@ async def search_stores(
         return
     repository: StoreRepository = context.application.bot_data["stores"]
     matches, suggestions = _search_entities(repository, query)
+    pending_new = _pending_new_stores(context, query)
     private = bool(update.effective_chat and update.effective_chat.type == "private")
     if (
         not matches
         and not suggestions
+        and not pending_new
         and private
         and context.application.bot_data.get("community")
     ):
@@ -345,7 +537,7 @@ async def search_stores(
 
         await begin_contribution(update, context, name=query)
         return
-    if len(matches) == 1:
+    if len(matches) == 1 and not pending_new:
         text, keyboard = _brand_view(
             repository,
             matches[0],
@@ -361,6 +553,18 @@ async def search_stores(
             searches.pop(next(iter(searches)))
         searches[token] = query
         text, keyboard = _search_view(repository, query, 0, token)
+        if pending_new:
+            text += "\n\n⚠️ Есть неподтверждённые магазины:"
+            pending_rows = [
+                [
+                    InlineKeyboardButton(
+                        item["payload"]["name"],
+                        callback_data=f"community:pending_new:{item['id']}",
+                    )
+                ]
+                for item in pending_new
+            ]
+            keyboard = InlineKeyboardMarkup([*keyboard.inline_keyboard[:-1], *pending_rows])
     await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 

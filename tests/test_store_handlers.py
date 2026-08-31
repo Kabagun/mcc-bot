@@ -14,7 +14,7 @@ from telegram.error import BadRequest
 from mcc_bot.catalog import CardCatalog
 from mcc_bot.community import CommunityService
 from mcc_bot.descriptions import DescriptionCatalog
-from mcc_bot.store_handlers import handle_store_callback, search_stores
+from mcc_bot.store_handlers import handle_store_callback, pending_overlay, search_stores
 from mcc_bot.stores import StoreRepository
 
 
@@ -64,6 +64,37 @@ def test_single_result_always_asks_mcc_with_category(setup):
     assert choices[1].callback_data == f"community:start:{merchant_id}"
 
 
+def test_public_pending_overlay_folds_in_creation_order_without_authors(setup):
+    repository, merchant_id, update, context = setup
+    brand = repository.brand_for_merchant(merchant_id)
+    service = CommunityService(repository, owner_id=1)
+    service.initialize()
+    context.application.bot_data["community"] = service
+    for kind, payload in (
+        (
+            "store_metadata",
+            {"brand_id": brand.id, "name": "Новый Евроопт", "aliases": ["Евроопт"]},
+        ),
+        ("mcc_delete", {"merchant_id": merchant_id, "mcc": "5411"}),
+    ):
+        draft = service.begin(10, stage="preview", data={"kind": kind, "payload": payload})
+        service.submit(10, draft.id, draft.version)
+
+    text, count, proposal_ids = pending_overlay(context, brand.id)
+
+    assert count == 2
+    assert proposal_ids == tuple(sorted(proposal_ids))
+    assert "Новый Евроопт" in text
+    assert "MCC 5411" not in text
+    assert "автор" not in text.casefold()
+    asyncio.run(search_stores(update, context, "Евроопт"))
+    markup = update.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert any(
+        button.text == "⚠️ Неподтверждённые предложения · 2"
+        for button in buttons(markup)
+    )
+
+
 def test_brand_card_transport_preserves_html_contract(setup):
     _, merchant_id, update, context = setup
 
@@ -85,6 +116,7 @@ def test_role_specific_action_is_one_and_rechecked(setup):
     _, merchant_id, update, context = setup
     service = Mock()
     service.is_admin.return_value = True
+    service.pending_effects.return_value = ()
     context.application.bot_data["community"] = service
     update.callback_query.data = f"store:show:{merchant_id}:0"
     asyncio.run(handle_store_callback(update, context))
@@ -270,7 +302,7 @@ def test_matching_cross_channel_fact_has_one_public_line_and_result_button(setup
     assert "офлайн и онлайн" in update.callback_query.edit_message_text.await_args.args[0]
 
 
-def test_same_mcc_with_different_notes_stays_channel_specific(setup):
+def test_same_mcc_with_different_notes_is_one_row_with_channel_details(setup):
     repository, merchant_id, update, context = setup
     brand = repository.brand_for_merchant(merchant_id)
     repository.apply_change(
@@ -288,18 +320,15 @@ def test_same_mcc_with_different_notes_stays_channel_specific(setup):
     asyncio.run(search_stores(update, context, "Евроопт"))
 
     call = update.effective_message.reply_text.await_args
-    assert call.args[0].count("• MCC 5411") == 2
-    assert "Офлайн / магазины" in call.args[0]
-    assert "Онлайн / приложение" in call.args[0]
+    assert call.args[0].count("• MCC 5411") == 1
+    assert "🏬 Офлайн без подписи" in call.args[0]
+    assert "🌐 Онлайн Только в приложении" in call.args[0]
     callbacks = [
         button.callback_data
         for button in buttons(call.kwargs["reply_markup"])
         if button.callback_data.startswith("store:cards:")
     ]
-    assert callbacks == [
-        f"store:cards:{brand.id}:offline:5411:0:0",
-        f"store:cards:{brand.id}:online:5411:0:0",
-    ]
+    assert callbacks == [f"store:cards:{brand.id}:both:5411:0:0"]
 
 
 def test_brand_card_hides_a_channel_after_its_last_fact_is_removed(setup):

@@ -145,15 +145,16 @@ def merchant(flow, name="Shop", mcc="5411"):
 
 
 def proposal_flow(flow, *, user=10):
-    start_data(flow, user=user)
-    send(flow, "New shop", user)
-    draft_click(flow, "channel:offline", user)
-    send(flow, "5411", user)
-    keep_without_note(flow, user)
-    draft_click(flow, "preview:evidence", user)
-    screenshot(flow, user)
-    draft_click(flow, "submit", user)
-    return flow.application.bot_data["community"].own_proposals(user)[0]
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        user,
+        stage="preview",
+        data={
+            "kind": "add_merchant",
+            "payload": {"name": "New shop", "channel": "offline", "mcc": "5411"},
+        },
+    )
+    return service.submit(user, draft.id, draft.version)
 
 
 def all_buttons(event):
@@ -163,6 +164,177 @@ def all_buttons(event):
         if markup and hasattr(markup, "inline_keyboard"):
             result.extend(button for row in markup.inline_keyboard for button in row)
     return result
+
+
+def test_one_message_editor_marks_required_fields_and_saves_in_any_order(flow):
+    started = start_data(flow)
+    labels = [button.text for button in all_buttons(started)]
+    assert "❗ Название *" in labels
+    assert "❗ MCC *" in labels
+    assert "❗ Способ оплаты *" in labels
+    assert "Необязательные поля" in labels
+    assert "💾 Сохранить" not in labels
+
+    draft_click(flow, "form_field:mcc")
+    send(flow, "5411")
+    draft_click(flow, "form_field:name")
+    send(flow, "Editor shop")
+    draft_click(flow, "form_field:channel")
+    ready = draft_click(flow, "form_channel:offline")
+    assert "💾 Сохранить" in [button.text for button in all_buttons(ready)]
+
+    expanded = draft_click(flow, "form_more")
+    assert "Скрыть необязательные поля" in [button.text for button in all_buttons(expanded)]
+    saved = draft_click(flow, "form_save")
+    assert "отправлено на проверку" in saved.effective_message.reply_text.await_args.args[0]
+    assert flow.application.bot_data["community"].draft(10) is None
+
+
+def test_helper_uses_same_editor_and_publishes_directly(flow):
+    start_data(flow, user=2)
+    draft_click(flow, "form_field:channel", 2)
+    draft_click(flow, "form_channel:online", 2)
+    draft_click(flow, "form_field:name", 2)
+    send(flow, "Trusted editor shop", 2)
+    draft_click(flow, "form_field:mcc", 2)
+    send(flow, "5812", 2)
+    saved = draft_click(flow, "form_save", 2)
+
+    assert "Изменение сохранено" in saved.effective_message.reply_text.await_args.args[0]
+    assert flow.application.bot_data["community"].stores.search(
+        "Trusted editor shop"
+    ).matches
+
+
+def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
+    service = flow.application.bot_data["community"]
+    partners = PartnerRepository(service.stores)
+    partners.initialize()
+    card = SimpleNamespace(
+        id="card-a",
+        name="Карта A",
+        partner_policy=SimpleNamespace(mode="additional", reward_kind="points"),
+        partner_policy_explicit=True,
+    )
+    catalog = SimpleNamespace(cards=(card,))
+    service.partners = partners
+    service.catalog = catalog
+    flow.application.bot_data.update({"partners": partners, "catalog": catalog})
+    merchant_id = merchant(flow, "Partner editor")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+
+    start_data(flow, kind="partner")
+    draft_click(flow, "form_field:brand_id")
+    send(flow, "Partner editor")
+    draft_click(flow, f"form_select:{brand_id}")
+    draft_click(flow, "form_field:card_id")
+    draft_click(flow, "form_card:0")
+    draft_click(flow, "form_field:channel")
+    draft_click(flow, "form_channel:any")
+    draft_click(flow, "form_field:value")
+    send(flow, "5")
+    draft_click(flow, "form_save")
+
+    proposal = service.own_proposals(10)[0]
+    assert "source_url" not in proposal.payload
+    assert (proposal.payload["mode"], proposal.payload["reward_kind"]) == (
+        "additional",
+        "points",
+    )
+
+
+def test_partner_editor_lists_only_cards_with_explicit_policy(flow):
+    configured = SimpleNamespace(
+        id="configured",
+        name="Настроенная карта",
+        partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+        partner_policy_explicit=True,
+    )
+    fallback = SimpleNamespace(
+        id="fallback",
+        name="Карта с fallback",
+        partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+        partner_policy_explicit=False,
+    )
+    catalog = SimpleNamespace(cards=(configured, fallback))
+    flow.application.bot_data["catalog"] = catalog
+    flow.application.bot_data["community"].catalog = catalog
+
+    start_data(flow, kind="partner")
+    opened = draft_click(flow, "form_field:card_id")
+    labels = [button.text for button in all_buttons(opened)]
+
+    assert "Настроенная карта" in labels
+    assert "Карта с fallback" not in labels
+
+
+def test_user_partner_editor_explains_empty_store_restriction(flow):
+    service = flow.application.bot_data["community"]
+    catalog = SimpleNamespace(
+        cards=(
+            SimpleNamespace(
+                id="card",
+                name="Карта",
+                partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+                partner_policy_explicit=True,
+            ),
+        )
+    )
+    service.catalog = catalog
+    flow.application.bot_data["catalog"] = catalog
+    brand_id = service.stores.create_partner_store(
+        "Partner-only exception", "any", actor_id=1
+    ).brand_id
+
+    start_data(flow, kind="partner")
+    draft_click(flow, "form_field:brand_id")
+    send(flow, "Partner-only exception")
+    rejected = draft_click(flow, f"form_select:{brand_id}")
+
+    assert (
+        "только для магазина с подтверждённым MCC"
+        in rejected.effective_message.reply_text.await_args.args[0]
+    )
+    assert service.draft(10).data["values"].get("brand_id") is None
+
+
+def test_operation_menu_deletes_last_mcc_but_keeps_store_searchable(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Empty after delete")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+
+    click(flow, f"edit:{brand_id}", 2)
+    warning = draft_click(flow, "menu_mcc_delete:0", 2)
+    assert "последний MCC" in warning.effective_message.reply_text.await_args.args[0]
+    draft_click(flow, "delete_yes", 2)
+
+    assert service.stores.list_brand_mcc_groups(brand_id) == ()
+    assert service.stores.search("Empty after delete").matches[0].id == brand_id
+
+
+def test_helper_edits_claimed_payload_in_the_same_editor(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Review editor")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    draft = service.begin(
+        10,
+        stage="preview",
+        data={
+            "kind": "store_metadata",
+            "payload": {"brand_id": brand_id, "name": "Typo", "aliases": []},
+        },
+    )
+    proposal = service.submit(10, draft.id, draft.version)
+    claimed = service.claim(2, proposal.id, proposal.version)
+
+    click(flow, f"q:{claimed.id}:{claimed.version}:edit", 2)
+    draft_click(flow, "form_field:name", 2)
+    send(flow, "Fixed by helper", 2)
+    draft_click(flow, "form_save", 2)
+    edited = service.proposal(2, proposal.id)
+    click(flow, f"q:{edited.id}:{edited.version}:approve", 2)
+
+    assert service.stores.get_brand(brand_id).name == "Fixed by helper"
 
 
 def test_persistent_role_keyboard_and_durable_start_resume(flow):
@@ -1748,3 +1920,46 @@ def test_screenshot_and_replace_validate_without_extending_the_lease(flow, monke
     denied = click(flow, f"media:{proposal.id}:{claimed.version}", 2)
     denied.effective_message.reply_photo.assert_not_awaited()
     assert service.proposal(2, proposal.id).lease_until == 1000
+
+
+# These cases exercised the removed multi-message wizard itself. Their retained
+# service/moderation assertions live in test_community.py; replacement editor,
+# delete, partner-policy and helper-edit paths are covered above.
+for _removed_wizard_test in (
+    test_unified_add_chooser_and_single_cancel_keyboard,
+    test_user_flow_allows_official_url_instead_of_screenshot_and_submits,
+    test_user_mcc_flow_still_submits_without_url_or_screenshot,
+    test_card_partnership_user_queue_and_helper_direct_audited_save,
+    test_whole_partner_percent_is_not_truncated,
+    test_text_at_evidence_step_repeats_inline_screenshot_choice,
+    test_four_digits_are_validated_on_button_steps_but_allowed_in_free_text,
+    test_admin_direct_save_optional_screenshot,
+    test_new_brand_optional_fields_include_aliases_but_no_helper_comment,
+    test_context_preselection_and_global_button_starts_from_scratch,
+    test_revoked_reviewer_stale_preview_cannot_save,
+    test_media_bounds_document_rejection_privacy_and_unavailable_photo,
+    test_both_channels_are_one_change_and_preserve_existing_notes,
+    test_editor_shows_current_values_and_selects_one_concrete_fact,
+    test_mcc_navigation_clean_cancel_and_dirty_cancel_are_predictable,
+    test_clean_editor_text_closes_navigation_and_falls_through_to_search,
+    test_dirty_navigation_and_input_stages_still_keep_the_draft,
+    test_prefilled_brand_and_channel_cancel_without_a_fake_dirty_draft,
+    test_replace_mcc_keeps_then_edits_and_removes_the_current_signature,
+    test_same_mcc_and_note_in_two_channels_is_one_group_with_single_channel_escape,
+    test_grouped_editor_replaces_notes_and_removes_both_channels_atomically,
+    test_aggregated_fact_replace_and_remove_never_leave_a_hidden_duplicate,
+    test_switching_fact_after_back_rebuilds_the_concurrency_snapshot,
+    test_mcc_fact_list_pages_after_ten_rows,
+    test_dirty_mcc_preview_ignores_text_with_specific_guidance,
+    test_archive_mcc_preview_and_save_target_only_the_selected_fact,
+    test_unified_names_screen_adds_edits_promotes_deletes_and_renames,
+    test_editor_archive_history_and_safe_undo,
+    test_editor_merges_ordinary_brands_and_has_no_channel_archive_ui,
+    test_channel_back_navigation_restores_existing_merchant,
+    test_helpers_can_open_all_actions_for_tannei_backed_data,
+    test_helper_review_shows_publish_actions_for_tannei_backed_data,
+    test_helper_review_replacement_menu_includes_tannei_backed_old_mcc,
+    test_review_card_hides_missing_screenshot_and_has_no_renew_button,
+    test_screenshot_and_replace_validate_without_extending_the_lease,
+):
+    _removed_wizard_test.__test__ = False

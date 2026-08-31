@@ -94,6 +94,7 @@ class BrandMccGroup:
     note: str
     merchant_ids: tuple[int, ...]
     evidence_count: int
+    channel_notes: tuple[tuple[str, str], ...] = ()
 
     @property
     def channel(self) -> str:
@@ -947,6 +948,18 @@ class StoreRepository:
             return None
         return self._brand(row)
 
+    def list_brands(self, *, connection=None, include_archived: bool = False) -> tuple[Brand, ...]:
+        """List brands in stable ID order, including searchable empty stores."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.list_brands(connection=conn, include_archived=include_archived)
+        rows = connection.execute(
+            "SELECT * FROM store_brands WHERE (? OR archived=0) ORDER BY id",
+            (include_archived,),
+        )
+        return tuple(self._brand(row) for row in rows)
+
     def brand_for_merchant(
         self, merchant_id: int, *, connection=None, include_archived=False
     ) -> Brand | None:
@@ -1230,19 +1243,22 @@ class StoreRepository:
         if connection is None:
             with self.connection() as conn:
                 return self.list_brand_mcc_groups(brand_id, connection=conn)
-        grouped: dict[tuple[str, str], list[BrandMccFact]] = {}
+        grouped: dict[str, list[BrandMccFact]] = {}
         for fact in self.list_brand_mcc(brand_id, connection=connection):
-            grouped.setdefault((fact.mcc, fact.note), []).append(fact)
+            grouped.setdefault(fact.mcc, []).append(fact)
         result = []
-        for (mcc, note), facts in grouped.items():
+        for mcc, facts in grouped.items():
             facts.sort(key=lambda fact: (0 if fact.channel == "offline" else 1, fact.mcc))
+            notes = tuple((fact.channel, fact.note) for fact in facts)
+            unique_notes = {fact.note for fact in facts}
             result.append(
                 BrandMccGroup(
                     tuple(fact.channel for fact in facts),
                     mcc,
-                    note,
+                    next(iter(unique_notes)) if len(unique_notes) == 1 else "",
                     tuple(merchant_id for fact in facts for merchant_id in fact.merchant_ids),
                     sum(fact.evidence_count for fact in facts),
+                    notes,
                 )
             )
         result.sort(
@@ -2023,6 +2039,56 @@ class StoreRepository:
         connection.execute("RELEASE store_change")
         return result
 
+    def create_partner_store(
+        self,
+        name: str,
+        channel: str,
+        *,
+        actor_id: int,
+        connection=None,
+    ) -> ChangeResult:
+        """Create a searchable store without inventing an MCC for a trusted partnership."""
+
+        branch = "online" if channel == "online" else "offline"
+        return self.apply_change(
+            "add_merchant", {"name": name, "channel": branch}, actor_id, connection=connection
+        )
+
+    def save_mcc(
+        self,
+        payload: dict,
+        *,
+        actor_id: int,
+        connection=None,
+    ) -> ChangeResult:
+        """Create or replace/move one logical MCC in a single audited transaction."""
+
+        source_id = payload.get("merchant_id")
+        if source_id is not None:
+            return self.apply_change("move_mcc", payload, actor_id, connection=connection)
+        target_brand = payload.get("brand_id")
+        channel = payload["channel"]
+        if channel == "both":
+            values = {key: value for key, value in payload.items() if key != "channel"}
+            return self.apply_change("add_mcc_both", values, actor_id, connection=connection)
+        if target_brand is None:
+            return self.apply_change("add_merchant", payload, actor_id, connection=connection)
+        members = self.list_brand_members(target_brand, channel=channel, connection=connection)
+        if not members:
+            brand = self.get_brand(target_brand, connection=connection)
+            if brand is None:
+                raise StoreError("Магазин не найден")
+            values = {**payload, "name": brand.name}
+            return self.apply_change("add_merchant", values, actor_id, connection=connection)
+        values = {
+            "merchant_id": members[0].id,
+            "mcc": payload["mcc"],
+            "note": payload.get("note", ""),
+        }
+        if payload.get("evidence"):
+            values["evidence"] = payload["evidence"]
+        return self.apply_change("add_mcc", values, actor_id, connection=connection)
+
     def _apply_change(self, kind, payload, actor_id, connection):
         if not isinstance(payload, dict):
             raise StoreError("Изменение должно быть объектом")
@@ -2064,6 +2130,8 @@ class StoreRepository:
                 self._harmonize_brand_notes(connection, changes, brand_id)
         elif kind == "add_mcc_both":
             merchant_id, brand_id = self._add_mcc_both(connection, changes, payload)
+        elif kind == "move_mcc":
+            merchant_id, brand_id = self._move_mcc(connection, changes, payload)
         elif kind in {
             "rename_brand",
             "brand_aliases",
@@ -2207,6 +2275,79 @@ class StoreRepository:
                 "UPDATE store_audit SET reverted_by=? WHERE id=?", (cursor.lastrowid, reverted)
             )
         return ChangeResult(cursor.lastrowid, merchant_id, brand_id)
+
+    def _move_mcc(self, connection, changes, payload):
+        """Move/replace one logical MCC while leaving empty source brands searchable."""
+
+        source_id = int(payload["merchant_id"])
+        source = self._required(connection, source_id)
+        source_brand_id = self._brand_id_for_merchant(connection, source_id)
+        old_mcc = normalize_mcc(payload["old_mcc"])
+        source_ids = self._fact_group_merchants(
+            connection, payload, source, source_brand_id, old_mcc
+        )
+        target_brand_id = int(payload.get("brand_id", source_brand_id))
+        self._required_brand(connection, target_brand_id)
+        target_mcc = normalize_mcc(payload["mcc"])
+        target_channel = payload.get("channel", source["channel"])
+        channels = (
+            ("offline", "online")
+            if target_channel == "both"
+            else (_channel(target_channel),)
+        )
+
+        if (
+            target_brand_id == source_brand_id
+            and tuple(payload.get("channels", [source["channel"]])) == channels
+            and target_mcc == old_mcc
+        ):
+            for target_id in source_ids:
+                self._edit_mcc_note(
+                    connection, changes, target_id, old_mcc, payload.get("note", "")
+                )
+            return source_id, source_brand_id
+
+        for target_id in source_ids:
+            self._archive_fact(connection, changes, target_id, old_mcc)
+
+        anchor = None
+        brand = self._required_brand(connection, target_brand_id)
+        for channel in channels:
+            members = self.list_brand_members(
+                target_brand_id, channel=channel, connection=connection
+            )
+            target_id = members[0].id if members else self._insert(
+                connection,
+                changes,
+                "store_merchants",
+                name=brand["name"],
+                channel=channel,
+                aliases_json="[]",
+            )
+            if not members:
+                self._attach_brand(connection, changes, target_id, target_brand_id)
+            existing = connection.execute(
+                """SELECT 1 FROM store_facts WHERE merchant_id=? AND mcc=? AND archived=0""",
+                (target_id, target_mcc),
+            ).fetchone()
+            if existing:
+                raise StoreError("Такой MCC уже есть у выбранного магазина и способа оплаты")
+            fact_id = self._fact(
+                connection,
+                changes,
+                target_id,
+                target_mcc,
+                note=payload.get("note", ""),
+            )
+            evidence = payload.get("evidence")
+            key = None
+            if isinstance(evidence, dict) and evidence.get("submission_id") is not None:
+                key = f"{evidence['submission_id']}:{channel}:{target_id}"
+            self._evidence(connection, changes, fact_id, evidence, key=key)
+            changes.touch("store_facts", fact_id)
+            anchor = target_id if anchor is None else anchor
+        self._harmonize_brand_notes(connection, changes, target_brand_id)
+        return int(anchor or source_id), target_brand_id
 
     def _add_mcc_both(self, connection, changes, payload):
         """Add one MCC to real offline and online branches in a single audit."""

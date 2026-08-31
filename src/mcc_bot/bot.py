@@ -34,7 +34,7 @@ from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
 from .partner_rewards import PartnerRepository
 from .store_handlers import handle_store_callback, search_stores
-from .stores import Brand, StoreRepository, normalize_store_name
+from .stores import Brand, StoreRepository
 from .users import UserRegistry
 
 LOGGER = logging.getLogger(__name__)
@@ -187,28 +187,20 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     value = message.text.strip()
     if not value:
         await unknown_command(update, context)
-    elif value.isdecimal():
-        if not value.isascii() or len(value) != 4:
-            await _reply(update, "MCC должен состоять из четырёх цифр, например 5411")
-        else:
-            await _route_four_digit_text(update, context, value)
+    elif value.isascii() and value.isdecimal() and len(value) == 4:
+        await _route_four_digit_text(update, context, value)
     else:
         await search_stores(update, context, value)
 
 
 def _exact_brand_matches(context: ContextTypes.DEFAULT_TYPE, query: str) -> tuple[Brand, ...]:
-    """Return only exact canonical brand-name or alias matches for a numeric query."""
+    """Return store matches before deciding whether a numeric query is also an MCC."""
 
     repository: StoreRepository | None = context.application.bot_data.get("stores")
     if repository is None:
         return ()
-    needle = normalize_store_name(query)
     result = repository.search(query, limit=100)
-    return tuple(
-        brand
-        for brand in result.matches
-        if needle in {normalize_store_name(value) for value in (brand.name, *brand.aliases)}
-    )
+    return tuple(result.matches)
 
 
 def _remember_store_search(context: ContextTypes.DEFAULT_TYPE, query: str) -> str:
@@ -265,21 +257,7 @@ async def _route_four_digit_text(
         )
         return
 
-    token = _remember_store_search(context, value)
-    await message.reply_text(
-        f"MCC {value} не найден в справочнике. Проверьте код.\n\n"
-        f"Если «{value}» — название магазина, его можно добавить.",  # noqa: RUF001
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        f"➕ Добавить магазин «{value}»",  # noqa: RUF001
-                        callback_data=f"community:start:0:{token}",
-                    )
-                ]
-            ]
-        ),
-    )
+    await search_stores(update, context, value)
 
 
 async def lookup_mcc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -391,6 +369,7 @@ def build_application(settings: BotSettings) -> Application:
         owner_id=settings.owner_telegram_id,
         allowed_mccs=descriptions.labels,
         partners=partners,
+        catalog=catalog,
     )
     community.initialize()
     application = (

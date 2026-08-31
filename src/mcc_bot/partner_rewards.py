@@ -128,6 +128,7 @@ class PartnerExclusion:
 
     id: int
     source_key: str | None
+    offer_id: int | None
     brand_id: int | None
     card_id: str
     reward_kind: str
@@ -300,6 +301,7 @@ class PartnerRepository:
                 """CREATE TABLE IF NOT EXISTS partner_exclusions (
                     id INTEGER PRIMARY KEY,
                     source_key TEXT UNIQUE,
+                    offer_id INTEGER REFERENCES partner_offers(id),
                     brand_id INTEGER REFERENCES store_brands(id),
                     card_id TEXT NOT NULL,
                     reward_kind TEXT NOT NULL CHECK(reward_kind IN ('cash','points')),
@@ -385,6 +387,15 @@ class PartnerRepository:
                     "ALTER TABLE partner_exclusions "
                     "ADD COLUMN suppress_base INTEGER NOT NULL DEFAULT 0"
                 )
+            if "offer_id" not in exclusion_columns:
+                connection.execute(
+                    "ALTER TABLE partner_exclusions "
+                    "ADD COLUMN offer_id INTEGER REFERENCES partner_offers(id)"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS partner_exclusions_offer "
+                "ON partner_exclusions(offer_id,archived)"
+            )
 
     @staticmethod
     def _actor(actor_id: int) -> None:
@@ -428,6 +439,7 @@ class PartnerRepository:
         return PartnerExclusion(
             id=row["id"],
             source_key=row["source_key"],
+            offer_id=row["offer_id"],
             brand_id=row["brand_id"],
             card_id=row["card_id"],
             reward_kind=row["reward_kind"],
@@ -526,7 +538,12 @@ class PartnerRepository:
             offer = self._offer_from_row(current, row)
             self._audit(current, "offer", offer_id, "create", actor_id, asdict(offer))
             for exclusion in payload.exclusions:
-                self.create_exclusion(exclusion, actor_id=actor_id, connection=current)
+                self.create_exclusion(
+                    exclusion,
+                    actor_id=actor_id,
+                    connection=current,
+                    offer_id=offer_id,
+                )
             return offer
 
     def update_offer(
@@ -565,6 +582,18 @@ class PartnerRepository:
             )
             current.execute("DELETE FROM partner_offer_tiers WHERE offer_id=?", (offer_id,))
             self._insert_tiers(current, offer_id, payload.tiers)
+            current.execute(
+                """UPDATE partner_exclusions SET archived=1,updated_by=?,
+                updated_at=CURRENT_TIMESTAMP WHERE offer_id=? AND archived=0""",
+                (actor_id, offer_id),
+            )
+            for exclusion in payload.exclusions:
+                self.create_exclusion(
+                    exclusion,
+                    actor_id=actor_id,
+                    connection=current,
+                    offer_id=offer_id,
+                )
             result = self.get_offer(offer_id, include_archived=True, connection=current)
             assert result is not None
             self._audit(
@@ -594,6 +623,11 @@ class PartnerRepository:
             current.execute(
                 """UPDATE partner_offers SET archived=1,updated_by=?,
                 updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (actor_id, offer_id),
+            )
+            current.execute(
+                """UPDATE partner_exclusions SET archived=1,updated_by=?,
+                updated_at=CURRENT_TIMESTAMP WHERE offer_id=? AND archived=0""",
                 (actor_id, offer_id),
             )
             self._audit(current, "offer", offer_id, "delete", actor_id, asdict(offer))
@@ -671,20 +705,26 @@ class PartnerRepository:
         actor_id: int,
         connection: sqlite3.Connection | None = None,
         source_key: str | None = None,
+        offer_id: int | None = None,
     ) -> PartnerExclusion:
         """Create one store/card exclusion."""
 
         _validate_exclusion(payload)
         self._actor(actor_id)
         with self._write(connection) as current:
+            if offer_id is not None and current.execute(
+                "SELECT 1 FROM partner_offers WHERE id=?", (offer_id,)
+            ).fetchone() is None:
+                raise PartnerRewardError("Родительское партнёрство не найдено")
             try:
                 cursor = current.execute(
                     """INSERT INTO partner_exclusions
-                    (source_key,brand_id,card_id,reward_kind,channel,mcc,starts_on,ends_on,
+                    (source_key,offer_id,brand_id,card_id,reward_kind,channel,mcc,starts_on,ends_on,
                      suppress_base,reason,source_url,created_by,updated_by)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         source_key,
+                        offer_id,
                         payload.brand_id,
                         payload.card_id.strip(),
                         payload.reward_kind,
@@ -738,6 +778,48 @@ class PartnerRepository:
                 values,
             ).fetchall()
             return tuple(self._exclusion_from_row(row) for row in rows)
+
+    def list_offer_exclusions(
+        self,
+        offer_id: int,
+        *,
+        include_archived: bool = False,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[PartnerExclusion, ...]:
+        """List only MCC exclusions owned by one editable partnership."""
+
+        with self._read(connection) as current:
+            suffix = "" if include_archived else " AND archived=0"
+            rows = current.execute(
+                f"SELECT * FROM partner_exclusions WHERE offer_id=?{suffix} ORDER BY id",
+                (offer_id,),
+            ).fetchall()
+            return tuple(self._exclusion_from_row(row) for row in rows)
+
+    def save_offer(
+        self,
+        offer_id: int | None,
+        payload: PartnerOfferInput,
+        *,
+        actor_id: int,
+        connection: sqlite3.Connection | None = None,
+    ) -> PartnerOffer:
+        """Create or atomically replace one offer and its linked exclusions."""
+
+        if offer_id is None:
+            return self.create_offer(payload, actor_id=actor_id, connection=connection)
+        return self.update_offer(offer_id, payload, actor_id=actor_id, connection=connection)
+
+    def delete_offer_with_exclusions(
+        self,
+        offer_id: int,
+        *,
+        actor_id: int,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        """Soft-delete one offer and its linked editable exclusions."""
+
+        return self.delete_offer(offer_id, actor_id=actor_id, connection=connection)
 
     def update_exclusion(
         self,

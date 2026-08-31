@@ -255,67 +255,6 @@ COMBO_EXCLUSIONS = {
     "9701",
     "9702",
 }
-SPRAUNAYA_MCCS = {
-    "2741",
-    "4111",
-    "4112",
-    "4121",
-    "4131",
-    "4511",
-    "4722",
-    "5039",
-    "5047",
-    "5111",
-    "5122",
-    "5131",
-    "5191",
-    "5193",
-    "5261",
-    "5292",
-    "5295",
-    "5411",
-    "5541",
-    "5542",
-    "5621",
-    "5641",
-    "5651",
-    "5655",
-    "5712",
-    "5811",
-    "5812",
-    "5813",
-    "5814",
-    "5912",
-    "5941",
-    "5942",
-    "5945",
-    "5949",
-    "5970",
-    "5975",
-    "5976",
-    "5996",
-    "7011",
-    "7221",
-    "7297",
-    "7298",
-    "7523",
-    "7832",
-    "7932",
-    "7933",
-    "7941",
-    "7991",
-    "7996",
-    "7997",
-    "7998",
-    "8011",
-    "8021",
-    "8043",
-    "8062",
-    "8071",
-    "8099",
-    "8299",
-    "8351",
-}
 SPRAUNAYA_EXCLUSIONS = {
     "4814",
     "4900",
@@ -337,6 +276,7 @@ SUPPORTED_CARD_KEYS = {
     "name",
     "issuer",
     "emoji",
+    "partner_policy",
     "condition",
     "reward_limits",
     "reward_programs",
@@ -378,7 +318,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2887
+        == 2828
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -413,10 +353,26 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     assert set(statuskarta["reward_programs"][0]["excluded_mccs"]) == STATUSKARTA_EXCLUSIONS
     assert set(bnb_1_2_3["reward_programs"][0]["excluded_mccs"]) == BNB_1_2_3_EXCLUSIONS
     spraunaya_program = spraunaya["reward_programs"][0]
-    assert len(spraunaya_program["offers"]) == len(SPRAUNAYA_MCCS) == 59
-    assert {offer["mcc"] for offer in spraunaya_program["offers"]} == SPRAUNAYA_MCCS
-    assert {offer["value"] for offer in spraunaya_program["offers"]} == {1.11}
+    assert spraunaya_program.get("offers", []) == []
+    assert spraunaya_program["default"] == {"value": 1.11}
     assert set(spraunaya_program["excluded_mccs"]) == SPRAUNAYA_EXCLUSIONS
+    assert spraunaya_program["maximum_reward"] == {
+        "amount": 100,
+        "unit": "currency",
+        "currency": "BYN",
+    }
+    assert all(
+        card["partner_policy"]
+        == {
+            "mode": "additional" if card["id"] == "vitamin_d" else "total",
+            "reward_kind": (
+                "points"
+                if card["id"] in {"vitamin_d", "cactus_mtbank", "mtkarta", "kufar"}
+                else "cash"
+            ),
+        }
+        for card in raw["cards"]
+    )
     izi_program = izi["reward_programs"][0]
     assert len(izi_program["offers"]) == len(IZI_MCCS) == 10
     assert {offer["mcc"] for offer in izi_program["offers"]} == IZI_MCCS
@@ -467,7 +423,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
 
     shopper = next(match for match in matches if match.card.id == "shopper_mtbank")
     assert shopper.gross_percent == Decimal("2.5")
-    assert format_moneyback(shopper) == "2,5% (2,44%)"
+    assert format_moneyback(shopper) == "2,5% (2,435%)"
     oplati = next(match for match in matches if match.card.id == "oplati")
     assert oplati.gross_percent == Decimal("3")
     assert oplati.components[0].kind == "cash"
@@ -486,7 +442,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
         "1. 💳 Витамин Д — 1% + 3% баллами\n"
         "2. 💳 Оплати — 3%\n"
-        "3. 💳 Шоппер — 2,5% (2,44%)\n"
+        "3. 💳 Шоппер — 2,5% (2,435%)\n"
         "4. 💳 Цептер Card — 2%\n"
         "5. 💳 Цептер PLUS — 2%\n"
         "6. 💳 R-карта — 1,5%\n"
@@ -575,7 +531,9 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
     assert exempt_mccs == {"5411", "5422", "5441", "5451", "5462", "5499"}
     assert len(one_percent_mccs) == len(one_percent_program["offers"]) == 262
     assert exempt_mccs.isdisjoint(one_percent_mccs)
+    assert {"4722", "6012"} <= one_percent_mccs
     assert "5921" not in exempt_mccs | one_percent_mccs
+    assert one_percent_program["excluded_mccs"] == ["5921"]
     assert all(match.card.id != "oplati" for match in _catalog().lookup("5921"))
     assert all(program.get("default") is None for program in oplati["reward_programs"])
     assert all(offer["value"] == 1 for offer in one_percent_program["offers"])
@@ -601,6 +559,7 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
     bnb_program = cards["bnb_1_2_3"]["reward_programs"][0]
     assert bnb_program["default"] == {"value": 1}
     assert bnb_program.get("offers", []) == []
+    assert "6012" in bnb_program["excluded_mccs"]
 
     for card_id in (
         "zepter_card",
@@ -639,7 +598,7 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
         "<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n"
         "1. 💳 <b>Витамин Д</b> — 1% + 3% баллами\n"
         "2. 💳 <b>Оплати</b> — 3%\n"
-        "3. 💳 <b>Шоппер</b> — 2,5% (2,44%)\n"
+        "3. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
         "4. 💳 <b>Цептер Card</b> — 2%\n"
         "5. 💳 <b>Цептер PLUS</b> — 2%\n"
         "6. 💳 <b>R-карта</b> — 1,5%\n"
@@ -720,6 +679,9 @@ def test_real_catalog_bnb_1_2_3_default_and_exclusions() -> None:
 
     assert grocery.gross_percent == Decimal("1")
     assert format_moneyback(grocery) == "1%"
+    travel = next(match for match in catalog.lookup("4722") if match.card.id == "bnb_1_2_3")
+    assert travel.gross_percent == Decimal("1")
+    assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("6012"))
     assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("4814"))
 
 
@@ -732,14 +694,17 @@ def test_real_catalog_combo_default_and_exclusions() -> None:
     assert all(match.card.id != "paritet_combo" for match in catalog.lookup("4812"))
 
 
-def test_real_catalog_spraunaya_uses_only_listed_mccs_and_visible_exclusions() -> None:
+def test_real_catalog_spraunaya_uses_default_and_visible_exclusions() -> None:
     catalog = _catalog()
     match = next(match for match in catalog.lookup("5411") if match.card.id == "dabrabyt_spraunaya")
 
     assert match.gross_percent == Decimal("1.11")
     assert format_moneyback(match) == "1,11%"
+    fallback = next(
+        match for match in catalog.lookup("1234") if match.card.id == "dabrabyt_spraunaya"
+    )
+    assert fallback.gross_percent == Decimal("1.11")
     assert all(match.card.id != "dabrabyt_spraunaya" for match in catalog.lookup("7995"))
-    assert all(match.card.id != "dabrabyt_spraunaya" for match in catalog.lookup("1234"))
 
 
 def test_real_catalog_izi_uses_two_percent_for_only_listed_mccs() -> None:

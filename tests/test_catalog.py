@@ -73,6 +73,27 @@ def _minimal_card(program: dict[str, object]) -> dict[str, object]:
     }
 
 
+def test_partner_policy_fallback_is_readable_but_not_explicit(tmp_path: Path) -> None:
+    card = _minimal_card(
+        {"id": "cash", "kind": "cash", "tax_exempt": False, "offers": []}
+    )
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))
+
+    assert catalog.cards[0].partner_policy.mode == "total"
+    assert catalog.cards[0].partner_policy.reward_kind == "cash"
+    assert catalog.cards[0].partner_policy_explicit is False
+
+
+def test_provided_partner_policy_is_marked_explicit(tmp_path: Path) -> None:
+    card = _minimal_card(
+        {"id": "points", "kind": "points", "tax_exempt": True, "offers": []}
+    )
+    card["partner_policy"] = {"mode": "additional", "reward_kind": "points"}
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))
+
+    assert catalog.cards[0].partner_policy_explicit is True
+
+
 @pytest.mark.parametrize(
     "payload", [[], {"version": 1, "cards": []}, {"version": 3, "cards": []}, {"cards": []}]
 )

@@ -1,5 +1,22 @@
 # Partner reward snapshot, 2026-08-30
 
+## Reviewed correction, 2026-08-31
+
+The follow-up package is a one-time static correction, not a synchronizer. It
+canonicalizes only the reviewed `21век` and `Unistore` variants while retaining
+all existing MCC evidence and extra aliases. `21век` has Cashalot 1.01% for any
+payment method, 1-2-3 2% online, Statuscard 2.5% online, and the existing Vitamin
+D additional 5-point online promotion with its 100 BYN minimum, 50-point
+per-operation cap, conditions, and dates. `Unistore` retains MCC 5411, Cashalot
+1.01% offline, and the static Vitamin D exclusion.
+
+All other active Statuscard partner offers are archived. No Sber, Alfa,
+Paritetbank, VTB, or other StatusBank partner is added by this correction. The
+cleanup rewrites a stable-keyed rule only when it still exactly matches the
+2026-08-30 snapshot; a manual edit aborts the transaction. The matching seed
+then inserts only missing rows, so a second cleanup-and-seed run makes no data
+changes.
+
 This ledger documents the static partner package bundled as
 `mcc_bot/data/partner_seed_20260830.json`. It is intentionally a reviewed,
 repeatable snapshot rather than a live scraper. The bot never fetches partner
@@ -110,3 +127,7 @@ only aggregate counters, including missing and ambiguous catalog matches.
 Before release, run it twice against a disposable database and verify that the
 second run adds zero rows, then run `PRAGMA quick_check` and
 `PRAGMA foreign_key_check`.
+
+The 2026-08-31 correction uses the same guarantees through
+`mcc-reconcile-partners-20260831` followed by
+`mcc-apply-partner-seed-20260831`.

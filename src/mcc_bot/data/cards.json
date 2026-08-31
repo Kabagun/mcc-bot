@@ -6,6 +6,10 @@
       "name": "Движение",
       "issuer": "Банк БелВЭБ",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -4558,6 +4562,10 @@
       "name": "Цептер PLUS",
       "issuer": "Цептер Банк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -4718,6 +4726,10 @@
       "name": "МТкарта",
       "issuer": "МТбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "points"
+      },
       "condition": {
         "kind": "max_connected_categories",
         "count": 3
@@ -9217,6 +9229,10 @@
       "name": "Социальная",
       "issuer": "МТбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -9349,6 +9365,10 @@
       "name": "Шоппер",
       "issuer": "МТбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -9497,6 +9517,10 @@
       "name": "Кактус",
       "issuer": "МТбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "points"
+      },
       "condition": {
         "kind": "selected_category"
       },
@@ -9739,6 +9763,10 @@
       "name": "Витамин Д",
       "issuer": "Белинвестбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "additional",
+        "reward_kind": "points"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -10270,6 +10298,10 @@
       "name": "Куфар",
       "issuer": "МТбанк / Visa / Kufar",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "points"
+      },
       "condition": {
         "kind": "kufar_rules"
       },
@@ -10344,6 +10376,10 @@
       "name": "Цептер Card",
       "issuer": "Цептер Банк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -10538,6 +10574,10 @@
       "name": "Оплати",
       "issuer": "Белинвестбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_limits": [
         {
           "amount": 20,
@@ -11641,6 +11681,9 @@
               "mcc": "7011",
               "value": 1
             }
+          ],
+          "excluded_mccs": [
+            "5921"
           ]
         }
       ]
@@ -11650,6 +11693,10 @@
       "name": "КОМБОкарта",
       "issuer": "Паритетбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -11721,6 +11768,10 @@
       "name": "Спраўная",
       "issuer": "Банк Дабрабыт",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -11735,244 +11786,9 @@
             "unit": "currency",
             "currency": "BYN"
           },
-          "offers": [
-            {
-              "mcc": "2741",
-              "value": 1.11
-            },
-            {
-              "mcc": "5111",
-              "value": 1.11
-            },
-            {
-              "mcc": "4111",
-              "value": 1.11
-            },
-            {
-              "mcc": "4112",
-              "value": 1.11
-            },
-            {
-              "mcc": "4121",
-              "value": 1.11
-            },
-            {
-              "mcc": "4131",
-              "value": 1.11
-            },
-            {
-              "mcc": "4511",
-              "value": 1.11
-            },
-            {
-              "mcc": "4722",
-              "value": 1.11
-            },
-            {
-              "mcc": "5039",
-              "value": 1.11
-            },
-            {
-              "mcc": "5047",
-              "value": 1.11
-            },
-            {
-              "mcc": "8011",
-              "value": 1.11
-            },
-            {
-              "mcc": "8021",
-              "value": 1.11
-            },
-            {
-              "mcc": "8043",
-              "value": 1.11
-            },
-            {
-              "mcc": "8062",
-              "value": 1.11
-            },
-            {
-              "mcc": "8071",
-              "value": 1.11
-            },
-            {
-              "mcc": "8099",
-              "value": 1.11
-            },
-            {
-              "mcc": "5975",
-              "value": 1.11
-            },
-            {
-              "mcc": "5131",
-              "value": 1.11
-            },
-            {
-              "mcc": "5191",
-              "value": 1.11
-            },
-            {
-              "mcc": "5193",
-              "value": 1.11
-            },
-            {
-              "mcc": "5261",
-              "value": 1.11
-            },
-            {
-              "mcc": "5411",
-              "value": 1.11
-            },
-            {
-              "mcc": "5541",
-              "value": 1.11
-            },
-            {
-              "mcc": "5542",
-              "value": 1.11
-            },
-            {
-              "mcc": "5621",
-              "value": 1.11
-            },
-            {
-              "mcc": "5641",
-              "value": 1.11
-            },
-            {
-              "mcc": "5651",
-              "value": 1.11
-            },
-            {
-              "mcc": "5655",
-              "value": 1.11
-            },
-            {
-              "mcc": "5712",
-              "value": 1.11
-            },
-            {
-              "mcc": "5811",
-              "value": 1.11
-            },
-            {
-              "mcc": "5812",
-              "value": 1.11
-            },
-            {
-              "mcc": "5813",
-              "value": 1.11
-            },
-            {
-              "mcc": "5814",
-              "value": 1.11
-            },
-            {
-              "mcc": "5912",
-              "value": 1.11
-            },
-            {
-              "mcc": "5122",
-              "value": 1.11
-            },
-            {
-              "mcc": "5292",
-              "value": 1.11
-            },
-            {
-              "mcc": "5295",
-              "value": 1.11
-            },
-            {
-              "mcc": "5941",
-              "value": 1.11
-            },
-            {
-              "mcc": "5942",
-              "value": 1.11
-            },
-            {
-              "mcc": "5945",
-              "value": 1.11
-            },
-            {
-              "mcc": "5949",
-              "value": 1.11
-            },
-            {
-              "mcc": "5970",
-              "value": 1.11
-            },
-            {
-              "mcc": "5976",
-              "value": 1.11
-            },
-            {
-              "mcc": "5996",
-              "value": 1.11
-            },
-            {
-              "mcc": "7011",
-              "value": 1.11
-            },
-            {
-              "mcc": "7221",
-              "value": 1.11
-            },
-            {
-              "mcc": "7298",
-              "value": 1.11
-            },
-            {
-              "mcc": "7297",
-              "value": 1.11
-            },
-            {
-              "mcc": "7523",
-              "value": 1.11
-            },
-            {
-              "mcc": "7832",
-              "value": 1.11
-            },
-            {
-              "mcc": "7932",
-              "value": 1.11
-            },
-            {
-              "mcc": "7933",
-              "value": 1.11
-            },
-            {
-              "mcc": "7941",
-              "value": 1.11
-            },
-            {
-              "mcc": "7991",
-              "value": 1.11
-            },
-            {
-              "mcc": "7996",
-              "value": 1.11
-            },
-            {
-              "mcc": "7997",
-              "value": 1.11
-            },
-            {
-              "mcc": "7998",
-              "value": 1.11
-            },
-            {
-              "mcc": "8299",
-              "value": 1.11
-            },
-            {
-              "mcc": "8351",
-              "value": 1.11
-            }
-          ],
+          "default": {
+            "value": 1.11
+          },
           "excluded_mccs": [
             "7995",
             "6211",
@@ -11996,6 +11812,10 @@
       "name": "Изи-карта",
       "issuer": "Беларусбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -12060,6 +11880,10 @@
       "name": "1-2-3",
       "issuer": "БНБ-Банк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -12114,6 +11938,10 @@
       "name": "Cashalot",
       "issuer": "Белгазпромбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -12177,6 +12005,10 @@
       "name": "Статускарта",
       "issuer": "СтатусБанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -12238,6 +12070,10 @@
       "name": "R-карта",
       "issuer": "Банк Решение",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",
@@ -12309,6 +12145,10 @@
       "name": "Яркая",
       "issuer": "Приорбанк",
       "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
       "reward_programs": [
         {
           "id": "cash",

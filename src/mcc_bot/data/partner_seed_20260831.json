@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "offers": [
+    {
+      "source_key": "cashalot:21vek-by",
+      "brand_key": "brand:cashalot:21vek-by",
+      "brand": "21век",
+      "aliases": ["21vek", "21vek.by", "21 век"],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "any",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/21vek-by/",
+      "tiers": [{"value": "1.01"}]
+    },
+    {
+      "source_key": "bnb-1-2-3:a72c0ccd",
+      "brand_key": "brand:bnb:a1799d4e",
+      "brand": "21век",
+      "aliases": ["21vek", "21vek.by", "21 век"],
+      "card_id": "bnb_1_2_3",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Общий максимальный манибэк у партнёра по карте 1-2-3.",
+      "source_url": "https://bnb.by/bonus/",
+      "tiers": [{"value": "2"}]
+    },
+    {
+      "source_key": "plushki:promo:01",
+      "brand_key": "brand:plushki:1cf0c01d",
+      "brand": "21век",
+      "aliases": ["21vek", "21vek.by", "21 век"],
+      "card_id": "vitamin_d",
+      "channel": "online",
+      "mode": "additional",
+      "reward_kind": "points",
+      "starts_on": "2024-02-01",
+      "ends_on": "2026-10-31",
+      "conditions": "Только при онлайн-оплате",
+      "source_url": "file:D:/Порядок начисления бонусных баллов.pdf",
+      "tiers": [{"value": "5", "min_purchase": "100", "per_transaction_cap": "50"}]
+    },
+    {
+      "source_key": "statuskarta:21vek:2026-08-30",
+      "brand_key": "brand:statuskarta:21vek",
+      "brand": "21век",
+      "aliases": ["21vek", "21vek.by", "21 век"],
+      "card_id": "statusbank_statuskarta",
+      "channel": "online",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Только при онлайн-оплате.",
+      "source_url": "https://stbank.by/private-client/payment-cards/debetovye-karty/statuskarta-deb/",
+      "tiers": [{"value": "2.5"}]
+    },
+    {
+      "source_key": "cashalot:unistore-opt-roznitsa",
+      "brand_key": "brand:cashalot:unistore-opt-roznitsa",
+      "brand": "Unistore",
+      "aliases": ["Unistore опт&розница", "Юнистор", "Юнисторе", "Uni store"],
+      "card_id": "belgazprombank_cashalot",
+      "channel": "offline",
+      "mode": "total",
+      "reward_kind": "cash",
+      "starts_on": null,
+      "ends_on": null,
+      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
+      "source_url": "https://cashalot.by/stores/store_select/unistore-opt-roznitsa/",
+      "tiers": [{"value": "1.01"}]
+    }
+  ],
+  "exclusions": [
+    {
+      "source_key": "plushki:exclusion:1",
+      "brand_key": "brand:plushki-exclusion:1",
+      "brand": "Unistore",
+      "aliases": ["Unistore опт&розница", "Юнистор", "Юнисторе", "Uni store"],
+      "card_id": "vitamin_d",
+      "reward_kind": "points",
+      "channel": "any",
+      "mcc": null,
+      "starts_on": "2021-11-15",
+      "ends_on": null,
+      "suppress_base": true,
+      "reason": "С 15.11.2021 бонусные баллы не начисляются",
+      "source_url": "file:D:/Перечень компаний, при осуществлении операций в которых не начисляются Бонусы.pdf"
+    }
+  ]
+}

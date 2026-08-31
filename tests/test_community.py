@@ -1,6 +1,7 @@
 """State, authorization, transaction, concurrency and retention regressions."""
 
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from mcc_bot.community import (
     CommunityService,
     StaleAction,
 )
+from mcc_bot.partner_rewards import PartnerRepository
 from mcc_bot.stores import StoreRepository
 
 
@@ -66,6 +68,209 @@ def tannei_observations(mcc="5411"):
             "address_extra": None,
         }
     ]
+
+
+def submit_form(service, user_id, kind, payload):
+    draft = service.begin(
+        user_id,
+        stage="preview",
+        data={"kind": kind, "payload": payload, "draft_mode": True},
+    )
+    return service.submit(user_id, draft.id, draft.version)
+
+
+def test_form_operations_publish_atomically_and_keep_empty_store_searchable(community):
+    created = submit_form(
+        community,
+        2,
+        "mcc_save",
+        {
+            "name": "Editor shop",
+            "aliases": ["Editor"],
+            "mcc": "5411",
+            "channel": "offline",
+            "note": "касса",
+            "source_url": "",
+        },
+    )
+    assert created.status == "approved"
+    brand = community.stores.search("Editor shop").matches[0]
+    fact = community.stores.list_brand_mcc_groups(brand.id)[0]
+    deleted = submit_form(
+        community,
+        2,
+        "mcc_delete",
+        {
+            "merchant_id": fact.merchant_ids[0],
+            "merchant_ids": list(fact.merchant_ids),
+            "channels": list(fact.channels),
+            "mcc": fact.mcc,
+        },
+    )
+    assert deleted.status == "approved"
+    assert community.stores.search("Editor").matches[0].id == brand.id
+    assert community.stores.list_brand_mcc_groups(brand.id) == ()
+
+
+def test_form_mcc_move_can_create_the_target_channel_branch(community):
+    source = community.stores.apply_change(
+        "add_merchant", {"name": "Move source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = community.stores.apply_change(
+        "add_merchant", {"name": "Move target", "channel": "offline"}, 1
+    )
+    fact = community.stores.list_brand_mcc_groups(source.brand_id)[0]
+
+    proposal = submit_form(
+        community,
+        2,
+        "mcc_save",
+        {
+            "brand_id": target.brand_id,
+            "merchant_id": fact.merchant_ids[0],
+            "merchant_ids": list(fact.merchant_ids),
+            "channels": list(fact.channels),
+            "old_mcc": fact.mcc,
+            "mcc": "5411",
+            "channel": "online",
+            "note": "перенесён",
+        },
+    )
+
+    assert proposal.status == "approved"
+    assert community.stores.list_brand_mcc_groups(source.brand_id) == ()
+    moved = community.stores.list_brand_mcc_groups(target.brand_id)
+    assert [(item.mcc, item.channel, item.note) for item in moved] == [
+        ("5411", "online", "перенесён")
+    ]
+
+
+def test_form_duplicates_are_blocked_without_a_pending_quota(community):
+    payload = {
+        "name": "Pending editor shop",
+        "mcc": "5411",
+        "channel": "online",
+        "note": "",
+        "source_url": "",
+    }
+    proposal = submit_form(community, 10, "mcc_save", payload)
+    with pytest.raises(CommunityError, match="ожидает проверки"):
+        submit_form(community, 11, "mcc_save", payload)
+    for index in range(25):
+        submit_form(
+            community,
+            10,
+            "mcc_save",
+            {**payload, "name": f"Pending editor shop {index}"},
+        )
+    effects = community.pending_effects()
+    assert effects[0]["id"] == proposal.id
+    assert "user_id" not in effects[0]
+
+
+def test_helper_can_edit_claimed_form_payload_before_approval(community):
+    brand_id = community.stores.apply_change(
+        "add_merchant", {"name": "Review editor", "channel": "offline", "mcc": "5411"}, 1
+    ).brand_id
+    queued = submit_form(
+        community,
+        10,
+        "store_metadata",
+        {"brand_id": brand_id, "name": "Review editor typo", "aliases": []},
+    )
+    claimed = community.claim(2, queued.id, queued.version, now=100)
+    edited = community.edit_review_payload(
+        2,
+        claimed.id,
+        claimed.version,
+        {"brand_id": brand_id, "name": "Review editor fixed", "aliases": ["Review editor"]},
+        now=101,
+    )
+    approved = community.review(2, edited.id, edited.version, "approved", now=102)
+
+    assert approved.status == "approved"
+    assert community.stores.get_brand(brand_id).name == "Review editor fixed"
+
+
+def test_partner_form_derives_policy_and_reconciles_linked_exclusions(tmp_path):
+    stores = StoreRepository(tmp_path / "partner-form.sqlite3")
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    catalog = SimpleNamespace(
+        cards=(
+            SimpleNamespace(
+                id="card",
+                partner_policy=SimpleNamespace(mode="total", reward_kind="points"),
+            ),
+        )
+    )
+    service = CommunityService(
+        stores, owner_id=1, partners=partners, catalog=catalog, allowed_mccs={"5411"}
+    )
+    service.initialize()
+    brand_id = stores.apply_change(
+        "add_merchant", {"name": "Partner editor", "channel": "offline", "mcc": "5411"}, 1
+    ).brand_id
+    saved = submit_form(
+        service,
+        1,
+        "partner_save",
+        {
+            "brand_id": brand_id,
+            "card_id": "card",
+            "channel": "any",
+            "value": "5",
+            "excluded_mccs": ["4900"],
+        },
+    )
+    assert saved.status == "approved"
+    offer = partners.list_offers(brand_id)[0]
+    assert (offer.mode, offer.reward_kind) == ("total", "points")
+    assert [item.mcc for item in partners.list_offer_exclusions(offer.id)] == ["4900"]
+    removed = submit_form(service, 1, "partner_delete", {"offer_id": offer.id})
+    assert removed.status == "approved"
+    assert partners.list_offer_exclusions(offer.id) == ()
+
+
+def test_only_helpers_can_save_partnership_for_store_without_confirmed_mcc(tmp_path):
+    stores = StoreRepository(tmp_path / "partner-only-form.sqlite3")
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    catalog = SimpleNamespace(
+        cards=(
+            SimpleNamespace(
+                id="card",
+                partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+            ),
+        )
+    )
+    service = CommunityService(stores, owner_id=1, partners=partners, catalog=catalog)
+    service.initialize()
+    service.set_role(1, 2, True)
+    brand_id = stores.create_partner_store(
+        "Partner-only exception", "any", actor_id=1
+    ).brand_id
+    payload = {
+        "brand_id": brand_id,
+        "card_id": "card",
+        "channel": "any",
+        "value": "5",
+    }
+
+    with pytest.raises(AccessDenied, match="подтверждённым MCC"):
+        submit_form(service, 10, "partner_save", payload)
+
+    created = submit_form(service, 2, "partner_save", payload)
+    assert created.status == "approved"
+    offer = partners.list_offers(brand_id)[0]
+    edited = {**payload, "offer_id": offer.id, "value": "6"}
+
+    with pytest.raises(AccessDenied, match="подтверждённым MCC"):
+        submit_form(service, 11, "partner_save", edited)
+
+    updated = submit_form(service, 2, "partner_save", edited)
+    assert updated.status == "approved"
+    assert partners.list_offers(brand_id)[0].tiers[0].value == 6
 
 
 def test_owner_is_explicit_and_user_id_authority(community):
@@ -138,8 +343,8 @@ def test_audit_actor_uses_stored_identity_and_stable_id(community):
         community.audit_actor(11, 10)
 
 
-def test_role_profile_refresh_is_limited_and_tracks_latest_helper_username(community):
-    assert not community.refresh_role_profile(20, "ordinary", "Ordinary")
+def test_role_profile_refresh_tracks_authors_and_latest_helper_username(community):
+    assert community.refresh_role_profile(20, "ordinary", "Ordinary")
     community.request_role(10, "candidate", "Alice")
     assert community.refresh_role_profile(10, "candidate_new", "Alice", "Updated")
     community.set_role(1, 10, True, require_pending=True)
@@ -150,10 +355,9 @@ def test_role_profile_refresh_is_limited_and_tracks_latest_helper_username(commu
     assert (helper["username"], helper["last_name"]) == ("helper_new", "Helper")
     assert owner["username"] == "owner_name"
     with community.stores.connection() as connection:
-        assert (
-            connection.execute("SELECT 1 FROM community_role_profiles WHERE user_id=20").fetchone()
-            is None
-        )
+        assert connection.execute(
+            "SELECT 1 FROM community_role_profiles WHERE user_id=20"
+        ).fetchone()
 
 
 def test_role_revoke_invalidates_review_draft_consent_and_regrant(community):
@@ -194,11 +398,16 @@ def test_official_url_can_replace_screenshot_for_users_and_screenshot_is_optiona
     draft = make_draft(community, media=False)
     queued = community.submit(10, draft.id, draft.version)
     assert queued.status == "pending"
-    draft = make_draft(community, 2, media=False)
+    draft = make_draft(
+        community,
+        2,
+        media=False,
+        payload={"name": "Trusted Shop", "channel": "offline", "mcc": "5411"},
+    )
     saved = community.submit(2, draft.id, draft.version)
     assert saved.status == "approved"
     assert saved.audit_id is not None
-    assert len(community.stores.find_exact("Test Shop", "offline")) == 1
+    assert len(community.stores.find_exact("Trusted Shop", "offline")) == 1
 
 
 def test_new_user_store_proposal_does_not_require_source(community):
@@ -210,7 +419,7 @@ def test_new_user_store_proposal_does_not_require_source(community):
     assert queued.status == "pending"
 
 
-def test_new_user_partnership_requires_official_url_or_screenshot(community):
+def test_new_user_partnership_allows_optional_source_and_screenshot(community):
     payload = {
         "brand_id": community.stores.apply_change(
             "add_merchant",
@@ -241,8 +450,7 @@ def test_new_user_partnership_requires_official_url_or_screenshot(community):
         data={"kind": "card_partnership", "payload": payload},
     )
 
-    with pytest.raises(CommunityError, match="официальную ссылку или скриншот"):
-        community.submit(10, draft.id, draft.version)
+    assert community.submit(10, draft.id, draft.version).status == "pending"
 
 
 def test_direct_save_repeated_callback_does_not_duplicate_fact(community):
@@ -545,13 +753,11 @@ def test_explicit_replace_and_independent_support_survives_undo(community):
 
 def test_duplicate_new_merchant_race_is_not_silently_merged(community):
     first = make_proposal(community)
-    second = make_proposal(community, 11)
+    with pytest.raises(CommunityError, match="ожидает проверки"):
+        make_proposal(community, 11)
     a = community.claim(2, first.id, first.version)
-    b = community.claim(3, second.id, second.version)
     community.review(2, first.id, a.version, "approved")
-    with pytest.raises(CommunityError, match="уже есть"):
-        community.review(3, second.id, b.version, "approved")
-    assert community.proposal(3, second.id).status == "pending"
+    assert len(community.stores.find_exact("Test Shop", "offline")) == 1
 
 
 def test_payload_and_media_metadata_are_bounded(community):
@@ -594,14 +800,15 @@ def test_unknown_mcc_is_rejected_for_users_helpers_and_preexisting_proposals(tmp
     assert strict.stores.find_exact("Old proposal", "offline") == ()
 
 
-def test_pending_input_quota(community):
+def test_pending_input_has_no_fixed_quota(community):
     for number in range(20):
         make_proposal(
             community, payload={"name": f"Shop {number}", "channel": "offline", "mcc": "5411"}
         )
-    draft = make_draft(community)
-    with pytest.raises(CommunityError, match="20"):
-        community.submit(10, draft.id, draft.version)
+    make_proposal(
+        community, payload={"name": "Shop 20", "channel": "offline", "mcc": "5411"}
+    )
+    assert len(community.own_proposals(10, offset=11)) == 10
 
 
 def test_direct_structural_preview_rejects_later_rename(community):

@@ -10,6 +10,7 @@ share the merchant repository's immediate SQLite transaction.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -23,7 +24,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
-from .stores import StoreRepository
+from .stores import StoreRepository, normalize_store_name
 
 LEASE_SECONDS = 15 * 60
 CLARIFICATION_SECONDS = 24 * 60 * 60
@@ -35,6 +36,10 @@ MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
 MCC_KINDS = frozenset({"add_merchant", "add_mcc", "add_mcc_both", "replace_mcc"})
 PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant", "card_partnership"}
+FORM_KINDS = frozenset(
+    {"store_metadata", "mcc_save", "mcc_delete", "partner_save", "partner_delete"}
+)
+PUBLIC_KINDS = PUBLIC_KINDS | FORM_KINDS
 EDIT_KINDS = PUBLIC_KINDS | {
     "aliases",
     "archive_merchant",
@@ -117,6 +122,7 @@ class Proposal:
     reviewer_id: int | None
     lease_until: float | None
     audit_id: int | None
+    fingerprint: str | None = None
 
 
 def clean_text(value: str, *, maximum: int = MAX_COMMENT) -> str:
@@ -175,12 +181,14 @@ class CommunityService:
         *,
         allowed_mccs: Collection[str] | None = None,
         partners: PartnerPublisher | None = None,
+        catalog: Any | None = None,
     ) -> None:
         self.stores = stores
         if owner_id is not None and (isinstance(owner_id, bool) or owner_id <= 0):
             raise ValueError("Owner must be an explicit positive Telegram user ID")
         self.owner_id = owner_id
         self.partners = partners
+        self.catalog = catalog
         source = DescriptionCatalog.from_file().labels if allowed_mccs is None else allowed_mccs
         self.allowed_mccs = frozenset(source)
 
@@ -213,13 +221,16 @@ class CommunityService:
                     version INTEGER NOT NULL, stage TEXT NOT NULL, data TEXT NOT NULL,
                     privileged INTEGER NOT NULL, role_epoch INTEGER NOT NULL,
                     updated_at REAL NOT NULL)""",
+                """CREATE TABLE IF NOT EXISTS community_editor_messages (
+                    user_id INTEGER PRIMARY KEY, draft_id TEXT NOT NULL UNIQUE,
+                    chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL)""",
                 """CREATE TABLE IF NOT EXISTS community_proposals (
                     id INTEGER PRIMARY KEY, draft_id TEXT NOT NULL UNIQUE,
                     user_id INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
                     comment TEXT NOT NULL, status TEXT NOT NULL, version INTEGER NOT NULL,
                     reviewer_id INTEGER, lease_until REAL, reason TEXT,
                     audit_id INTEGER, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-                    finalized_at REAL)""",
+                    finalized_at REAL, fingerprint TEXT)""",
                 """CREATE TABLE IF NOT EXISTS community_media (
                     id INTEGER PRIMARY KEY, draft_id TEXT UNIQUE, proposal_id INTEGER UNIQUE,
                     file_id TEXT NOT NULL, unique_id TEXT NOT NULL,
@@ -237,6 +248,23 @@ class CommunityService:
                     ON community_proposals(status,created_at)""",
             ):
                 conn.execute(statement)
+            proposal_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(community_proposals)")
+            }
+            if "fingerprint" not in proposal_columns:
+                conn.execute("ALTER TABLE community_proposals ADD COLUMN fingerprint TEXT")
+            conn.execute("DROP INDEX IF EXISTS community_active_fingerprint")
+            for row in conn.execute(
+                "SELECT id,kind,payload FROM community_proposals WHERE fingerprint IS NULL"
+            ).fetchall():
+                conn.execute(
+                    "UPDATE community_proposals SET fingerprint=? WHERE id=?",
+                    (self._fingerprint(row["kind"], json.loads(row["payload"])), row["id"]),
+                )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS community_active_fingerprint
+                ON community_proposals(fingerprint,status)"""
+            )
         self.expire_media()
 
     def _role(self, conn: sqlite3.Connection, user_id: int) -> tuple[str, int]:
@@ -277,6 +305,12 @@ class CommunityService:
         del brand_id, channel, mcc
         with self.stores.connection() as conn:
             return self._role(conn, user_id)[0] in {"admin", "owner"}
+
+    def brand_has_confirmed_mcc(self, brand_id: int) -> bool:
+        """Return whether a store currently has at least one confirmed active MCC."""
+
+        with self.stores.connection() as conn:
+            return bool(self.stores.list_brand_mcc_groups(brand_id, connection=conn))
 
     def role_epoch(self, user_id: int) -> int:
         """Return the role generation used to reject stale consent and role buttons."""
@@ -401,15 +435,10 @@ class CommunityService:
         first_name: str | None,
         last_name: str | None = None,
     ) -> bool:
-        """Refresh the last seen identity only for the owner, helpers, or applicants."""
+        """Refresh the identity used only in authorized moderation views."""
 
         with self.stores.transaction() as conn:
-            role = self._role(conn, user_id)[0]
-            request = conn.execute(
-                "SELECT status FROM community_role_requests WHERE user_id=?", (user_id,)
-            ).fetchone()
-            if role not in {"owner", "admin"} and not (request and request["status"] == "pending"):
-                return False
+            self._role(conn, user_id)
             conn.execute(
                 """INSERT INTO community_role_profiles(
                     user_id,username,first_name,last_name,updated_at) VALUES(?,?,?,?,?)
@@ -425,6 +454,23 @@ class CommunityService:
                 ),
             )
             return True
+
+    def proposal_author(self, viewer_id: int, proposal_id: int) -> dict[str, Any]:
+        """Return an author's stored identity to a current helper only."""
+
+        with self.stores.connection() as conn:
+            self._require_admin(conn, viewer_id)
+            proposal = self._proposal(conn, proposal_id)
+            profile = conn.execute(
+                "SELECT username,first_name,last_name FROM community_role_profiles WHERE user_id=?",
+                (proposal.user_id,),
+            ).fetchone()
+            return {
+                "user_id": proposal.user_id,
+                "username": profile["username"] if profile else None,
+                "first_name": profile["first_name"] if profile else None,
+                "last_name": profile["last_name"] if profile else None,
+            }
 
     def role_candidates(self, actor_id: int) -> tuple[dict[str, Any], ...]:
         """Return pending requests and active helper roles to the owner only."""
@@ -526,7 +572,37 @@ class CommunityService:
                (SELECT id FROM community_drafts WHERE user_id=?) AND expires_at IS NULL""",
             (time.time() + MEDIA_RETENTION_SECONDS, user_id),
         )
+        conn.execute("DELETE FROM community_editor_messages WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM community_drafts WHERE user_id=?", (user_id,))
+
+    def bind_editor_message(
+        self, user_id: int, draft_id: str, chat_id: int, message_id: int
+    ) -> None:
+        """Persist the single Telegram message used by the active form editor."""
+
+        if chat_id <= 0 or message_id <= 0:
+            raise CommunityError("Не удалось открыть редактор.")
+        with self.stores.transaction() as conn:
+            self._draft(conn, user_id, draft_id)
+            conn.execute(
+                """INSERT INTO community_editor_messages(user_id,draft_id,chat_id,message_id)
+                   VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+                   draft_id=excluded.draft_id,chat_id=excluded.chat_id,
+                   message_id=excluded.message_id""",
+                (user_id, draft_id, chat_id, message_id),
+            )
+
+    def editor_message(self, user_id: int, draft_id: str) -> tuple[int, int] | None:
+        """Return the bound Telegram editor message if it still belongs to this draft."""
+
+        with self.stores.connection() as conn:
+            self._draft(conn, user_id, draft_id)
+            row = conn.execute(
+                """SELECT chat_id,message_id FROM community_editor_messages
+                   WHERE user_id=? AND draft_id=?""",
+                (user_id, draft_id),
+            ).fetchone()
+            return (row["chat_id"], row["message_id"]) if row else None
 
     def begin(
         self,
@@ -738,6 +814,44 @@ class CommunityService:
                 },
                 set(),
             ),
+            "store_metadata": ({"brand_id", "name", "aliases"}, {"source_url"}),
+            "mcc_save": (
+                {"mcc", "channel"},
+                {
+                    "brand_id",
+                    "name",
+                    "aliases",
+                    "merchant_id",
+                    "merchant_ids",
+                    "channels",
+                    "old_mcc",
+                    "note",
+                    "source_url",
+                },
+            ),
+            "mcc_delete": (
+                {"merchant_id", "mcc"},
+                {"merchant_ids", "channels"},
+            ),
+            "partner_save": (
+                {"card_id", "channel", "value"},
+                {
+                    "offer_id",
+                    "brand_id",
+                    "name",
+                    "conditions",
+                    "starts_on",
+                    "ends_on",
+                    "min_purchase",
+                    "max_purchase",
+                    "per_transaction_cap",
+                    "excluded_mccs",
+                    "source_url",
+                    "mode",
+                    "reward_kind",
+                },
+            ),
+            "partner_delete": ({"offer_id"}, set()),
         }
         if kind not in schemas:
             raise CommunityError("Неполные данные предложения. Начните заново.")
@@ -747,8 +861,12 @@ class CommunityService:
         result = dict(payload)
         if kind == "add_mcc_both" and (("brand_id" in result) == ("name" in result)):
             raise CommunityError("Выберите существующий магазин или задайте название нового.")
+        if kind in {"mcc_save", "partner_save"} and (
+            ("brand_id" in result) == ("name" in result)
+        ):
+            raise CommunityError("Выберите существующий магазин или задайте название нового.")
         for key, value in result.items():
-            if key in {"merchant_id", "brand_id", "target_id", "audit_id"}:
+            if key in {"merchant_id", "brand_id", "target_id", "audit_id", "offer_id"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                     raise CommunityError("Некорректный магазин или запись истории.")
             elif key == "merchant_ids":
@@ -781,7 +899,9 @@ class CommunityService:
                 result[key] = clean_text(value, maximum=MAX_NAME)
             elif key == "channel" and value not in (
                 {"offline", "online", "any"}
-                if kind == "card_partnership"
+                if kind in {"card_partnership", "partner_save"}
+                else {"offline", "online", "both"}
+                if kind == "mcc_save"
                 else {"offline", "online"}
             ):
                 raise CommunityError("Выберите допустимый способ оплаты.")
@@ -866,10 +986,283 @@ class CommunityService:
                         raise CommunityError("MCC в исключении должен состоять из четырёх цифр.")
                     cleaned.append({**exclusion, "reason": clean_text(exclusion["reason"])})
                 result[key] = cleaned
+            elif kind == "partner_save" and key == "card_id":
+                result[key] = clean_text(value, maximum=160)
+            elif kind == "partner_save" and key == "value":
+                try:
+                    amount = Decimal(str(value).replace(",", "."))
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise CommunityError("Введите размер партнёрской выгоды числом.") from exc
+                if not amount.is_finite() or amount <= 0 or amount > 100:
+                    raise CommunityError("Размер выгоды должен быть больше 0 и не больше 100.")
+                result[key] = format(amount.normalize(), "f")
+            elif kind == "partner_save" and key in {
+                "min_purchase",
+                "max_purchase",
+                "per_transaction_cap",
+            }:
+                if value is not None:
+                    try:
+                        amount = Decimal(str(value).replace(",", "."))
+                    except (InvalidOperation, TypeError, ValueError) as exc:
+                        raise CommunityError("Сумма в партнёрстве указана неверно.") from exc
+                    if not amount.is_finite() or amount < 0:
+                        raise CommunityError("Сумма в партнёрстве не может быть отрицательной.")
+                    result[key] = format(amount.normalize(), "f")
+            elif kind == "partner_save" and key in {"starts_on", "ends_on"}:
+                if value:
+                    try:
+                        date.fromisoformat(value)
+                    except (TypeError, ValueError) as exc:
+                        raise CommunityError("Дата партнёрства указана неверно.") from exc
+                result[key] = value or None
+            elif kind == "partner_save" and key == "conditions":
+                result[key] = "" if not value else clean_text(value)
+            elif kind == "partner_save" and key == "excluded_mccs":
+                if not isinstance(value, list) or len(value) > 50 or any(
+                    not isinstance(item, str) or not re.fullmatch(r"[0-9]{4}", item)
+                    for item in value
+                ):
+                    raise CommunityError("Исключённые MCC должны состоять из четырёх цифр.")
+                result[key] = list(dict.fromkeys(value))
         if kind in MCC_KINDS and result["mcc"] not in self.allowed_mccs:
             raise CommunityError(f"MCC {result['mcc']} не найден в справочнике. Проверьте код.")
+        if kind in {"mcc_save", "mcc_delete"} and result["mcc"] not in self.allowed_mccs:
+            raise CommunityError(f"MCC {result['mcc']} не найден в справочнике. Проверьте код.")
+        if kind == "partner_save":
+            if self.catalog is None:
+                raise CommunityError("Список карт сейчас недоступен.")
+            card = next((item for item in self.catalog.cards if item.id == result["card_id"]), None)
+            if card is None:
+                raise CommunityError("Карта больше недоступна.")
+            policy = card.partner_policy
+            if result.get("mode", policy.mode) != policy.mode or result.get(
+                "reward_kind", policy.reward_kind
+            ) != policy.reward_kind:
+                raise CommunityError("Правила партнёрства карты изменились. Откройте форму заново.")
+            result["mode"] = policy.mode
+            result["reward_kind"] = policy.reward_kind
+            if (
+                result.get("starts_on")
+                and result.get("ends_on")
+                and result["starts_on"] > result["ends_on"]
+            ):
+                raise CommunityError("Дата начала партнёрства позже даты окончания.")
+            if (
+                result.get("min_purchase") is not None
+                and result.get("max_purchase") is not None
+                and Decimal(result["min_purchase"]) > Decimal(result["max_purchase"])
+            ):
+                raise CommunityError("Минимальная сумма больше максимальной.")
         _safe_json(result)
         return result
+
+    @staticmethod
+    def _fingerprint(kind: str, payload: dict[str, Any]) -> str:
+        """Return a stable exact-effect fingerprint; sources/comments are not identity."""
+
+        values = {key: value for key, value in payload.items() if key != "source_url"}
+        if "name" in values:
+            values["name"] = normalize_store_name(values["name"])
+        if "aliases" in values:
+            values["aliases"] = sorted(
+                {normalize_store_name(value) for value in values["aliases"]}
+            )
+        if kind == "mcc_save" and "merchant_id" not in values and "name" in values:
+            values = {"name": values["name"]}
+        encoded = json.dumps(
+            {"kind": kind, "payload": values},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _ensure_not_duplicate(
+        self,
+        conn: sqlite3.Connection,
+        kind: str,
+        payload: dict[str, Any],
+        fingerprint: str,
+        *,
+        exclude_proposal_id: int | None = None,
+    ) -> None:
+        row = conn.execute(
+            """SELECT id FROM community_proposals WHERE fingerprint=?
+            AND status IN ('pending','clarification') AND (? IS NULL OR id<>?) LIMIT 1""",
+            (fingerprint, exclude_proposal_id, exclude_proposal_id),
+        ).fetchone()
+        if row:
+            raise CommunityError("Точное такое предложение уже ожидает проверки.")
+
+        if kind in {"mcc_save", "partner_save"} and "name" in payload:
+            needle = normalize_store_name(payload["name"])
+            if any(
+                needle
+                in {
+                    normalize_store_name(item.name),
+                    *(normalize_store_name(alias) for alias in item.aliases),
+                }
+                for item in self.stores.list_brands(connection=conn)
+            ):
+                raise CommunityError("Магазин с таким названием уже существует.")
+        if kind == "store_metadata":
+            needle = normalize_store_name(payload["name"])
+            for brand in self.stores.list_brands(connection=conn):
+                normalized_aliases = sorted(
+                    {normalize_store_name(value) for value in payload.get("aliases", [])}
+                )
+                current_aliases = sorted(
+                    {normalize_store_name(value) for value in brand.aliases}
+                )
+                if (
+                    brand.id == payload["brand_id"]
+                    and needle == normalize_store_name(brand.name)
+                    and normalized_aliases == current_aliases
+                ):
+                    raise CommunityError("Такие данные магазина уже подтверждены.")
+                if brand.id != payload["brand_id"] and needle in {
+                    normalize_store_name(brand.name),
+                    *(normalize_store_name(alias) for alias in brand.aliases),
+                }:
+                    raise CommunityError("Магазин с таким названием уже существует.")
+        if kind == "mcc_save" and "merchant_id" not in payload and "brand_id" in payload:
+            wanted = (
+                {"offline", "online"}
+                if payload["channel"] == "both"
+                else {payload["channel"]}
+            )
+            existing = self.stores.list_brand_mcc_groups(
+                payload["brand_id"], connection=conn
+            )
+            if any(
+                item.mcc == payload["mcc"] and wanted <= set(item.channels)
+                for item in existing
+            ):
+                raise CommunityError("Такой MCC уже есть у выбранного магазина.")
+        if kind == "mcc_save" and "merchant_id" in payload:
+            source_brand = self.stores.brand_for_merchant(
+                payload["merchant_id"], connection=conn
+            )
+            groups = (
+                self.stores.list_brand_mcc_groups(source_brand.id, connection=conn)
+                if source_brand is not None
+                else ()
+            )
+            current = next(
+                (
+                    item
+                    for item in groups
+                    if item.mcc == payload.get("old_mcc", payload["mcc"])
+                    and payload["merchant_id"] in item.merchant_ids
+                ),
+                None,
+            )
+            target_channels = (
+                ("offline", "online")
+                if payload["channel"] == "both"
+                else (payload["channel"],)
+            )
+            if (
+                current is not None
+                and source_brand is not None
+                and payload["brand_id"] == source_brand.id
+                and tuple(current.channels) == target_channels
+                and payload["mcc"] == current.mcc
+                and payload.get("note", "") == current.note
+            ):
+                raise CommunityError("Такой MCC уже подтверждён без изменений.")
+        if (
+            kind == "partner_save"
+            and "offer_id" not in payload
+            and "brand_id" in payload
+            and self.partners is not None
+        ):
+            for offer in self.partners.list_offers(payload["brand_id"], connection=conn):
+                if self._partner_effect(offer, connection=conn) == self._partner_effect_payload(
+                    payload
+                ):
+                    raise CommunityError("Точное такое партнёрство уже существует.")
+        if kind == "partner_save" and "offer_id" in payload and self.partners is not None:
+            offer = self.partners.get_offer(
+                payload["offer_id"], include_archived=True, connection=conn
+            )
+            if offer and self._partner_effect(
+                offer, connection=conn
+            ) == self._partner_effect_payload(payload):
+                raise CommunityError("Партнёрство уже подтверждено без изменений.")
+
+    @staticmethod
+    def _partner_effect_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "brand_id": payload["brand_id"],
+            "card_id": payload["card_id"],
+            "channel": payload["channel"],
+            "mode": payload["mode"],
+            "reward_kind": payload["reward_kind"],
+            "value": payload["value"],
+            "starts_on": payload.get("starts_on"),
+            "ends_on": payload.get("ends_on"),
+            "conditions": payload.get("conditions", ""),
+            "min_purchase": payload.get("min_purchase"),
+            "max_purchase": payload.get("max_purchase"),
+            "per_transaction_cap": payload.get("per_transaction_cap"),
+            "excluded_mccs": sorted(payload.get("excluded_mccs", [])),
+        }
+
+    def _partner_effect(self, offer: Any, *, connection: sqlite3.Connection) -> dict[str, Any]:
+        tier = offer.tiers[0]
+        return {
+            "brand_id": offer.brand_id,
+            "card_id": offer.card_id,
+            "channel": offer.channel,
+            "mode": offer.mode,
+            "reward_kind": offer.reward_kind,
+            "value": format(tier.value.normalize(), "f"),
+            "starts_on": offer.starts_on.isoformat() if offer.starts_on else None,
+            "ends_on": offer.ends_on.isoformat() if offer.ends_on else None,
+            "conditions": offer.conditions,
+            "min_purchase": (
+                format(tier.min_purchase.normalize(), "f")
+                if tier.min_purchase is not None
+                else None
+            ),
+            "max_purchase": (
+                format(tier.max_purchase.normalize(), "f")
+                if tier.max_purchase is not None
+                else None
+            ),
+            "per_transaction_cap": (
+                format(tier.per_transaction_cap.normalize(), "f")
+                if tier.per_transaction_cap is not None
+                else None
+            ),
+            "excluded_mccs": sorted(
+                item.mcc
+                for item in self.partners.list_offer_exclusions(
+                    offer.id, connection=connection
+                )
+                if item.mcc
+            ),
+        }
+
+    def pending_effects(self) -> tuple[dict[str, Any], ...]:
+        """Return active proposal effects without author identity for public overlays."""
+
+        with self.stores.connection() as conn:
+            rows = conn.execute(
+                """SELECT id,kind,payload,status FROM community_proposals
+                WHERE status IN ('pending','clarification') ORDER BY id"""
+            ).fetchall()
+            return tuple(
+                {
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "payload": json.loads(row["payload"]),
+                    "status": row["status"],
+                }
+                for row in rows
+            )
 
     def _proposal(self, conn: sqlite3.Connection, proposal_id: int) -> Proposal:
         row = conn.execute(
@@ -889,6 +1282,7 @@ class CommunityService:
             row["reviewer_id"],
             row["lease_until"],
             row["audit_id"],
+            row["fingerprint"],
         )
 
     def proposal(self, user_id: int, proposal_id: int) -> Proposal:
@@ -985,6 +1379,120 @@ class CommunityService:
     ) -> int:
         kind = proposal.kind
         payload = self._validate_payload(kind, proposal.payload)
+        if kind in FORM_KINDS:
+            self._require_admin(conn, actor_id)
+            if expected is not None and self._snapshot(conn, kind, payload) != expected:
+                raise StaleAction(
+                    "Данные изменились после просмотра. Откройте редактор предложения заново."
+                )
+        if kind == "store_metadata":
+            return self.stores.apply_change(
+                "edit_brand_names",
+                {
+                    "brand_id": payload["brand_id"],
+                    "name": payload["name"],
+                    "aliases": payload["aliases"],
+                },
+                actor_id,
+                connection=conn,
+            ).audit_id
+        if kind == "mcc_delete":
+            values = {
+                key: payload[key]
+                for key in ("merchant_id", "merchant_ids", "channels", "mcc")
+                if key in payload
+            }
+            return self.stores.apply_change(
+                "archive_mcc", values, actor_id, connection=conn
+            ).audit_id
+        if kind == "mcc_save":
+            values = dict(payload)
+            source_url = values.pop("source_url", "")
+            values["evidence"] = {"submission_id": proposal.id, "source": "community"}
+            if source_url:
+                values["evidence"]["source_url"] = source_url
+            return self.stores.save_mcc(values, actor_id=actor_id, connection=conn).audit_id
+        if kind == "partner_delete":
+            if self.partners is None:
+                raise CommunityError("Хранилище партнёрств пока недоступно.")
+            if not self.partners.delete_offer_with_exclusions(
+                payload["offer_id"], actor_id=actor_id, connection=conn
+            ):
+                raise StaleAction("Партнёрство уже удалено.")
+            return payload["offer_id"]
+        if kind == "partner_save":
+            if self.partners is None:
+                raise CommunityError("Хранилище партнёрств пока недоступно.")
+            if "name" in payload:
+                created = self.stores.create_partner_store(
+                    payload["name"], payload["channel"], actor_id=actor_id, connection=conn
+                )
+                if created.brand_id is None:
+                    raise CommunityError("Не удалось создать магазин для партнёрства.")
+                brand_id = created.brand_id
+            else:
+                brand_id = payload["brand_id"]
+            from .partner_rewards import (
+                PartnerExclusionInput,
+                PartnerOfferInput,
+                PartnerTierInput,
+            )
+
+            starts_on = (
+                date.fromisoformat(payload["starts_on"])
+                if payload.get("starts_on")
+                else None
+            )
+            ends_on = date.fromisoformat(payload["ends_on"]) if payload.get("ends_on") else None
+            source_url = payload.get("source_url", "")
+            offer_input = PartnerOfferInput(
+                brand_id=brand_id,
+                card_id=payload["card_id"],
+                channel=payload["channel"],
+                mode=payload["mode"],
+                reward_kind=payload["reward_kind"],
+                starts_on=starts_on,
+                ends_on=ends_on,
+                conditions=payload.get("conditions", ""),
+                source_url=source_url,
+                tiers=(
+                    PartnerTierInput(
+                        value=Decimal(payload["value"]),
+                        min_purchase=(
+                            Decimal(payload["min_purchase"])
+                            if payload.get("min_purchase") is not None
+                            else None
+                        ),
+                        max_purchase=(
+                            Decimal(payload["max_purchase"])
+                            if payload.get("max_purchase") is not None
+                            else None
+                        ),
+                        per_transaction_cap=(
+                            Decimal(payload["per_transaction_cap"])
+                            if payload.get("per_transaction_cap") is not None
+                            else None
+                        ),
+                    ),
+                ),
+                exclusions=tuple(
+                    PartnerExclusionInput(
+                        brand_id=brand_id,
+                        card_id=payload["card_id"],
+                        reward_kind=payload["reward_kind"],
+                        channel=payload["channel"],
+                        mcc=mcc,
+                        suppress_base=False,
+                        reason="Партнёрство не действует для MCC",
+                        source_url=source_url,
+                    )
+                    for mcc in payload.get("excluded_mccs", [])
+                ),
+            )
+            offer = self.partners.save_offer(
+                payload.get("offer_id"), offer_input, actor_id=actor_id, connection=conn
+            )
+            return offer.id
         if kind == "card_partnership":
             self._require_admin(conn, actor_id)
             if self.partners is None:
@@ -1107,6 +1615,7 @@ class CommunityService:
             "merchants": {},
             "facts": {},
             "tannei": {},
+            "offers": {},
         }
         brand_id = payload.get("brand_id")
         if (
@@ -1118,6 +1627,9 @@ class CommunityService:
                 "merge_brand",
                 "set_brand_membership",
                 "add_mcc_both",
+                "store_metadata",
+                "mcc_save",
+                "partner_save",
             }
             and brand_id is not None
         ):
@@ -1154,7 +1666,7 @@ class CommunityService:
                 else None
             )
         merchant_id = payload.get("merchant_id")
-        if merchant_id and kind in STRUCTURAL_KINDS | {"add_mcc"}:
+        if merchant_id and kind in STRUCTURAL_KINDS | {"add_mcc", "mcc_save", "mcc_delete"}:
             ids = list(payload.get("merchant_ids", [merchant_id]))
             if kind == "merge_merchant":
                 ids.append(payload["target_id"])
@@ -1163,7 +1675,14 @@ class CommunityService:
                 if merchant is None:
                     raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
                 result["merchants"][str(value)] = [merchant.revision, merchant.archived]
-            if kind in {"replace_mcc", "archive_mcc", "add_mcc", "edit_mcc_note"}:
+            if kind in {
+                "replace_mcc",
+                "archive_mcc",
+                "add_mcc",
+                "edit_mcc_note",
+                "mcc_save",
+                "mcc_delete",
+            }:
                 old_mcc = payload.get("old_mcc", payload.get("mcc"))
                 for value in ids:
                     facts = {
@@ -1185,6 +1704,42 @@ class CommunityService:
                             if fact
                             else None
                         )
+        offer_id = payload.get("offer_id")
+        if offer_id is not None and kind in {"partner_save", "partner_delete"}:
+            if self.partners is None:
+                raise CommunityError("Хранилище партнёрств пока недоступно.")
+            offer = self.partners.get_offer(offer_id, include_archived=True, connection=conn)
+            if offer is None:
+                raise CommunityError("Партнёрство больше недоступно.")
+            result["offers"][str(offer_id)] = {
+                "brand_id": offer.brand_id,
+                "card_id": offer.card_id,
+                "channel": offer.channel,
+                "mode": offer.mode,
+                "reward_kind": offer.reward_kind,
+                "starts_on": offer.starts_on.isoformat() if offer.starts_on else None,
+                "ends_on": offer.ends_on.isoformat() if offer.ends_on else None,
+                "conditions": offer.conditions,
+                "source_url": offer.source_url,
+                "archived": offer.archived,
+                "tiers": [
+                    [
+                        str(tier.value),
+                        str(tier.min_purchase) if tier.min_purchase is not None else None,
+                        str(tier.max_purchase) if tier.max_purchase is not None else None,
+                        str(tier.per_transaction_cap)
+                        if tier.per_transaction_cap is not None
+                        else None,
+                    ]
+                    for tier in offer.tiers
+                ],
+                "exclusions": [
+                    item.mcc
+                    for item in self.partners.list_offer_exclusions(
+                        offer_id, connection=conn
+                    )
+                ],
+            }
         return result
 
     def submit(self, user_id: int, draft_id: str, version: int) -> Proposal:
@@ -1199,34 +1754,30 @@ class CommunityService:
             if kind not in (EDIT_KINDS if role != "user" else PUBLIC_KINDS):
                 raise AccessDenied("Это изменение доступно только помощникам.")
             payload = self._validate_payload(kind, draft.data.get("payload", {}))
+            if kind == "partner_save" and "name" in payload and role == "user":
+                raise AccessDenied("Новый магазин для партнёрства может создать только помощник.")
+            if (
+                role == "user"
+                and kind in {"card_partnership", "partner_save"}
+                and "brand_id" in payload
+                and not self.stores.list_brand_mcc_groups(
+                    payload["brand_id"], connection=conn
+                )
+            ):
+                raise AccessDenied(
+                    "Партнёрство можно предложить только для магазина с подтверждённым MCC."
+                )
+            response_id = draft.data.get("response_id")
+            fingerprint = self._fingerprint(kind, payload)
+            self._ensure_not_duplicate(
+                conn, kind, payload, fingerprint, exclude_proposal_id=response_id
+            )
             comment = draft.data.get("comment", "")
             if comment:
                 comment = clean_text(comment)
-            response_id = draft.data.get("response_id")
             media = conn.execute(
                 "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
             ).fetchone()
-            if (
-                role == "user"
-                and kind == "card_partnership"
-                and not response_id
-                and not draft.data.get("source_url")
-                and not payload.get("source_url")
-                and not media
-            ):
-                raise CommunityError(
-                    "Добавьте официальную ссылку или скриншот источника перед отправкой."
-                )
-            if not response_id and role == "user":
-                active_count = conn.execute(
-                    "SELECT COUNT(*) FROM community_proposals WHERE user_id=? "
-                    "AND status IN ('pending','clarification')",
-                    (user_id,),
-                ).fetchone()[0]
-                if active_count >= 20:
-                    raise CommunityError(
-                        "У вас уже 20 незавершённых предложений. Дождитесь проверки."
-                    )
             original = self._proposal(conn, response_id) if response_id else None
             if original and (
                 original.user_id != user_id
@@ -1247,8 +1798,18 @@ class CommunityService:
             else:
                 cursor = conn.execute(
                     """INSERT INTO community_proposals(draft_id,user_id,kind,payload,comment,
-                       status,version,created_at,updated_at) VALUES(?,?,?,?,?,'pending',1,?,?)""",
-                    (draft.id, user_id, kind, _safe_json(payload), comment, now, now),
+                       status,version,created_at,updated_at,fingerprint)
+                       VALUES(?,?,?,?,?,'pending',1,?,?,?)""",
+                    (
+                        draft.id,
+                        user_id,
+                        kind,
+                        _safe_json(payload),
+                        comment,
+                        now,
+                        now,
+                        fingerprint,
+                    ),
                 )
                 proposal_id = cursor.lastrowid
             conn.execute(
@@ -1268,6 +1829,7 @@ class CommunityService:
                     (user_id, audit_id, now, proposal_id),
                 )
                 self._expire_proposal_media(conn, proposal_id, now)
+            conn.execute("DELETE FROM community_editor_messages WHERE user_id=?", (user_id,))
             conn.execute("DELETE FROM community_drafts WHERE user_id=?", (user_id,))
             return self._proposal(conn, proposal_id)
 
@@ -1436,10 +1998,7 @@ class CommunityService:
         if decision == "clarification":
             reason = clean_text(reason)
         elif decision == "rejected":
-            # A reviewer may reject an unusable proposal in one tap. Clarifications
-            # still require a concrete question, but rejection has no user-facing
-            # comment contract.
-            reason = ""
+            reason = clean_text(reason) if reason else ""
         with self.stores.transaction() as conn:
             proposal = self._validate_review(conn, actor_id, proposal_id, version, now)
             snapshot = conn.execute(
@@ -1471,6 +2030,47 @@ class CommunityService:
             )
             if decision in FINAL_STATES:
                 self._expire_proposal_media(conn, proposal_id, now)
+            return self._proposal(conn, proposal_id)
+
+    def edit_review_payload(
+        self,
+        actor_id: int,
+        proposal_id: int,
+        version: int,
+        payload: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> Proposal:
+        """Replace a claimed proposal payload without extending its fixed lease."""
+
+        current = time.time() if now is None else now
+        with self.stores.transaction() as conn:
+            proposal = self._validate_review(conn, actor_id, proposal_id, version, current)
+            validated = self._validate_payload(proposal.kind, payload)
+            fingerprint = self._fingerprint(proposal.kind, validated)
+            self._ensure_not_duplicate(
+                conn,
+                proposal.kind,
+                validated,
+                fingerprint,
+                exclude_proposal_id=proposal_id,
+            )
+            next_version = version + 1
+            conn.execute(
+                """UPDATE community_proposals SET payload=?,fingerprint=?,version=?,updated_at=?
+                WHERE id=?""",
+                (_safe_json(validated), fingerprint, next_version, current, proposal_id),
+            )
+            conn.execute(
+                """INSERT INTO community_review_snapshots(proposal_id,version,state)
+                VALUES(?,?,?) ON CONFLICT(proposal_id) DO UPDATE SET
+                version=excluded.version,state=excluded.state""",
+                (
+                    proposal_id,
+                    next_version,
+                    _safe_json(self._snapshot(conn, proposal.kind, validated)),
+                ),
+            )
             return self._proposal(conn, proposal_id)
 
     def cancel(self, user_id: int, proposal_id: int, version: int) -> Proposal:

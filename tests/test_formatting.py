@@ -31,7 +31,7 @@ def test_format_matches_renders_only_cards_and_rewards(catalog_path: Path, tmp_p
 
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
     assert "1. 🅱️ Beta Card — 5% (4,61%)" in rendered
-    assert "3. 🅰️ Alpha Card — 2,5% (2,44%)" in rendered
+    assert "3. 🅰️ Alpha Card — 2,5% (2,435%)" in rendered
     assert "Beta Bank" not in rendered
     assert "Alpha Bank" not in rendered
     assert "мин. платёж" not in rendered
@@ -175,7 +175,7 @@ def test_default_format_remains_exact_and_single_page_compact_is_identical(catal
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
         "1. 🅱️ Beta Card — 5% (4,61%)\n"
         "2. 🌀 Gamma Card — 5% (4,61%)\n"
-        "3. 🅰️ Alpha Card — 2,5% (2,44%)"
+        "3. 🅰️ Alpha Card — 2,5% (2,435%)"
     )
     pages = format_match_pages("5411", matches, descriptions)
     assert len(pages) == 1
@@ -444,7 +444,7 @@ def test_html_matches_style_only_header_names_and_issuers(catalog_path, details)
 
     assert rendered.startswith("<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n")
     assert "1. 🅱️ <b>Beta Card</b> — 5% (4,61%)" in rendered
-    assert "3. 🅰️ <b>Alpha Card</b> — 2,5% (2,44%)" in rendered
+    assert "3. 🅰️ <b>Alpha Card</b> — 2,5% (2,435%)" in rendered
     assert rendered.count("<b>") == len(matches) + 1
     assert rendered.count("<i>") == (len(matches) if details else 0)
     if details:
@@ -459,8 +459,8 @@ def test_html_matches_style_only_header_names_and_issuers(catalog_path, details)
         ("0.5", "0,5%"),
         ("1", "1%"),
         ("1.11", "1,11%"),
-        ("2.50", "2,5% (2,44%)"),
-        ("19.8765432", "19,8765432% (17,55%)"),
+        ("2.50", "2,5% (2,435%)"),
+        ("19.8765432", "19,8765432% (17,553%)"),
     ],
 )
 def test_html_matches_use_ordinary_digits_for_all_percentages(catalog_path, gross, reward):

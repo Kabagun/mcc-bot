@@ -53,7 +53,7 @@ def _component_label(component: RewardComponent, *, show_kind: bool = False) -> 
         kind_label = " деньгами" if component.kind == "cash" else " баллами"
     result = f"{value}%{kind_label}"
     if not component.tax_exempt and component.gross_value > PERCENT_TAX_THRESHOLD:
-        net = _format_decimal(calculate_net_percent(component.gross_value), places=2)
+        net = _format_decimal(calculate_net_percent(component.gross_value), places=3)
         result += f" ({net}%)"
     return result
 

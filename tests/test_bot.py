@@ -139,7 +139,7 @@ def test_exact_numeric_alias_counts_as_brand(catalog_path, monkeypatch) -> None:
     store_search.assert_awaited_once_with(update, context, "7745")
 
 
-def test_only_known_mcc_bypasses_fuzzy_numeric_brand(catalog_path, monkeypatch) -> None:
+def test_known_mcc_with_store_match_offers_explicit_choice(catalog_path, monkeypatch) -> None:
     context = _context(CardCatalog.from_file(catalog_path))
     context.application.bot_data["descriptions"] = DescriptionCatalog(
         labels={"7745": "Известная категория"}
@@ -154,8 +154,10 @@ def test_only_known_mcc_bypasses_fuzzy_numeric_brand(catalog_path, monkeypatch) 
 
     asyncio.run(lookup_text(update, context))
 
-    lookup.assert_awaited_once_with(update, context, "7745")
+    lookup.assert_not_awaited()
     store_search.assert_not_awaited()
+    rows = update.effective_message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [row[0].text for row in rows] == ["🏪 Магазин «7745»", "🧾 MCC 7745"]
 
 
 def test_numeric_brand_and_mcc_offer_explicit_choice(catalog_path) -> None:
@@ -175,22 +177,19 @@ def test_numeric_brand_and_mcc_offer_explicit_choice(catalog_path) -> None:
     assert rows[1][0].callback_data == "mcc_lookup:7745"
 
 
-def test_unknown_numeric_input_explains_mcc_and_offers_prefilled_brand(catalog_path) -> None:
+def test_unknown_four_digit_input_remains_a_store_query(catalog_path, monkeypatch) -> None:
     context = _context(CardCatalog.from_file(catalog_path))
     context.application.bot_data["descriptions"] = DescriptionCatalog(labels={})
     _with_store_search(context)
     message = SimpleNamespace(text="1233", reply_text=AsyncMock())
+    store_search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)
+    update = SimpleNamespace(effective_message=message)
 
-    asyncio.run(lookup_text(SimpleNamespace(effective_message=message), context))
+    asyncio.run(lookup_text(update, context))
 
-    message.reply_text.assert_awaited_once()
-    text = message.reply_text.await_args.args[0]
-    assert text.splitlines()[0] == "MCC 1233 не найден в справочнике. Проверьте код."
-    assert "Если «1233» — название магазина, его можно добавить." in text  # noqa: RUF001
-    button = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
-    assert button.text == "➕ Добавить магазин «1233»"  # noqa: RUF001
-    _, _, _, token = button.callback_data.split(":")
-    assert context.user_data["store_searches"][token] == "1233"
+    store_search.assert_awaited_once_with(update, context, "1233")
+    message.reply_text.assert_not_awaited()
 
 
 def test_unknown_mcc_lookup_never_calculates_cards() -> None:
@@ -294,7 +293,7 @@ def test_remember_chat_persists_effective_chat_id(catalog_path, tmp_path) -> Non
     assert registry.chat_ids() == (12345,)
 
 
-def test_remember_chat_refreshes_only_known_role_identity(catalog_path, tmp_path) -> None:
+def test_remember_chat_refreshes_proposal_author_identity(catalog_path, tmp_path) -> None:
     registry = UserRegistry(tmp_path / "users.sqlite3")
     registry.initialize()
     community = CommunityService(StoreRepository(tmp_path / "stores.sqlite3"), owner_id=1)
@@ -321,10 +320,9 @@ def test_remember_chat_refreshes_only_known_role_identity(catalog_path, tmp_path
     candidate = community.role_candidates(1)[0]
     assert (candidate["username"], candidate["first_name"]) == ("new_name", "New")
     with community.stores.connection() as connection:
-        assert (
-            connection.execute("SELECT 1 FROM community_role_profiles WHERE user_id=20").fetchone()
-            is None
-        )
+        assert connection.execute(
+            "SELECT 1 FROM community_role_profiles WHERE user_id=20"
+        ).fetchone()
 
 
 def _callback(data: object, *, accessible: bool = True) -> SimpleNamespace:
@@ -361,26 +359,19 @@ def test_bare_lookup_attaches_details_button_with_normalized_mcc(catalog_path, r
 
 
 @pytest.mark.parametrize("raw_mcc", ["123", "12345", "9999"])
-def test_invalid_or_empty_lookups_have_no_details_button(catalog_path, raw_mcc) -> None:
+def test_numeric_store_queries_do_not_open_mcc_details(
+    catalog_path, raw_mcc, monkeypatch
+) -> None:
     message = SimpleNamespace(text=raw_mcc, reply_text=AsyncMock())
+    store_search = AsyncMock()
+    monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)
+    update = SimpleNamespace(effective_message=message)
+    context = _context(CardCatalog.from_file(catalog_path))
 
-    asyncio.run(
-        lookup_text(
-            SimpleNamespace(effective_message=message),
-            _context(CardCatalog.from_file(catalog_path)),
-        )
-    )
+    asyncio.run(lookup_text(update, context))
 
-    message.reply_text.assert_awaited_once()
-    assert "parse_mode" not in message.reply_text.await_args.kwargs
-    if raw_mcc == "9999":
-        assert "reply_markup" in message.reply_text.await_args.kwargs
-        assert (
-            message.reply_text.await_args.args[0].splitlines()[0]
-            == "MCC 9999 не найден в справочнике. Проверьте код."
-        )
-    else:
-        assert "reply_markup" not in message.reply_text.await_args.kwargs
+    store_search.assert_awaited_once_with(update, context, raw_mcc)
+    message.reply_text.assert_not_awaited()
 
 
 def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_text(catalog_path):
@@ -389,7 +380,7 @@ def test_details_roundtrip_edits_the_same_message_and_restores_exact_compact_tex
     asyncio.run(lookup_text(SimpleNamespace(effective_message=incoming), context))
     compact = incoming.reply_text.await_args.args[0]
     assert "<b>Beta Card</b> — 5% (4,61%)" in compact
-    assert "<b>Alpha Card</b> — 2,5% (2,44%)" in compact
+    assert "<b>Alpha Card</b> — 2,5% (2,435%)" in compact
     query = _callback(_button(incoming.reply_text.await_args).callback_data)
 
     asyncio.run(toggle_details(SimpleNamespace(callback_query=query), context))
@@ -622,7 +613,9 @@ def test_oversized_card_gives_explicit_bounded_reply_without_losing_cards_silent
     assert query.edit_message_text.await_args.kwargs["reply_markup"] is None
 
 
-def test_application_registers_details_callback_handler(catalog_path, tmp_path) -> None:
+def test_application_registers_details_callback_handler(
+    catalog_path, tmp_path, monkeypatch
+) -> None:
     settings = BotSettings(
         token="123456:ABC",
         catalog_path=catalog_path,
@@ -633,6 +626,7 @@ def test_application_registers_details_callback_handler(catalog_path, tmp_path) 
     )
     settings.descriptions_path.write_text('{"5411": "Продуктовые магазины"}', encoding="utf-8")
 
+    monkeypatch.setattr("mcc_bot.bot.install_jobs", lambda application: None)
     application = build_application(settings)
 
     handlers = [handler for group in application.handlers.values() for handler in group]
