@@ -13,6 +13,7 @@ import os
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -27,6 +28,8 @@ from .resources import default_data_path
 from .stores import StoreRepository
 
 SEED_PATH = default_data_path("partner_seed_20260830.json")
+
+_BrandResolution = Literal["created", "reused", "missing", "ambiguous"]
 
 
 def _date(value: str | None) -> date | None:
@@ -66,12 +69,29 @@ def _brand_for_seed(
     aliases: tuple[str, ...],
     preferred_channel: str,
     actor_id: int,
-) -> tuple[int, bool]:
+    require_existing_mcc: bool = False,
+    match_channel: str | None = None,
+    match_mcc: str | None = None,
+) -> tuple[int | None, _BrandResolution, int | None]:
+    def has_required_mcc(brand_id: int) -> bool:
+        brand = stores.get_brand(brand_id, connection=connection)
+        if brand is None:
+            return False
+        facts = stores.list_brand_mcc(brand_id, connection=connection)
+        return any(
+            (match_channel is None or fact.channel == match_channel)
+            and (match_mcc is None or fact.mcc == match_mcc)
+            for fact in facts
+        )
+
     mapped = connection.execute(
         "SELECT brand_id FROM partner_seed_brands WHERE source_key=?", (brand_key,)
     ).fetchone()
-    if mapped:
-        return mapped["brand_id"], False
+    mapped_brand_id = mapped["brand_id"] if mapped else None
+    if mapped_brand_id is not None and (
+        not require_existing_mcc or has_required_mcc(mapped_brand_id)
+    ):
+        return mapped_brand_id, "reused", None
 
     ranked_brands: dict[int, tuple[int, int, int]] = {}
     for name_position, candidate in enumerate((name, *aliases)):
@@ -88,8 +108,15 @@ def _brand_for_seed(
                 previous = ranked_brands.get(brand.id)
                 if previous is None or score < previous:
                     ranked_brands[brand.id] = score
-    created = not ranked_brands
-    if ranked_brands:
+
+    if require_existing_mcc:
+        eligible = [brand_id for brand_id in ranked_brands if has_required_mcc(brand_id)]
+        if not eligible:
+            return None, "missing", None
+        if len(eligible) > 1:
+            return None, "ambiguous", None
+        brand_id = eligible[0]
+    elif ranked_brands:
         brand_id = min(ranked_brands, key=ranked_brands.__getitem__)
     else:
         channel = preferred_channel if preferred_channel in {"offline", "online"} else "offline"
@@ -100,11 +127,83 @@ def _brand_for_seed(
             connection=connection,
         )
         brand_id = result.brand_id
-    connection.execute(
-        "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
-        (brand_key, brand_id),
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            (brand_key, brand_id),
+        )
+        return brand_id, "created", None
+
+    if mapped_brand_id is None:
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            (brand_key, brand_id),
+        )
+        repair_from = None
+    else:
+        # Defer a stale mapping update until the caller has verified that an
+        # existing seeded entity is still untouched and can move with it.
+        repair_from = mapped_brand_id if mapped_brand_id != brand_id else None
+    return brand_id, "reused", repair_from
+
+
+def _offer_matches_seed(offer, payload: PartnerOfferInput, *, brand_id: int) -> bool:
+    return (
+        not offer.archived
+        and offer.brand_id == brand_id
+        and offer.card_id == payload.card_id.strip()
+        and offer.channel == payload.channel
+        and offer.mode == payload.mode
+        and offer.reward_kind == payload.reward_kind
+        and offer.starts_on == payload.starts_on
+        and offer.ends_on == payload.ends_on
+        and offer.conditions == payload.conditions.strip()
+        and offer.source_url == payload.source_url.strip()
+        and tuple(
+            (
+                tier.value,
+                tier.min_purchase,
+                tier.max_purchase,
+                tier.per_transaction_cap,
+                tier.starts_on,
+                tier.ends_on,
+            )
+            for tier in offer.tiers
+        )
+        == tuple(
+            (
+                tier.value,
+                tier.min_purchase,
+                tier.max_purchase,
+                tier.per_transaction_cap,
+                tier.starts_on,
+                tier.ends_on,
+            )
+            for tier in payload.tiers
+        )
     )
-    return brand_id, created
+
+
+def _exclusion_matches_seed(exclusion, payload: PartnerExclusionInput, *, brand_id: int) -> bool:
+    return (
+        not exclusion.archived
+        and exclusion.brand_id == brand_id
+        and exclusion.card_id == payload.card_id.strip()
+        and exclusion.reward_kind == payload.reward_kind
+        and exclusion.channel == payload.channel
+        and exclusion.mcc == payload.mcc
+        and exclusion.starts_on == payload.starts_on
+        and exclusion.ends_on == payload.ends_on
+        and exclusion.suppress_base == payload.suppress_base
+        and exclusion.reason == payload.reason.strip()
+        and exclusion.source_url == payload.source_url.strip()
+    )
+
+
+def _commit_mapping_repair(connection, brand_key: str, brand_id: int) -> None:
+    connection.execute(
+        "UPDATE partner_seed_brands SET brand_id=? WHERE source_key=?",
+        (brand_id, brand_key),
+    )
 
 
 def apply_partner_seed(
@@ -121,14 +220,20 @@ def apply_partner_seed(
     counters = {
         "brands_created": 0,
         "brands_reused": 0,
+        "brands_skipped_missing": 0,
+        "brands_skipped_ambiguous": 0,
+        "brand_mappings_repaired": 0,
+        "brand_mapping_conflicts": 0,
         "offers_added": 0,
         "offers_existing": 0,
+        "offers_skipped": 0,
         "exclusions_added": 0,
         "exclusions_existing": 0,
+        "exclusions_skipped": 0,
     }
     with stores.transaction() as connection:
         for item in raw["offers"]:
-            brand_id, created = _brand_for_seed(
+            brand_id, resolution, repair_from = _brand_for_seed(
                 stores,
                 connection,
                 brand_key=item["brand_key"],
@@ -136,8 +241,15 @@ def apply_partner_seed(
                 aliases=tuple(item.get("aliases", ())),
                 preferred_channel=item["channel"],
                 actor_id=actor_id,
+                require_existing_mcc=bool(item.get("require_existing_mcc", False)),
+                match_channel=item.get("match_channel"),
+                match_mcc=item.get("match_mcc"),
             )
-            counters["brands_created" if created else "brands_reused"] += 1
+            if brand_id is None:
+                counters[f"brands_skipped_{resolution}"] += 1
+                counters["offers_skipped"] += 1
+                continue
+            counters[f"brands_{resolution}"] += 1
             payload = PartnerOfferInput(
                 brand_id=brand_id,
                 card_id=item["card_id"],
@@ -150,6 +262,29 @@ def apply_partner_seed(
                 conditions=item.get("conditions", ""),
                 source_url=item.get("source_url", ""),
             )
+            if repair_from is not None:
+                row = connection.execute(
+                    "SELECT id FROM partner_offers WHERE source_key=?", (item["source_key"],)
+                ).fetchone()
+                existing = (
+                    partners.get_offer(row["id"], include_archived=True, connection=connection)
+                    if row
+                    else None
+                )
+                if existing is not None and existing.brand_id == brand_id:
+                    pass
+                elif existing is not None and _offer_matches_seed(
+                    existing, payload, brand_id=repair_from
+                ):
+                    partners.update_offer(
+                        existing.id, payload, actor_id=actor_id, connection=connection
+                    )
+                elif existing is not None:
+                    counters["brand_mapping_conflicts"] += 1
+                    counters["offers_skipped"] += 1
+                    continue
+                _commit_mapping_repair(connection, item["brand_key"], brand_id)
+                counters["brand_mappings_repaired"] += 1
             _offer, added = partners.ensure_seed_offer(
                 item["source_key"], payload, actor_id=actor_id, connection=connection
             )
@@ -158,7 +293,7 @@ def apply_partner_seed(
             if item.get("brand_key") is None:
                 brand_id = None
             else:
-                brand_id, created = _brand_for_seed(
+                brand_id, resolution, repair_from = _brand_for_seed(
                     stores,
                     connection,
                     brand_key=item["brand_key"],
@@ -166,8 +301,17 @@ def apply_partner_seed(
                     aliases=tuple(item.get("aliases", ())),
                     preferred_channel=item["channel"],
                     actor_id=actor_id,
+                    require_existing_mcc=bool(item.get("require_existing_mcc", False)),
+                    match_channel=item.get("match_channel"),
+                    match_mcc=item.get("match_mcc"),
                 )
-                counters["brands_created" if created else "brands_reused"] += 1
+                if brand_id is None:
+                    counters[f"brands_skipped_{resolution}"] += 1
+                    counters["exclusions_skipped"] += 1
+                    continue
+                counters[f"brands_{resolution}"] += 1
+            if item.get("brand_key") is None:
+                repair_from = None
             payload = PartnerExclusionInput(
                 brand_id=brand_id,
                 card_id=item["card_id"],
@@ -180,6 +324,25 @@ def apply_partner_seed(
                 reason=item.get("reason", ""),
                 source_url=item.get("source_url", ""),
             )
+            if repair_from is not None:
+                row = connection.execute(
+                    "SELECT * FROM partner_exclusions WHERE source_key=?", (item["source_key"],)
+                ).fetchone()
+                existing = partners._exclusion_from_row(row) if row else None
+                if existing is not None and existing.brand_id == brand_id:
+                    pass
+                elif existing is not None and _exclusion_matches_seed(
+                    existing, payload, brand_id=repair_from
+                ):
+                    partners.update_exclusion(
+                        existing.id, payload, actor_id=actor_id, connection=connection
+                    )
+                elif existing is not None:
+                    counters["brand_mapping_conflicts"] += 1
+                    counters["exclusions_skipped"] += 1
+                    continue
+                _commit_mapping_repair(connection, item["brand_key"], brand_id)
+                counters["brand_mappings_repaired"] += 1
             _exclusion, added = partners.ensure_seed_exclusion(
                 item["source_key"], payload, actor_id=actor_id, connection=connection
             )

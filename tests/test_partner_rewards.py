@@ -17,7 +17,7 @@ from mcc_bot.partner_rewards import (
     PartnerTierInput,
     resolve_store_matches,
 )
-from mcc_bot.stores import StoreRepository
+from mcc_bot.stores import StoreError, StoreRepository
 
 
 def _catalog(tmp_path) -> CardCatalog:
@@ -99,6 +99,237 @@ def _repositories(tmp_path, name="21 век"):
     partners.initialize()
     assert result.brand_id is not None
     return stores, partners, result.brand_id
+
+
+def test_initialize_migrates_legacy_seed_brand_bindings_to_stable_ids(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    brand_id = stores.apply_change(
+        "add_merchant", {"name": "Legacy seed store", "channel": "offline", "mcc": "5411"}, 1
+    ).brand_id
+    assert brand_id is not None
+    with stores.transaction() as connection:
+        connection.execute(
+            """CREATE TABLE partner_seed_brands (
+            source_key TEXT PRIMARY KEY,
+            brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+        )
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            ("legacy:store", brand_id),
+        )
+
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    with stores.connection() as connection:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(partner_seed_brands)")
+        }
+        row = connection.execute(
+            "SELECT id,source_key,brand_id FROM partner_seed_brands"
+        ).fetchone()
+
+    assert columns >= {"id", "source_key", "brand_id"}
+    assert row is not None
+    assert row["id"] > 0
+    assert row["source_key"] == "legacy:store"
+    assert row["brand_id"] == brand_id
+
+
+def test_initialize_recovers_interrupted_seed_binding_copy_without_data_loss(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    first = stores.apply_change(
+        "add_merchant", {"name": "First", "channel": "offline", "mcc": "5411"}, 1
+    )
+    second = stores.apply_change(
+        "add_merchant", {"name": "Second", "channel": "offline", "mcc": "5411"}, 1
+    )
+    assert first.brand_id is not None and second.brand_id is not None
+    with stores.transaction() as connection:
+        connection.execute(
+            """CREATE TABLE partner_seed_brands (
+            id INTEGER PRIMARY KEY, source_key TEXT NOT NULL UNIQUE,
+            brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+        )
+        connection.execute(
+            """CREATE TABLE partner_seed_brands_legacy (
+            source_key TEXT PRIMARY KEY,
+            brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+        )
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            ("already-copied", first.brand_id),
+        )
+        connection.execute(
+            "INSERT INTO partner_seed_brands_legacy(source_key,brand_id) VALUES(?,?)",
+            ("not-copied-yet", second.brand_id),
+        )
+
+    PartnerRepository(stores).initialize()
+
+    with stores.connection() as connection:
+        rows = connection.execute(
+            "SELECT source_key,brand_id FROM partner_seed_brands ORDER BY source_key"
+        ).fetchall()
+        legacy_exists = connection.execute(
+            """SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='partner_seed_brands_legacy'"""
+        ).fetchone()
+    assert [(row["source_key"], row["brand_id"]) for row in rows] == [
+        ("already-copied", first.brand_id),
+        ("not-copied-yet", second.brand_id),
+    ]
+    assert legacy_exists is None
+
+
+def test_brand_merge_rehomes_partner_rows_and_revert_restores_them(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    source = stores.apply_change(
+        "add_merchant", {"name": "Source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Target", "channel": "offline", "mcc": "5411"}, 1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    offer = partners.create_offer(
+        _offer(source.brand_id, channel="offline"), actor_id=1, source_key="seed:offer"
+    )
+    exclusion = partners.create_exclusion(
+        PartnerExclusionInput(
+            brand_id=source.brand_id,
+            card_id="vitamin_d",
+            reward_kind="points",
+            channel="offline",
+            mcc="5411",
+            starts_on=None,
+            ends_on=None,
+            suppress_base=False,
+            reason="Test",
+            source_url="",
+        ),
+        actor_id=1,
+        source_key="seed:exclusion",
+    )
+    with stores.transaction() as connection:
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            ("seed:brand", source.brand_id),
+        )
+
+    merged = stores.apply_change(
+        "merge_brand",
+        {"brand_id": source.brand_id, "target_id": target.brand_id},
+        1,
+    )
+    assert partners.get_offer(offer.id, include_archived=True).brand_id == target.brand_id
+    moved_exclusion = next(
+        item
+        for item in partners.list_exclusions(
+            target.brand_id, include_archived=True, include_global=False
+        )
+        if item.id == exclusion.id
+    )
+    assert moved_exclusion.brand_id == target.brand_id
+    with stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_seed_brands WHERE source_key='seed:brand'"
+            ).fetchone()["brand_id"]
+            == target.brand_id
+        )
+
+    stores.apply_change("revert", {"audit_id": merged.audit_id}, 1)
+    assert partners.get_offer(offer.id, include_archived=True).brand_id == source.brand_id
+    restored_exclusion = next(
+        item
+        for item in partners.list_exclusions(
+            source.brand_id, include_archived=True, include_global=False
+        )
+        if item.id == exclusion.id
+    )
+    assert restored_exclusion.brand_id == source.brand_id
+    with stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_seed_brands WHERE source_key='seed:brand'"
+            ).fetchone()["brand_id"]
+            == source.brand_id
+        )
+
+
+def test_brand_merge_collapses_identical_partner_offers_and_revert_restores_them(
+    tmp_path,
+) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    source = stores.apply_change(
+        "add_merchant", {"name": "Source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Target", "channel": "offline", "mcc": "5411"}, 1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    source_offer = partners.create_offer(
+        _offer(source.brand_id, channel="offline"), actor_id=1, source_key="seed:source"
+    )
+    target_offer = partners.create_offer(
+        _offer(target.brand_id, channel="offline"), actor_id=1, source_key="seed:target"
+    )
+
+    merged = stores.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, 1
+    )
+
+    moved = partners.get_offer(source_offer.id, include_archived=True)
+    survivor = partners.get_offer(target_offer.id, include_archived=True)
+    assert moved is not None and moved.brand_id == target.brand_id and moved.archived
+    assert survivor is not None and not survivor.archived
+
+    stores.apply_change("revert", {"audit_id": merged.audit_id}, 1)
+    restored = partners.get_offer(source_offer.id, include_archived=True)
+    assert restored is not None and restored.brand_id == source.brand_id and not restored.archived
+
+
+def test_brand_merge_blocks_conflicting_partner_rates_without_partial_writes(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    source = stores.apply_change(
+        "add_merchant", {"name": "Source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Target", "channel": "offline", "mcc": "5411"}, 1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    source_offer = partners.create_offer(
+        _offer(source.brand_id, channel="offline"), actor_id=1, source_key="seed:source"
+    )
+    target_offer = partners.create_offer(
+        _offer(
+            target.brand_id,
+            channel="offline",
+            tiers=(PartnerTierInput(Decimal("9")),),
+        ),
+        actor_id=1,
+        source_key="seed:target",
+    )
+
+    with pytest.raises(StoreError, match="конфликтуют партнёрские условия"):
+        stores.apply_change(
+            "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, 1
+        )
+
+    assert stores.get_brand(source.brand_id) is not None
+    assert stores.get_brand(target.brand_id) is not None
+    assert partners.get_offer(source_offer.id, include_archived=True).brand_id == source.brand_id
+    assert partners.get_offer(target_offer.id, include_archived=True).brand_id == target.brand_id
 
 
 def _offer(brand_id, **overrides) -> PartnerOfferInput:

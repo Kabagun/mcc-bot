@@ -705,19 +705,22 @@ class CommunityService:
             ),
             "replace_mcc": (
                 {"merchant_id", "old_mcc", "mcc"},
-                {"note", "merchant_ids", "source_url"},
+                {"note", "merchant_ids", "channels", "source_url"},
             ),
             "rename_merchant": ({"merchant_id", "name"}, set()),
             "merge_merchant": ({"merchant_id", "target_id"}, set()),
             "aliases": ({"merchant_id", "aliases"}, set()),
             "archive_merchant": ({"merchant_id"}, set()),
-            "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids"}),
+            "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids", "channels"}),
             "rename_brand": ({"brand_id", "name"}, set()),
             "brand_aliases": ({"brand_id", "aliases"}, set()),
             "edit_brand_names": ({"brand_id", "name", "aliases"}, set()),
             "set_brand_membership": ({"merchant_id", "brand_id"}, set()),
             "merge_brand": ({"brand_id", "target_id"}, set()),
-            "edit_mcc_note": ({"merchant_id", "mcc", "note"}, {"merchant_ids"}),
+            "edit_mcc_note": (
+                {"merchant_id", "mcc", "note"},
+                {"merchant_ids", "channels"},
+            ),
             "revert": ({"audit_id"}, set()),
             "card_partnership": (
                 {
@@ -759,6 +762,16 @@ class CommunityService:
                     )
                     or len(set(value)) != len(value)
                     or value[0] != result.get("merchant_id")
+                ):
+                    raise CommunityError("Некорректная группа MCC.")
+            elif key == "channels":
+                if (
+                    not isinstance(value, list)
+                    or not value
+                    or len(value) > 2
+                    or any(item not in {"offline", "online"} for item in value)
+                    or len(set(value)) != len(value)
+                    or value != sorted(value, key=("offline", "online").index)
                 ):
                     raise CommunityError("Некорректная группа MCC.")
             elif key in {"mcc", "old_mcc"}:

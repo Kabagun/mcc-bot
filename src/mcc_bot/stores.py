@@ -81,6 +81,28 @@ class BrandMccFact:
 
 
 @dataclass(frozen=True, slots=True)
+class BrandMccGroup:
+    """One public MCC/note fact spanning one or both payment channels.
+
+    ``merchant_ids`` identifies every live source row represented by the public
+    fact.  The underlying channel facts and their evidence stay independent in
+    storage; this type is only a read model for cards and grouped editing.
+    """
+
+    channels: tuple[str, ...]
+    mcc: str
+    note: str
+    merchant_ids: tuple[int, ...]
+    evidence_count: int
+
+    @property
+    def channel(self) -> str:
+        """Return the compact selector used by Telegram callbacks."""
+
+        return self.channels[0] if len(self.channels) == 1 else "both"
+
+
+@dataclass(frozen=True, slots=True)
 class SearchResult:
     """Deterministic matches and separately labelled fuzzy suggestions."""
 
@@ -1193,6 +1215,46 @@ class StoreRepository:
             )
         return tuple(result)
 
+    def list_brand_mcc_groups(
+        self,
+        brand_id: int,
+        *,
+        connection=None,
+    ) -> tuple[BrandMccGroup, ...]:
+        """Group identical MCC/note facts across payment channels for display.
+
+        Channel rows, fact rows, evidence, and provenance are not modified or
+        collapsed.  Facts with different notes deliberately remain separate.
+        """
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.list_brand_mcc_groups(brand_id, connection=conn)
+        grouped: dict[tuple[str, str], list[BrandMccFact]] = {}
+        for fact in self.list_brand_mcc(brand_id, connection=connection):
+            grouped.setdefault((fact.mcc, fact.note), []).append(fact)
+        result = []
+        for (mcc, note), facts in grouped.items():
+            facts.sort(key=lambda fact: (0 if fact.channel == "offline" else 1, fact.mcc))
+            result.append(
+                BrandMccGroup(
+                    tuple(fact.channel for fact in facts),
+                    mcc,
+                    note,
+                    tuple(merchant_id for fact in facts for merchant_id in fact.merchant_ids),
+                    sum(fact.evidence_count for fact in facts),
+                )
+            )
+        result.sort(
+            key=lambda fact: (
+                fact.mcc,
+                0 if fact.channel == "both" else 1,
+                0 if fact.channel == "offline" else 1,
+                fact.note.casefold(),
+            )
+        )
+        return tuple(result)
+
     def history(
         self, merchant_id=None, *, limit=20, offset: int = 0, connection=None
     ) -> tuple[AuditEntry, ...]:
@@ -2091,9 +2153,14 @@ class StoreRepository:
                 for target_id in fact_merchant_ids:
                     self._archive_fact(connection, changes, target_id, payload["mcc"])
             elif kind == "edit_mcc_note":
-                self._edit_mcc_note(
-                    connection, changes, merchant_id, payload["mcc"], payload["note"]
-                )
+                edited_channels = set()
+                for target_id in fact_merchant_ids:
+                    target = self._required(connection, target_id)
+                    if target["channel"] not in edited_channels:
+                        self._edit_mcc_note(
+                            connection, changes, target_id, payload["mcc"], payload["note"]
+                        )
+                        edited_channels.add(target["channel"])
             elif kind == "rename_merchant":
                 self._update(
                     connection,
@@ -2210,11 +2277,28 @@ class StoreRepository:
         return targets[0], brand_id
 
     def _fact_group_merchants(self, connection, payload, merchant, brand_id, mcc):
-        """Validate all internal rows represented by one public channel/MCC fact."""
+        """Validate all internal rows represented by one public MCC/note fact."""
 
         values = payload.get("merchant_ids")
         if values is None:
+            if "channels" in payload:
+                raise StoreError("Некорректная группа MCC")
             return [merchant["id"]]
+        raw_channels = payload.get("channels")
+        if raw_channels is None:
+            channels = [merchant["channel"]]
+        elif (
+            not isinstance(raw_channels, list)
+            or not raw_channels
+            or len(raw_channels) > 2
+            or any(value not in {"offline", "online"} for value in raw_channels)
+            or len(set(raw_channels)) != len(raw_channels)
+            or raw_channels != sorted(raw_channels, key=("offline", "online").index)
+            or merchant["channel"] != raw_channels[0]
+        ):
+            raise StoreError("Некорректная группа MCC")
+        else:
+            channels = raw_channels
         if (
             not isinstance(values, list)
             or not values
@@ -2228,15 +2312,24 @@ class StoreRepository:
         ):
             raise StoreError("Некорректная группа MCC")
         normalized_mcc = normalize_mcc(mcc)
+        anchor_fact = connection.execute(
+            """SELECT note FROM store_facts
+            WHERE merchant_id=? AND mcc=? AND archived=0""",
+            (merchant["id"], normalized_mcc),
+        ).fetchone()
+        if anchor_fact is None:
+            raise StoreError("Группа MCC уже изменилась; откройте её заново")
+        placeholders = ",".join("?" for _ in channels)
         current_ids = [
             row["merchant_id"]
             for row in connection.execute(
-                """SELECT f.merchant_id FROM store_brand_members bm
+                f"""SELECT f.merchant_id FROM store_brand_members bm
                 JOIN store_merchants m ON m.id=bm.merchant_id
                 JOIN store_facts f ON f.merchant_id=m.id
-                WHERE bm.brand_id=? AND m.channel=? AND m.archived=0
-                  AND f.mcc=? AND f.archived=0 ORDER BY f.merchant_id""",
-                (brand_id, merchant["channel"], normalized_mcc),
+                WHERE bm.brand_id=? AND m.channel IN ({placeholders}) AND m.archived=0
+                  AND f.mcc=? AND f.note=? AND f.archived=0
+                ORDER BY CASE m.channel WHEN 'offline' THEN 0 ELSE 1 END,f.merchant_id""",
+                (brand_id, *channels, normalized_mcc, anchor_fact["note"]),
             ).fetchall()
         ]
         if current_ids != values:
@@ -2244,11 +2337,12 @@ class StoreRepository:
         for value in values:
             target = self._required(connection, value)
             if (
-                target["channel"] != merchant["channel"]
+                target["channel"] not in channels
                 or self._brand_id_for_merchant(connection, value) != brand_id
                 or connection.execute(
-                    "SELECT 1 FROM store_facts WHERE merchant_id=? AND mcc=? AND archived=0",
-                    (value, normalized_mcc),
+                    """SELECT 1 FROM store_facts
+                    WHERE merchant_id=? AND mcc=? AND note=? AND archived=0""",
+                    (value, normalized_mcc, anchor_fact["note"]),
                 ).fetchone()
                 is None
             ):
@@ -2306,6 +2400,7 @@ class StoreRepository:
         target = self._required_brand(connection, target_id)
         if source["id"] == target_id:
             raise StoreError("Нельзя объединить магазин с самим собой")
+        self._merge_partner_brand_rows(connection, changes, source["id"], target_id)
         aliases = _aliases(
             [
                 *json.loads(target["aliases_json"]),
@@ -2343,6 +2438,149 @@ class StoreRepository:
             revision=source["revision"] + 1,
         )
         return target_id
+
+    @staticmethod
+    def _table_exists(connection, table: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _partner_channels_overlap(left: str, right: str) -> bool:
+        return left == right or "any" in {left, right}
+
+    @staticmethod
+    def _partner_dates_overlap(left, right) -> bool:
+        left_start, left_end = left["starts_on"] or "0000-01-01", left["ends_on"] or "9999-12-31"
+        right_start = right["starts_on"] or "0000-01-01"
+        right_end = right["ends_on"] or "9999-12-31"
+        return left_start <= right_end and right_start <= left_end
+
+    @staticmethod
+    def _partner_offer_signature(connection, row) -> tuple:
+        return (
+            row["card_id"],
+            row["channel"],
+            row["mode"],
+            row["reward_kind"],
+            row["starts_on"],
+            row["ends_on"],
+            row["conditions"],
+            row["source_url"],
+            tuple(
+                tuple(item)
+                for item in connection.execute(
+                    """SELECT position,value,min_purchase,max_purchase,per_transaction_cap,
+                    starts_on,ends_on FROM partner_offer_tiers
+                    WHERE offer_id=? ORDER BY position,id""",
+                    (row["id"],),
+                )
+            ),
+        )
+
+    @staticmethod
+    def _partner_exclusion_signature(row) -> tuple:
+        return (
+            row["card_id"],
+            row["reward_kind"],
+            row["channel"],
+            row["mcc"],
+            row["starts_on"],
+            row["ends_on"],
+            row["suppress_base"],
+            row["reason"],
+            row["source_url"],
+        )
+
+    def _merge_partner_brand_rows(self, connection, changes, source_id, target_id):
+        """Move optional partner rows with a brand merge and make them reversible."""
+
+        if not self._table_exists(connection, "partner_offers"):
+            return
+        source_offers = connection.execute(
+            "SELECT * FROM partner_offers WHERE brand_id=? ORDER BY id", (source_id,)
+        ).fetchall()
+        target_offers = connection.execute(
+            "SELECT * FROM partner_offers WHERE brand_id=? ORDER BY id", (target_id,)
+        ).fetchall()
+        duplicate_offer_ids: set[int] = set()
+        for source in source_offers:
+            if source["archived"]:
+                continue
+            for target in target_offers:
+                if target["archived"] or source["card_id"] != target["card_id"]:
+                    continue
+                if not self._partner_channels_overlap(source["channel"], target["channel"]):
+                    continue
+                if not self._partner_dates_overlap(source, target):
+                    continue
+                if self._partner_offer_signature(
+                    connection, source
+                ) == self._partner_offer_signature(connection, target):
+                    duplicate_offer_ids.add(source["id"])
+                    break
+                raise StoreError(
+                    "У объединяемых магазинов конфликтуют партнёрские условия; "
+                    "сначала выберите правильное предложение"
+                )
+        for row in source_offers:
+            values = {"brand_id": target_id}
+            if row["id"] in duplicate_offer_ids:
+                values["archived"] = 1
+            self._update(connection, changes, "partner_offers", row["id"], **values)
+
+        if self._table_exists(connection, "partner_exclusions"):
+            source_exclusions = connection.execute(
+                "SELECT * FROM partner_exclusions WHERE brand_id=? ORDER BY id", (source_id,)
+            ).fetchall()
+            target_exclusions = connection.execute(
+                "SELECT * FROM partner_exclusions WHERE brand_id=? ORDER BY id", (target_id,)
+            ).fetchall()
+            duplicate_exclusion_ids: set[int] = set()
+            for source in source_exclusions:
+                if source["archived"]:
+                    continue
+                for target in target_exclusions:
+                    if target["archived"] or source["card_id"] != target["card_id"]:
+                        continue
+                    if source["reward_kind"] != target["reward_kind"]:
+                        continue
+                    if source["mcc"] != target["mcc"]:
+                        continue
+                    if not self._partner_channels_overlap(source["channel"], target["channel"]):
+                        continue
+                    if not self._partner_dates_overlap(source, target):
+                        continue
+                    if self._partner_exclusion_signature(
+                        source
+                    ) == self._partner_exclusion_signature(target):
+                        duplicate_exclusion_ids.add(source["id"])
+                        break
+                    raise StoreError(
+                        "У объединяемых магазинов конфликтуют партнёрские исключения; "
+                        "сначала выберите правильное правило"
+                    )
+            for row in source_exclusions:
+                values = {"brand_id": target_id}
+                if row["id"] in duplicate_exclusion_ids:
+                    values["archived"] = 1
+                self._update(connection, changes, "partner_exclusions", row["id"], **values)
+
+        if self._table_exists(connection, "partner_seed_brands"):
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(partner_seed_brands)")
+            }
+            if "id" not in columns:
+                raise StoreError("Схема партнёрских данных устарела; перезапустите бота")
+            for row in connection.execute(
+                "SELECT * FROM partner_seed_brands WHERE brand_id=? ORDER BY id", (source_id,)
+            ).fetchall():
+                self._update(
+                    connection, changes, "partner_seed_brands", row["id"], brand_id=target_id
+                )
 
     def _merge_tannei_snapshots(self, connection, changes, source_id, target_id):
         """Union source support into the surviving brand while retaining an undo source."""
@@ -2501,6 +2739,9 @@ class StoreRepository:
                 )
         # Revoke/rehome evidence before deciding whether an association still has support.
         order = {
+            "partner_offers": 0,
+            "partner_exclusions": 0,
+            "partner_seed_brands": 0,
             "store_evidence": 0,
             "store_sources": 1,
             "store_tannei_snapshots": 2,

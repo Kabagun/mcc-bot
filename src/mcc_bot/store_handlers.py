@@ -34,7 +34,22 @@ class _LegacyBrandFact:
     evidence_count: int
 
 
+@dataclass(frozen=True)
+class _BrandFactGroup:
+    channels: tuple[str, ...]
+    mcc: str
+    note: str
+    merchant_ids: tuple[int, ...]
+    evidence_count: int
+
+    @property
+    def channel(self) -> str:
+        return self.channels[0] if len(self.channels) == 1 else "both"
+
+
 def _channel_label(channel: str, *, short: bool = False) -> str:
+    if channel == "both":
+        return "офлайн и онлайн" if short else "🏬🌐 Офлайн и онлайн"
     if channel == "online":
         return "онлайн" if short else "🌐 Онлайн / приложение"
     return "офлайн" if short else "🏬 Офлайн / магазины"
@@ -73,6 +88,27 @@ def _brand_facts(repository: StoreRepository, brand_id: int, channel: str):
     )
 
 
+def _brand_fact_groups(repository: StoreRepository, brand_id: int):
+    getter = getattr(repository, "list_brand_mcc_groups", None)
+    if getter is not None:
+        return getter(brand_id)
+    grouped = {}
+    for channel in _CHANNELS:
+        for fact in _brand_facts(repository, brand_id, channel):
+            key = fact.mcc, getattr(fact, "note", "")
+            grouped.setdefault(key, []).append(fact)
+    return tuple(
+        _BrandFactGroup(
+            tuple(fact.channel for fact in facts),
+            mcc,
+            note,
+            tuple(merchant_id for fact in facts for merchant_id in fact.merchant_ids),
+            sum(fact.evidence_count for fact in facts),
+        )
+        for (mcc, note), facts in grouped.items()
+    )
+
+
 def _header(brand, channel: str | None = None) -> str:
     result = f"🏪 <b>{escape(brand.name)}</b>"
     return result if channel is None else result + " · " + _channel_label(channel, short=True)
@@ -95,45 +131,101 @@ def _fact_label(fact, descriptions) -> str:
     return f"MCC {fact.mcc} — {description}"
 
 
+def _channel_choice_label(channel: str) -> str:
+    return "🌐 Онлайн" if channel == "online" else "🏬 Офлайн"
+
+
+def _resolved_matches(context, brand_id: int, channel: str, mcc: str):
+    catalog = context.application.bot_data["catalog"]
+    partners = context.application.bot_data.get("partners")
+    if not hasattr(catalog, "lookup"):
+        return ()
+    return (
+        resolve_store_matches(catalog, partners, brand_id, channel, mcc)
+        if partners is not None
+        else catalog.lookup(mcc)
+    )
+
+
+def _resolved_results_match(left, right, mcc: str, descriptions) -> bool:
+    """Compare the complete compact and detailed results users can open."""
+
+    try:
+        left_pages = format_match_pages(mcc, left, descriptions, html=True, max_length=3900)
+        right_pages = format_match_pages(mcc, right, descriptions, html=True, max_length=3900)
+    except ValueError:
+        return False
+    return left_pages == right_pages
+
+
 def _brand_view(repository, brand, page, context, user_id, *, private=True):
     """Render a brand card as Telegram HTML with its inline keyboard."""
 
     admin = private and _is_admin(context, user_id)
     descriptions = context.application.bot_data["descriptions"]
-    grouped = [
-        (channel, facts)
-        for channel in _CHANNELS
-        if (facts := tuple(_brand_facts(repository, brand.id, channel)))
-    ]
-    observed = [channel for channel, _facts in grouped]
-    flat = [(channel, fact) for channel, facts in grouped for fact in facts]
-    count = max(1, (len(flat) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    facts = tuple(_brand_fact_groups(repository, brand.id))
+    count = max(1, (len(facts) + _PAGE_SIZE - 1) // _PAGE_SIZE)
     page = min(max(0, page), count - 1)
-    shown = flat[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
-    shown_channels = {channel for channel, _ in shown}
-    if not flat:
-        shown_channels = set(observed)
+    shown = facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
     text = _header(brand)
     rows: list[list[InlineKeyboardButton]] = []
-    for channel in observed:
-        if channel not in shown_channels:
+    for scope in ("both", "offline", "online"):
+        scoped_facts = [fact for fact in shown if fact.channel == scope]
+        if not scoped_facts:
             continue
-        facts = [fact for fact_channel, fact in shown if fact_channel == channel]
-        text += "\n\n<b>" + _channel_label(channel) + "</b>"
-        if facts:
-            for fact in facts:
-                note = getattr(fact, "note", "")
-                text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
+        text += "\n\n<b>" + _channel_label(scope) + "</b>"
+        for fact in scoped_facts:
+            note = getattr(fact, "note", "")
+            text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
+            if scope == "both":
+                channel_matches = {
+                    channel: _resolved_matches(context, brand.id, channel, fact.mcc)
+                    for channel in fact.channels
+                }
+                first, second = fact.channels
+                if _resolved_results_match(
+                    channel_matches[first],
+                    channel_matches[second],
+                    fact.mcc,
+                    descriptions,
+                ):
+                    rows.append(
+                        [
+                            InlineKeyboardButton(
+                                _fact_label(fact, descriptions),
+                                callback_data=_card_callback(brand.id, "both", fact.mcc, 0, False),
+                            )
+                        ]
+                    )
+                    continue
+                for channel in fact.channels:
+                    if (
+                        not rows
+                        or len(rows[-1]) != 1
+                        or rows[-1][0].text
+                        not in {
+                            "🏬 Офлайн",
+                            "🌐 Онлайн",
+                        }
+                    ):
+                        rows.append([])
+                    rows[-1].append(
+                        InlineKeyboardButton(
+                            _channel_choice_label(channel),
+                            callback_data=_card_callback(brand.id, channel, fact.mcc, 0, False),
+                        )
+                    )
+            else:
                 rows.append(
                     [
                         InlineKeyboardButton(
                             _fact_label(fact, descriptions),
-                            callback_data=_card_callback(brand.id, channel, fact.mcc, 0, False),
+                            callback_data=_card_callback(brand.id, scope, fact.mcc, 0, False),
                         )
                     ]
                 )
-    if not observed:
+    if not facts:
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
     text += f"\n\n<i>{_WARNING}</i>"
     if private:
@@ -279,6 +371,18 @@ def _parse_bounded_int(value: str, maximum: int = 10000) -> int | None:
     return result if 0 <= result <= maximum else None
 
 
+async def _edit_store_message(callback, text: str, keyboard) -> None:
+    """Edit one store screen while tolerating expired Telegram messages."""
+
+    try:
+        await callback.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).casefold():
+            LOGGER.info("Could not edit brand message")
+    except (TelegramError, TypeError):
+        LOGGER.info("Brand message is no longer accessible")
+
+
 async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Edit the originating brand message; invalid and expired callbacks are inert."""
 
@@ -339,7 +443,7 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if (
             brand is None
             or brand_id is None
-            or channel not in _CHANNELS
+            or channel not in {*_CHANNELS, "both"}
             or len(mcc) != 4
             or not mcc.isascii()
             or not mcc.isdecimal()
@@ -347,16 +451,60 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
             or raw_details not in {"0", "1"}
         ):
             return
-        facts = {fact.mcc: fact for fact in _brand_facts(repository, brand_id, channel)}
-        if mcc not in facts:
-            return
-        catalog = context.application.bot_data["catalog"]
-        partners = context.application.bot_data.get("partners")
-        matches = (
-            resolve_store_matches(catalog, partners, brand_id, channel, mcc)
-            if partners is not None
-            else catalog.lookup(mcc)
-        )
+        if channel == "both":
+            fact = next(
+                (
+                    fact
+                    for fact in _brand_fact_groups(repository, brand_id)
+                    if fact.channel == "both" and fact.mcc == mcc
+                ),
+                None,
+            )
+            if fact is None:
+                return
+            first, second = fact.channels
+            matches = _resolved_matches(context, brand_id, first, mcc)
+            other_matches = _resolved_matches(context, brand_id, second, mcc)
+            if not _resolved_results_match(
+                matches,
+                other_matches,
+                mcc,
+                context.application.bot_data["descriptions"],
+            ):
+                text = (
+                    _header(brand) + "\n\nУсловия для офлайн- и онлайн-оплаты теперь различаются. "
+                    "Выберите способ оплаты."
+                )
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🏬 Офлайн",
+                                callback_data=_card_callback(
+                                    brand_id, first, mcc, 0, raw_details == "1"
+                                ),
+                            ),
+                            InlineKeyboardButton(
+                                "🌐 Онлайн",
+                                callback_data=_card_callback(
+                                    brand_id, second, mcc, 0, raw_details == "1"
+                                ),
+                            ),
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "← К магазину", callback_data=f"store:show:{brand_id}:0"
+                            )
+                        ],
+                    ]
+                )
+                await _edit_store_message(callback, text, keyboard)
+                return
+        else:
+            facts = {fact.mcc: fact for fact in _brand_facts(repository, brand_id, channel)}
+            if mcc not in facts:
+                return
+            matches = _resolved_matches(context, brand_id, channel, mcc)
         prefix = _header(brand, channel) + f"\n<i>{_WARNING}</i>\n\n"
         try:
             pages = format_match_pages(
@@ -423,10 +571,4 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard = InlineKeyboardMarkup(rows)
     else:
         return
-    try:
-        await callback.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-    except BadRequest as exc:
-        if "message is not modified" not in str(exc).casefold():
-            LOGGER.info("Could not edit brand message")
-    except (TelegramError, TypeError):
-        LOGGER.info("Brand message is no longer accessible")
+    await _edit_store_message(callback, text, keyboard)

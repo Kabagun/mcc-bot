@@ -264,9 +264,8 @@ class PartnerRepository:
         """Create the additive partner schema without inserting seed data."""
 
         with self.stores.transaction() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS partner_offers (
+            statements = (
+                """CREATE TABLE IF NOT EXISTS partner_offers (
                     id INTEGER PRIMARY KEY,
                     source_key TEXT UNIQUE,
                     brand_id INTEGER NOT NULL REFERENCES store_brands(id),
@@ -283,10 +282,10 @@ class PartnerRepository:
                     updated_by INTEGER NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS partner_offers_lookup
-                    ON partner_offers(brand_id,card_id,channel,archived);
-                CREATE TABLE IF NOT EXISTS partner_offer_tiers (
+                )""",
+                """CREATE INDEX IF NOT EXISTS partner_offers_lookup
+                    ON partner_offers(brand_id,card_id,channel,archived)""",
+                """CREATE TABLE IF NOT EXISTS partner_offer_tiers (
                     id INTEGER PRIMARY KEY,
                     offer_id INTEGER NOT NULL REFERENCES partner_offers(id) ON DELETE CASCADE,
                     position INTEGER NOT NULL,
@@ -297,8 +296,8 @@ class PartnerRepository:
                     starts_on TEXT,
                     ends_on TEXT,
                     UNIQUE(offer_id,position)
-                );
-                CREATE TABLE IF NOT EXISTS partner_exclusions (
+                )""",
+                """CREATE TABLE IF NOT EXISTS partner_exclusions (
                     id INTEGER PRIMARY KEY,
                     source_key TEXT UNIQUE,
                     brand_id INTEGER REFERENCES store_brands(id),
@@ -316,10 +315,10 @@ class PartnerRepository:
                     updated_by INTEGER NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS partner_exclusions_lookup
-                    ON partner_exclusions(brand_id,card_id,channel,archived);
-                CREATE TABLE IF NOT EXISTS partner_audit (
+                )""",
+                """CREATE INDEX IF NOT EXISTS partner_exclusions_lookup
+                    ON partner_exclusions(brand_id,card_id,channel,archived)""",
+                """CREATE TABLE IF NOT EXISTS partner_audit (
                     id INTEGER PRIMARY KEY,
                     entity_type TEXT NOT NULL,
                     entity_id INTEGER NOT NULL,
@@ -327,13 +326,57 @@ class PartnerRepository:
                     actor_id INTEGER NOT NULL,
                     snapshot_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS partner_seed_brands (
-                    source_key TEXT PRIMARY KEY,
-                    brand_id INTEGER NOT NULL REFERENCES store_brands(id)
-                );
-                """
+                )""",
             )
+            for statement in statements:
+                connection.execute(statement)
+
+            seed_tables = {
+                row["name"]
+                for row in connection.execute(
+                    """SELECT name FROM sqlite_master
+                    WHERE type='table' AND name IN
+                    ('partner_seed_brands','partner_seed_brands_legacy')"""
+                )
+            }
+            if "partner_seed_brands" not in seed_tables:
+                connection.execute(
+                    """CREATE TABLE partner_seed_brands (
+                    id INTEGER PRIMARY KEY,
+                    source_key TEXT NOT NULL UNIQUE,
+                    brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+                )
+            else:
+                seed_brand_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(partner_seed_brands)")
+                }
+                if "id" not in seed_brand_columns:
+                    if "partner_seed_brands_legacy" in seed_tables:
+                        raise PartnerRewardError(
+                            "Обнаружены две незавершённые старые таблицы партнёрских привязок"
+                        )
+                    connection.execute(
+                        "ALTER TABLE partner_seed_brands RENAME TO partner_seed_brands_legacy"
+                    )
+                    connection.execute(
+                        """CREATE TABLE partner_seed_brands (
+                        id INTEGER PRIMARY KEY,
+                        source_key TEXT NOT NULL UNIQUE,
+                        brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+                    )
+                    seed_tables.add("partner_seed_brands_legacy")
+            if "partner_seed_brands_legacy" in seed_tables:
+                # The first partner snapshot used a text primary key.  Brand merges
+                # need a stable integer row identity so the existing store audit can
+                # move and restore seed bindings together with offers. INSERT OR
+                # IGNORE also recovers a database left between copy and drop by the
+                # non-transactional first implementation, preserving newer rows.
+                connection.execute(
+                    """INSERT OR IGNORE INTO partner_seed_brands(source_key,brand_id)
+                    SELECT source_key,brand_id FROM partner_seed_brands_legacy"""
+                )
+                connection.execute("DROP TABLE partner_seed_brands_legacy")
             exclusion_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(partner_exclusions)")
             }

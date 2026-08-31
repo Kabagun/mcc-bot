@@ -975,26 +975,86 @@ def test_replace_mcc_keeps_then_edits_and_removes_the_current_signature(flow):
     assert service.stores.list_mcc(merchant_id)[0].note == ""
 
 
-def test_same_mcc_in_two_channels_is_shown_as_two_unambiguous_editable_facts(flow):
+def test_same_mcc_and_note_in_two_channels_is_one_group_with_single_channel_escape(flow):
     offline = merchant(flow, "eMall")
     service = flow.application.bot_data["community"]
     brand = service.stores.brand_for_merchant(offline)
-    service.stores.apply_change(
+    online = service.stores.apply_change(
         "add_merchant",
         {"brand_id": brand.id, "name": brand.name, "channel": "online", "mcc": "5411"},
         1,
-    )
+    ).merchant_id
 
     click(flow, f"edit:{brand.id}", 2)
     facts = draft_click(flow, "mcc_actions", 2)
     text = facts.effective_message.reply_text.await_args.args[0]
-    assert "1. 🏬 Офлайн · MCC 5411" in text
-    assert "2. 🌐 Онлайн · MCC 5411" in text
+    assert "1. 🏬🌐 Офлайн и онлайн · MCC 5411" in text
     callbacks = [
         button.callback_data for button in all_buttons(facts) if ":fact:" in button.callback_data
     ]
-    assert any(":fact:offline:5411" in value for value in callbacks)
-    assert any(":fact:online:5411" in value for value in callbacks)
+    assert len(callbacks) == 1
+    assert ":fact:both:5411" in callbacks[0]
+
+    selected = draft_click(flow, "fact:both:5411", 2)
+    assert (
+        "Общие действия изменят офлайн- и онлайн-оплату вместе"
+        in (selected.effective_message.reply_text.await_args.args[0])
+    )
+    labels = [button.text for button in all_buttons(selected)]
+    assert "🏬 Только офлайн" in labels
+    assert "🌐 Только онлайн" in labels
+    draft = service.draft(2)
+    assert draft.data["merchant_ids"] == [offline, online]
+    assert draft.data["channels"] == ["offline", "online"]
+
+    offline_only = draft_click(flow, "fact_channel:offline", 2)
+    assert (
+        "Способ оплаты: 🏬 Офлайн" in offline_only.effective_message.reply_text.await_args.args[0]
+    )
+    assert "⬅️ Оба способа оплаты" in [button.text for button in all_buttons(offline_only)]
+    assert service.draft(2).data["merchant_ids"] == [offline]
+    draft_click(flow, "fact_all", 2)
+    assert service.draft(2).data["merchant_ids"] == [offline, online]
+
+
+def test_grouped_editor_replaces_notes_and_removes_both_channels_atomically(flow):
+    offline = merchant(flow, "All channels")
+    service = flow.application.bot_data["community"]
+    brand = service.stores.brand_for_merchant(offline)
+    online = service.stores.apply_change(
+        "add_merchant",
+        {"brand_id": brand.id, "name": brand.name, "channel": "online", "mcc": "5411"},
+        1,
+    ).merchant_id
+
+    click(flow, f"edit:{brand.id}", 2)
+    draft_click(flow, "mcc_actions", 2)
+    draft_click(flow, "fact:both:5411", 2)
+    draft_click(flow, "fact_replace", 2)
+    send(flow, "5812", 2)
+    draft_click(flow, "note_keep", 2)
+    payload = service.draft(2).data["payload"]
+    assert payload["merchant_ids"] == [offline, online]
+    assert payload["channels"] == ["offline", "online"]
+    draft_click(flow, "submit", 2)
+    assert all(service.stores.list_mcc(value)[0].mcc == "5812" for value in (offline, online))
+
+    click(flow, f"edit:{brand.id}", 2)
+    draft_click(flow, "mcc_actions", 2)
+    draft_click(flow, "fact:both:5812", 2)
+    draft_click(flow, "fact_note", 2)
+    send(flow, "Общая подпись", 2)
+    draft_click(flow, "submit", 2)
+    assert all(
+        service.stores.list_mcc(value)[0].note == "Общая подпись" for value in (offline, online)
+    )
+
+    click(flow, f"edit:{brand.id}", 2)
+    draft_click(flow, "mcc_actions", 2)
+    draft_click(flow, "fact:both:5812", 2)
+    draft_click(flow, "fact_remove", 2)
+    draft_click(flow, "submit", 2)
+    assert all(service.stores.list_mcc(value) == () for value in (offline, online))
 
 
 def test_aggregated_fact_replace_and_remove_never_leave_a_hidden_duplicate(flow):

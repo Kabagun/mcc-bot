@@ -484,6 +484,101 @@ def test_brand_groups_members_and_keeps_same_mcc_separate_between_channels(repos
     ]
 
 
+def test_public_mcc_group_combines_matching_channel_facts_without_rewriting_rows(repository):
+    offline = add(repository, name="Brand", channel="offline", mcc=None)
+    online = repository.apply_change(
+        "add_merchant",
+        {
+            "name": "Brand app",
+            "channel": "online",
+            "brand_id": offline.brand_id,
+        },
+        2,
+    )
+    for merchant_id in (offline.merchant_id, online.merchant_id):
+        repository.apply_change(
+            "add_mcc",
+            {
+                "merchant_id": merchant_id,
+                "mcc": "5411",
+                "note": "единая подпись",
+                "evidence": {"submission_id": merchant_id},
+            },
+            3,
+        )
+
+    channel_facts = repository.list_brand_mcc(offline.brand_id)
+    assert [(fact.channel, fact.evidence_count) for fact in channel_facts] == [
+        ("offline", 1),
+        ("online", 1),
+    ]
+    assert all(len(fact.merchant_ids) == 1 for fact in channel_facts)
+    groups = repository.list_brand_mcc_groups(offline.brand_id)
+    assert len(groups) == 1
+    public = groups[0]
+    assert public.channel == "both"
+    assert public.channels == ("offline", "online")
+    assert public.merchant_ids == (offline.merchant_id, online.merchant_id)
+    assert public.evidence_count == 2
+
+
+def test_cross_channel_fact_group_mutations_are_atomic_and_reversible(repository):
+    offline = add(repository, name="Brand", channel="offline", mcc="5411")
+    online = repository.apply_change(
+        "add_merchant",
+        {
+            "name": "Brand app",
+            "channel": "online",
+            "brand_id": offline.brand_id,
+            "mcc": "5411",
+        },
+        2,
+    )
+    merchant_ids = [offline.merchant_id, online.merchant_id]
+    scope = {"merchant_ids": merchant_ids, "channels": ["offline", "online"]}
+
+    replaced = repository.apply_change(
+        "replace_mcc",
+        {
+            "merchant_id": offline.merchant_id,
+            "old_mcc": "5411",
+            "mcc": "5812",
+            "note": "",
+            **scope,
+        },
+        3,
+    )
+    assert all(repository.list_mcc(value)[0].mcc == "5812" for value in merchant_ids)
+
+    edited = repository.apply_change(
+        "edit_mcc_note",
+        {
+            "merchant_id": offline.merchant_id,
+            "mcc": "5812",
+            "note": "общая",
+            **scope,
+        },
+        4,
+    )
+    assert all(repository.list_mcc(value)[0].note == "общая" for value in merchant_ids)
+    repository.apply_change("revert", {"audit_id": edited.audit_id}, 5)
+    assert all(repository.list_mcc(value)[0].note == "" for value in merchant_ids)
+
+    with pytest.raises(StoreError, match="Группа MCC уже изменилась"):
+        repository.apply_change(
+            "archive_mcc",
+            {
+                "merchant_id": offline.merchant_id,
+                "merchant_ids": [offline.merchant_id],
+                "channels": ["offline", "online"],
+                "mcc": "5812",
+            },
+            6,
+        )
+    assert all(repository.list_mcc(value) for value in merchant_ids)
+    assert replaced.audit_id > 0
+
+
 def test_add_member_harmonizes_note_after_inserting_its_fact(repository):
     target = add(repository, name="Brand", mcc=None)
     repository.apply_change(

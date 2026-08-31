@@ -238,6 +238,70 @@ def test_public_brand_groups_channels_and_note_overrides_description(setup):
     assert labels.count("➕ Предложить MCC") == 1
 
 
+def test_matching_cross_channel_fact_has_one_public_line_and_result_button(setup):
+    repository, merchant_id, update, context = setup
+    brand = repository.brand_for_merchant(merchant_id)
+    repository.apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand.id,
+            "name": brand.name,
+            "channel": "online",
+            "mcc": "5411",
+        },
+        1,
+    )
+
+    asyncio.run(search_stores(update, context, "Евроопт"))
+
+    call = update.effective_message.reply_text.await_args
+    assert call.args[0].count("• MCC 5411") == 1
+    assert "🏬🌐 Офлайн и онлайн" in call.args[0]
+    result_buttons = [
+        button
+        for button in buttons(call.kwargs["reply_markup"])
+        if button.callback_data.startswith("store:cards:")
+    ]
+    assert len(result_buttons) == 1
+    assert result_buttons[0].callback_data == f"store:cards:{brand.id}:both:5411:0:0"
+
+    update.callback_query.data = result_buttons[0].callback_data
+    asyncio.run(handle_store_callback(update, context))
+    assert "офлайн и онлайн" in update.callback_query.edit_message_text.await_args.args[0]
+
+
+def test_same_mcc_with_different_notes_stays_channel_specific(setup):
+    repository, merchant_id, update, context = setup
+    brand = repository.brand_for_merchant(merchant_id)
+    repository.apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand.id,
+            "name": brand.name,
+            "channel": "online",
+            "mcc": "5411",
+            "note": "Только в приложении",
+        },
+        1,
+    )
+
+    asyncio.run(search_stores(update, context, "Евроопт"))
+
+    call = update.effective_message.reply_text.await_args
+    assert call.args[0].count("• MCC 5411") == 2
+    assert "Офлайн / магазины" in call.args[0]
+    assert "Онлайн / приложение" in call.args[0]
+    callbacks = [
+        button.callback_data
+        for button in buttons(call.kwargs["reply_markup"])
+        if button.callback_data.startswith("store:cards:")
+    ]
+    assert callbacks == [
+        f"store:cards:{brand.id}:offline:5411:0:0",
+        f"store:cards:{brand.id}:online:5411:0:0",
+    ]
+
+
 def test_brand_card_hides_a_channel_after_its_last_fact_is_removed(setup):
     repository, merchant_id, update, context = setup
     repository.apply_change("archive_mcc", {"merchant_id": merchant_id, "mcc": "5411"}, 1)

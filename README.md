@@ -233,12 +233,14 @@ or periodic parser. Stable source keys make a second run a no-op and preserve
 later moderator edits and archives:
 
 ```powershell
+.\.venv\Scripts\python.exe -m mcc_bot.partner_cleanup_20260830 --database var/stores.sqlite3
 .\.venv\Scripts\python.exe -m mcc_bot.partner_seed_20260830 --database var/stores.sqlite3
 ```
 
-The equivalent installed command is `mcc-apply-partner-seed-20260830`. Apply it
-only after a consistent SQLite backup. The reviewed sources, inclusion rules,
-counts and deliberately omitted conflicts are documented in
+The equivalent installed commands are `mcc-reconcile-partners-20260830` and
+`mcc-apply-partner-seed-20260830`. Apply them in that order and only after a
+consistent SQLite backup. The reviewed sources, inclusion rules, counts and
+deliberately omitted conflicts are documented in
 [docs/PARTNER_DATA_SOURCE.md](docs/PARTNER_DATA_SOURCE.md).
 
 ## Version 2 catalog contract
@@ -392,9 +394,11 @@ repository as one transaction after the code migration:
 mcc-apply-curated-stores-20260828 --database /srv/bots/mcc-bot/var/stores.sqlite3
 ```
 
-The reviewed partner package is applied separately and is also safe to rerun:
+Reconcile untouched rows from the first partner snapshot, then apply the
+reviewed partner package. Both commands are safe to rerun:
 
 ```bash
+mcc-reconcile-partners-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3
 mcc-apply-partner-seed-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3
 ```
 

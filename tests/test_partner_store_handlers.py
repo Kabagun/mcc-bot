@@ -110,3 +110,92 @@ def test_store_card_callback_is_partner_aware_but_raw_mcc_is_not(tmp_path, catal
     assert "Alpha Card</b> — 3% деньгами" in text
     assert "Партнёрское предложение" not in text
     assert "Только у партнёра" not in text
+
+
+def test_cross_channel_public_fact_splits_buttons_when_resolved_results_differ(
+    tmp_path, catalog_path
+) -> None:
+    stores, partners, brand_id, update, context = _context(
+        tmp_path, catalog_path, brand_name="Channel Partner", mcc="5411"
+    )
+    stores.apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand_id,
+            "name": "Channel Partner",
+            "channel": "offline",
+            "mcc": "5411",
+        },
+        1,
+    )
+    partners.create_offer(_offer(brand_id, channel="online"), actor_id=1)
+
+    asyncio.run(search_stores(update, context, "Channel Partner"))
+
+    markup = update.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    result_buttons = [
+        button
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("store:cards:")
+    ]
+    assert [button.callback_data for button in result_buttons] == [
+        f"store:cards:{brand_id}:offline:5411:0:0",
+        f"store:cards:{brand_id}:online:5411:0:0",
+    ]
+    assert [button.text for button in result_buttons] == ["🏬 Офлайн", "🌐 Онлайн"]
+
+
+def test_stale_combined_result_button_offers_channel_choice(tmp_path, catalog_path) -> None:
+    stores, partners, brand_id, update, context = _context(
+        tmp_path, catalog_path, brand_name="Changed Partner", mcc="5411"
+    )
+    stores.apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand_id,
+            "name": "Changed Partner",
+            "channel": "offline",
+            "mcc": "5411",
+        },
+        1,
+    )
+    update.callback_query.data = f"store:cards:{brand_id}:both:5411:0:0"
+    partners.create_offer(_offer(brand_id, channel="online"), actor_id=1)
+
+    asyncio.run(handle_store_callback(update, context))
+
+    call = update.callback_query.edit_message_text.await_args
+    assert "Выберите способ оплаты" in call.args[0]
+    buttons = [button for row in call.kwargs["reply_markup"].inline_keyboard for button in row]
+    assert [button.text for button in buttons[:2]] == ["🏬 Офлайн", "🌐 Онлайн"]
+
+
+def test_cross_channel_public_fact_keeps_one_button_for_matching_partner_results(
+    tmp_path, catalog_path
+) -> None:
+    stores, partners, brand_id, update, context = _context(
+        tmp_path, catalog_path, brand_name="Any Partner", mcc="5411"
+    )
+    stores.apply_change(
+        "add_merchant",
+        {
+            "brand_id": brand_id,
+            "name": "Any Partner",
+            "channel": "offline",
+            "mcc": "5411",
+        },
+        1,
+    )
+    partners.create_offer(_offer(brand_id), actor_id=1)
+
+    asyncio.run(search_stores(update, context, "Any Partner"))
+
+    markup = update.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    callbacks = [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("store:cards:")
+    ]
+    assert callbacks == [f"store:cards:{brand_id}:both:5411:0:0"]

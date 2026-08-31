@@ -28,6 +28,7 @@ from .community import (
     clean_text,
 )
 from .formatting import format_limits, split_message
+from .stores import BrandMccGroup
 
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
@@ -144,6 +145,26 @@ def _brand_facts(service: CommunityService, brand_id: int, channel: str):
         return getter(brand_id, channel=channel)
     members = _brand_members(service, brand_id, channel=channel)
     return service.stores.list_mcc(members[0].id) if members else ()
+
+
+def _brand_fact_groups(service: CommunityService, brand_id: int):
+    getter = getattr(service.stores, "list_brand_mcc_groups", None)
+    if getter is not None:
+        return getter(brand_id)
+    result = []
+    for channel in ("offline", "online"):
+        for fact in _brand_facts(service, brand_id, channel):
+            merchant_ids = getattr(fact, "merchant_ids", None)
+            result.append(
+                BrandMccGroup(
+                    (channel,),
+                    fact.mcc,
+                    getattr(fact, "note", ""),
+                    tuple(merchant_ids or (fact.merchant_id,)),
+                    fact.evidence_count,
+                )
+            )
+    return tuple(result)
 
 
 def _member_for_channel(service: CommunityService, brand_id: int, channel: str):
@@ -553,13 +574,9 @@ def _channel_title(channel: str) -> str:
 
 
 def _brand_fact_items(service: CommunityService, brand_id: int) -> list[tuple[str, Any]]:
-    """Return public channel facts in the same deterministic order as the brand card."""
+    """Return logical public facts in the same deterministic order as the brand card."""
 
-    return [
-        (channel, fact)
-        for channel in ("offline", "online")
-        for fact in _brand_facts(service, brand_id, channel)
-    ]
+    return [(fact.channel, fact) for fact in _brand_fact_groups(service, brand_id)]
 
 
 def _short_fact_note(note: str, maximum: int = 36) -> str:
@@ -658,13 +675,16 @@ def _selected_fact(service: CommunityService, data: dict[str, Any]):
     mcc = data.get("selected_mcc") or data.get("mcc")
     if (
         not isinstance(brand_id, int)
-        or channel not in {"offline", "online"}
+        or channel not in {"offline", "online", "both"}
         or not isinstance(mcc, str)
     ):
         return None
-    return next(
-        (fact for fact in _brand_facts(service, brand_id, channel) if fact.mcc == mcc), None
+    facts = (
+        _brand_fact_groups(service, brand_id)
+        if channel == "both"
+        else _brand_facts(service, brand_id, channel)
     )
+    return next((fact for fact in facts if fact.mcc == mcc and fact.channel == channel), None)
 
 
 def _selected_fact_text(service: CommunityService, data: dict[str, Any]) -> str:
@@ -705,6 +725,8 @@ def _administrative_preview(
         )
         name = brand.name if brand else "магазин недоступен"
         channel = _channel_label(merchant.channel) if merchant else "способ оплаты недоступен"
+        if data and data.get("channel") == "both":
+            channel = _channel_label("both")
         if kind == "archive_mcc":
             return (
                 f"Убрать MCC {payload['mcc']} у магазина «{name}» ({channel})?\n"
@@ -737,7 +759,14 @@ def _administrative_preview(
             "Проверьте изменение:",
             "",
             f"Магазин: {brand.name if brand else 'магазин недоступен'}",
-            "Способ оплаты: " + (_channel_title(merchant.channel) if merchant else "недоступен"),
+            "Способ оплаты: "
+            + (
+                _channel_title(str(data.get("channel")))
+                if data and data.get("channel") in {"offline", "online", "both"}
+                else _channel_title(merchant.channel)
+                if merchant
+                else "недоступен"
+            ),
         ]
         if kind == "replace_mcc":
             lines.append(f"MCC: {payload['old_mcc']} → {payload['mcc']}")
@@ -1166,6 +1195,11 @@ async def _render_draft(
             rows.append(pagination)
     elif stage == "mcc_fact":
         text = _selected_fact_text(service, data) + "\n\nЧто изменить?"
+        if data.get("channel") == "both":
+            text += (
+                "\nОбщие действия изменят офлайн- и онлайн-оплату вместе. "
+                "При необходимости выберите один способ отдельно."
+            )
         rows = [
             [("✏️ Заменить MCC", "fact_replace")],
             [
@@ -1176,6 +1210,15 @@ async def _render_draft(
             ],
             [("🗑 Убрать MCC", "fact_remove")],
         ]
+        if data.get("channel") == "both":
+            rows.append(
+                [
+                    ("🏬 Только офлайн", "fact_channel:offline"),
+                    ("🌐 Только онлайн", "fact_channel:online"),
+                ]
+            )
+        elif data.get("combined_channels") == ["offline", "online"]:
+            rows.append([("⬅️ Оба способа оплаты", "fact_all")])
     elif stage == "edit_value":
         brand = _brand(service, data["brand_id"], include_archived=True)
         if data["kind"] == "rename_brand":
@@ -1703,16 +1746,7 @@ def _sync_mcc_payload(data: dict[str, Any]) -> None:
     """Rebuild an MCC proposal after an editable preview field changes."""
 
     note = str(data.get("note", ""))
-    if data.get("channel") == "both":
-        data["kind"] = "add_mcc_both"
-        payload = {"mcc": data["mcc"], "note": note}
-        if data.get("brand_id"):
-            payload["brand_id"] = data["brand_id"]
-        else:
-            payload["name"] = data["name"]
-            if data.get("aliases"):
-                payload["aliases"] = list(data["aliases"])
-    elif data.get("kind") == "edit_mcc_note":
+    if data.get("kind") == "edit_mcc_note":
         payload = {
             "merchant_id": data["merchant_id"],
             "mcc": data["mcc"],
@@ -1725,6 +1759,15 @@ def _sync_mcc_payload(data: dict[str, Any]) -> None:
             "mcc": data["mcc"],
             "note": note,
         }
+    elif data.get("channel") == "both":
+        data["kind"] = "add_mcc_both"
+        payload = {"mcc": data["mcc"], "note": note}
+        if data.get("brand_id"):
+            payload["brand_id"] = data["brand_id"]
+        else:
+            payload["name"] = data["name"]
+            if data.get("aliases"):
+                payload["aliases"] = list(data["aliases"])
     elif data.get("merchant_id"):
         data["kind"] = "add_mcc"
         payload = {"merchant_id": data["merchant_id"], "mcc": data["mcc"], "note": note}
@@ -1742,6 +1785,8 @@ def _sync_mcc_payload(data: dict[str, Any]) -> None:
             payload["brand_id"] = data["brand_id"]
     if data.get("kind") in {"replace_mcc", "edit_mcc_note"} and data.get("merchant_ids"):
         payload["merchant_ids"] = list(data["merchant_ids"])
+        if len(data.get("channels", [])) > 1:
+            payload["channels"] = list(data["channels"])
     if data.get("source_url"):
         payload["source_url"] = data["source_url"]
     data["payload"] = payload
@@ -2560,6 +2605,9 @@ async def _draft_callback(
                 "selected_mcc",
                 "original_note",
                 "merchant_ids",
+                "channels",
+                "combined_channels",
+                "combined_merchant_ids",
             ):
                 data.pop(key, None)
             stage = "channel"
@@ -2611,15 +2659,15 @@ async def _draft_callback(
         data["fact_offset"] = offset
     elif action == "fact" and stage == "mcc_facts":
         selector, mcc = parts[1], parts[2]
-        if selector in {"offline", "online"}:
+        if selector in {"offline", "online", "both"}:
             channel = selector
+            facts = (
+                _brand_fact_groups(service, data["brand_id"])
+                if channel == "both"
+                else _brand_facts(service, data["brand_id"], channel)
+            )
             fact = next(
-                (
-                    fact
-                    for fact in _brand_facts(service, data["brand_id"], channel)
-                    if fact.mcc == mcc
-                ),
-                None,
+                (fact for fact in facts if fact.mcc == mcc and fact.channel == channel), None
             )
         else:
             # Keep already-rendered buttons from the previous release usable.
@@ -2648,6 +2696,7 @@ async def _draft_callback(
         data.update(
             merchant_id=merchant_id,
             merchant_ids=list(fact.merchant_ids),
+            channels=list(getattr(fact, "channels", (channel,))),
             channel=channel,
             selected_mcc=mcc,
             original_note=getattr(fact, "note", ""),
@@ -2656,11 +2705,70 @@ async def _draft_callback(
         for key in ("kind", "payload", "old_mcc", "mcc"):
             data.pop(key, None)
         stage = "mcc_fact"
+    elif action == "fact_channel" and stage == "mcc_fact":
+        channel = parts[1]
+        selected = _selected_fact(service, data)
+        if (
+            data.get("channel") != "both"
+            or selected is None
+            or channel not in getattr(selected, "channels", ())
+            or list(selected.merchant_ids) != data.get("merchant_ids")
+            or getattr(selected, "note", "") != data.get("original_note", "")
+        ):
+            raise StaleAction("MCC или его подпись уже изменились. Откройте список заново.")
+        fact = next(
+            (
+                fact
+                for fact in _brand_facts(service, data["brand_id"], channel)
+                if fact.mcc == data["selected_mcc"]
+                and getattr(fact, "note", "") == data.get("original_note", "")
+            ),
+            None,
+        )
+        if fact is None:
+            raise StaleAction("MCC уже изменился. Откройте список заново.")
+        data.update(
+            combined_channels=list(selected.channels),
+            combined_merchant_ids=list(selected.merchant_ids),
+            merchant_id=fact.merchant_ids[0],
+            merchant_ids=list(fact.merchant_ids),
+            channels=[channel],
+            channel=channel,
+        )
+    elif action == "fact_all" and stage == "mcc_fact":
+        combined_channels = data.get("combined_channels")
+        combined_ids = data.get("combined_merchant_ids")
+        fact = next(
+            (
+                fact
+                for fact in _brand_fact_groups(service, data["brand_id"])
+                if fact.channel == "both"
+                and fact.mcc == data.get("selected_mcc")
+                and getattr(fact, "note", "") == data.get("original_note", "")
+            ),
+            None,
+        )
+        if (
+            combined_channels != ["offline", "online"]
+            or fact is None
+            or list(fact.channels) != combined_channels
+            or list(fact.merchant_ids) != combined_ids
+        ):
+            raise StaleAction("MCC или его подпись уже изменились. Откройте список заново.")
+        data.update(
+            merchant_id=fact.merchant_ids[0],
+            merchant_ids=list(fact.merchant_ids),
+            channels=list(fact.channels),
+            channel="both",
+        )
+        data.pop("combined_channels", None)
+        data.pop("combined_merchant_ids", None)
     elif action in {"fact_replace", "fact_note", "fact_remove"} and stage == "mcc_fact":
         fact = _selected_fact(service, data)
         if (
             fact is None
             or list(fact.merchant_ids) != data.get("merchant_ids")
+            or list(getattr(fact, "channels", (data.get("channel"),))) != data.get("channels")
             or getattr(fact, "note", "") != data.get("original_note", "")
         ):
             raise StaleAction("MCC или его подпись уже изменились. Откройте список заново.")
@@ -2688,6 +2796,8 @@ async def _draft_callback(
                 "merchant_ids": list(data["merchant_ids"]),
                 "mcc": data["selected_mcc"],
             }
+            if len(data.get("channels", [])) > 1:
+                data["payload"]["channels"] = list(data["channels"])
             stage = "preview"
     elif action in {"note_keep", "note_edit", "note_remove"} and stage == "note_choice":
         if action == "note_edit":

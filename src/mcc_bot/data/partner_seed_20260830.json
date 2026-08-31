@@ -2308,6 +2308,8 @@
       ],
       "card_id": "belgazprombank_cashalot",
       "channel": "online",
+      "require_existing_mcc": true,
+      "match_channel": "online",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2328,7 +2330,9 @@
         "Green"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2349,7 +2353,9 @@
         "Гиппо"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2370,7 +2376,9 @@
         "Белмаркет"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2391,7 +2399,9 @@
         "AMI Мебель"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2412,7 +2422,9 @@
         "ЦУМ Минск"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2433,7 +2445,9 @@
         "БИЛД"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2454,7 +2468,9 @@
         "Санта"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2475,7 +2491,10 @@
         "Беларусь"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
+      "match_mcc": "5311",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2496,7 +2515,9 @@
         "ДорОрс"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2517,34 +2538,15 @@
         "НА'СВЯЗИ"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
       "ends_on": null,
       "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
       "source_url": "https://cashalot.by/stores/store_select/na-svyazi-1/",
-      "tiers": [
-        {
-          "value": "2"
-        }
-      ]
-    },
-    {
-      "source_key": "cashalot:7-karat",
-      "brand_key": "brand:cashalot:7-karat",
-      "brand": "7 карат",
-      "aliases": [
-        "7 Карат"
-      ],
-      "card_id": "belgazprombank_cashalot",
-      "channel": "any",
-      "mode": "total",
-      "reward_kind": "cash",
-      "starts_on": null,
-      "ends_on": null,
-      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
-      "source_url": "https://cashalot.by/stores/store_select/7-karat/",
       "tiers": [
         {
           "value": "2"
@@ -2559,7 +2561,9 @@
         "DeFacto"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2580,7 +2584,9 @@
         "АльфаАптека"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2594,27 +2600,6 @@
       ]
     },
     {
-      "source_key": "cashalot:xistore-by",
-      "brand_key": "brand:cashalot:xistore-by",
-      "brand": "Xistore.by",
-      "aliases": [
-        "Xistore.by"
-      ],
-      "card_id": "belgazprombank_cashalot",
-      "channel": "any",
-      "mode": "total",
-      "reward_kind": "cash",
-      "starts_on": null,
-      "ends_on": null,
-      "conditions": "Повышенный кэшбэк в партнёрской сети Cashalot.",
-      "source_url": "https://cashalot.by/stores/store_select/xistore-by/",
-      "tiers": [
-        {
-          "value": "3"
-        }
-      ]
-    },
-    {
       "source_key": "cashalot:eliz-1",
       "brand_key": "brand:cashalot:eliz-1",
       "brand": "ELIZ",
@@ -2622,7 +2607,9 @@
         "ЭЛИЗ"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2643,7 +2630,9 @@
         "Искамед"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2665,6 +2654,8 @@
       ],
       "card_id": "belgazprombank_cashalot",
       "channel": "online",
+      "require_existing_mcc": true,
+      "match_channel": "online",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2685,7 +2676,9 @@
         "Кирмаш"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2706,7 +2699,9 @@
         "INVITRO"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2727,7 +2722,9 @@
         "SHAGOVITA"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2749,7 +2746,9 @@
         "7пятниц"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -2771,7 +2770,9 @@
         "Юнисторе"
       ],
       "card_id": "belgazprombank_cashalot",
-      "channel": "any",
+      "channel": "offline",
+      "require_existing_mcc": true,
+      "match_channel": "offline",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
@@ -4034,16 +4035,21 @@
       "source_key": "statuskarta:21vek:2026-08-30",
       "brand_key": "brand:statuskarta:21vek",
       "brand": "21 век",
-      "aliases": ["21vek"],
+      "aliases": [
+        "21vek",
+        "21vek.by"
+      ],
       "card_id": "statusbank_statuskarta",
       "channel": "online",
+      "require_existing_mcc": true,
+      "match_channel": "online",
       "mode": "total",
       "reward_kind": "cash",
       "starts_on": null,
       "ends_on": null,
-      "conditions": "Только при онлайн-оплате",
-      "source_url": "https://stbank.by/",
-      "tiers": [{"value": "3.2"}]
+      "conditions": "Только при онлайн-оплате.",
+      "source_url": "https://stbank.by/private-client/payment-cards/debetovye-karty/statuskarta-deb/",
+      "tiers": [{"value": "2.5"}]
     }
   ],
   "exclusions": [
