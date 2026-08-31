@@ -299,3 +299,48 @@ def test_cleanup_does_not_merge_reviewed_name_with_wrong_mcc_signature(tmp_path)
     }
     assert stores.get_brand(offline.brand_id) is not None
     assert stores.get_brand(online.brand_id) is not None
+
+
+def test_cleanup_skips_one_partner_conflict_and_merges_other_reviewed_groups(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    canonical = _brand(stores, "21vek", "online", "5300")
+    duplicate = _brand(stores, "21vek.by", "online", "5300")
+    helix_offline = _brand(stores, "Helix", "offline", "8071")
+    helix_online = _brand(stores, "Helix", "online", "8071")
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    human = partners.create_offer(
+        _offer(
+            canonical.brand_id,
+            card_id="belgazprombank_cashalot",
+            channel="any",
+            value="1.01",
+            conditions="Добавлено владельцем",
+            source_url="",
+        ),
+        actor_id=1,
+    )
+    official = partners.create_offer(
+        _offer(
+            duplicate.brand_id,
+            card_id="belgazprombank_cashalot",
+            channel="online",
+            value="1.5",
+            conditions="Повышенный кэшбэк в партнёрской сети Cashalot.",
+            source_url="https://cashalot.by/stores/store_select/21vek-by/",
+        ),
+        actor_id=1,
+        source_key="cashalot:21vek-by",
+    )
+
+    result = apply_partner_cleanup(stores, partners, actor_id=1)
+
+    assert result["merge_conflicts"] == 1
+    assert result["merges_applied"] == 1
+    assert {brand.id for brand in stores.search("21vek").matches} == {canonical.brand_id}
+    assert {brand.id for brand in stores.search("21vek.by").matches} == {duplicate.brand_id}
+    assert [brand.id for brand in stores.search("Helix").matches] == [helix_offline.brand_id]
+    assert stores.get_brand(helix_online.brand_id) is None
+    assert partners.get_offer(human.id, include_archived=True).brand_id == canonical.brand_id
+    assert partners.get_offer(official.id, include_archived=True).brand_id == duplicate.brand_id

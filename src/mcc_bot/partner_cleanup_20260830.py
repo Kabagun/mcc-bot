@@ -196,10 +196,47 @@ def _active_fact_signature(connection, brand_ids: list[int]) -> frozenset[tuple[
     return frozenset((row["channel"], row["mcc"]) for row in rows)
 
 
+def _merge_group_without_partial_writes(
+    stores: StoreRepository,
+    connection,
+    *,
+    source_ids: list[int],
+    target_id: int,
+    actor_id: int,
+) -> bool:
+    """Probe a reviewed merge group and skip it whole on a data conflict."""
+
+    if not source_ids:
+        return True
+    connection.execute("SAVEPOINT reviewed_brand_merge_probe")
+    try:
+        for source_id in source_ids:
+            stores.apply_change(
+                "merge_brand",
+                {"brand_id": source_id, "target_id": target_id},
+                actor_id,
+                connection=connection,
+            )
+    except StoreError:
+        connection.execute("ROLLBACK TO reviewed_brand_merge_probe")
+        connection.execute("RELEASE reviewed_brand_merge_probe")
+        return False
+    connection.execute("ROLLBACK TO reviewed_brand_merge_probe")
+    connection.execute("RELEASE reviewed_brand_merge_probe")
+    for source_id in source_ids:
+        stores.apply_change(
+            "merge_brand",
+            {"brand_id": source_id, "target_id": target_id},
+            actor_id,
+            connection=connection,
+        )
+    return True
+
+
 def _merge_reviewed_cross_channel_networks(
     stores: StoreRepository, connection, *, actor_id: int
-) -> tuple[int, int]:
-    applied = existing = 0
+) -> tuple[int, int, int]:
+    applied = existing = conflicts = 0
     for name, allowed_signature in _REVIEWED_NETWORK_FACT_SIGNATURES.items():
         candidates = _active_exact_brands(connection, name)
         if not candidates:
@@ -220,23 +257,24 @@ def _merge_reviewed_cross_channel_networks(
                 row["id"],
             ),
         )
-        for source in candidates:
-            if source["id"] == target["id"]:
-                continue
-            stores.apply_change(
-                "merge_brand",
-                {"brand_id": source["id"], "target_id": target["id"]},
-                actor_id,
-                connection=connection,
-            )
-            applied += 1
-    return applied, existing
+        source_ids = [row["id"] for row in candidates if row["id"] != target["id"]]
+        if not _merge_group_without_partial_writes(
+            stores,
+            connection,
+            source_ids=source_ids,
+            target_id=target["id"],
+            actor_id=actor_id,
+        ):
+            conflicts += 1
+            continue
+        applied += len(source_ids)
+    return applied, existing, conflicts
 
 
 def _merge_reviewed_duplicates(
     stores: StoreRepository, connection, *, actor_id: int
-) -> tuple[int, int]:
-    applied = existing = 0
+) -> tuple[int, int, int]:
+    applied = existing = conflicts = 0
     canonical_21vek = _active_primary_brand_ids(connection, "21vek")
     if len(canonical_21vek) > 1:
         raise PartnerCleanupError("Найдено несколько канонических магазинов 21vek")
@@ -250,30 +288,31 @@ def _merge_reviewed_duplicates(
     )
     if canonical_21vek or sources:
         target_id = canonical_21vek[0] if canonical_21vek else sources[0]
-        merge_count = 0
-        for source_id in sources:
-            if source_id == target_id:
-                continue
-            stores.apply_change(
-                "merge_brand",
-                {"brand_id": source_id, "target_id": target_id},
-                actor_id,
-                connection=connection,
-            )
-            applied += 1
-            merge_count += 1
+        source_ids = [source_id for source_id in sources if source_id != target_id]
+        merge_count = len(source_ids)
+        merged_21vek = _merge_group_without_partial_writes(
+            stores,
+            connection,
+            source_ids=source_ids,
+            target_id=target_id,
+            actor_id=actor_id,
+        )
+        if merged_21vek:
+            applied += merge_count
+        else:
+            conflicts += 1
         brand = stores.get_brand(target_id, connection=connection)
         if brand is None:
             raise PartnerCleanupError("Канонический магазин 21vek исчез")
         aliases = tuple(dict.fromkeys((*brand.aliases, "21vek.by", "21 век")))
-        if aliases != brand.aliases:
+        if merged_21vek and aliases != brand.aliases:
             stores.apply_change(
                 "edit_brand_names",
                 {"brand_id": target_id, "name": "21vek", "aliases": aliases},
                 actor_id,
                 connection=connection,
             )
-        if not merge_count:
+        if merged_21vek and not merge_count:
             existing += 1
 
     invitro = _active_brand_ids(connection, name="Инвитро", channel="offline", mcc="8071")
@@ -282,24 +321,26 @@ def _merge_reviewed_duplicates(
             "SELECT brand_id FROM partner_offers WHERE source_key='cashalot:invitro'"
         ).fetchone()
         target_id = offer["brand_id"] if offer and offer["brand_id"] in invitro else min(invitro)
-        for source_id in invitro:
-            if source_id == target_id:
-                continue
-            stores.apply_change(
-                "merge_brand",
-                {"brand_id": source_id, "target_id": target_id},
-                actor_id,
-                connection=connection,
-            )
-            applied += 1
-        if len(invitro) == 1:
+        source_ids = [source_id for source_id in invitro if source_id != target_id]
+        if _merge_group_without_partial_writes(
+            stores,
+            connection,
+            source_ids=source_ids,
+            target_id=target_id,
+            actor_id=actor_id,
+        ):
+            applied += len(source_ids)
+        else:
+            conflicts += 1
+        if len(invitro) == 1 and not source_ids:
             existing += 1
-    network_applied, network_existing = _merge_reviewed_cross_channel_networks(
+    network_applied, network_existing, network_conflicts = _merge_reviewed_cross_channel_networks(
         stores, connection, actor_id=actor_id
     )
     applied += network_applied
     existing += network_existing
-    return applied, existing
+    conflicts += network_conflicts
+    return applied, existing, conflicts
 
 
 def _preflight_offer_updates(
@@ -426,7 +467,9 @@ def apply_partner_cleanup(
     raw = load_seed(path)
     partners.initialize()
     with stores.transaction() as connection:
-        merged, merges_existing = _merge_reviewed_duplicates(stores, connection, actor_id=actor_id)
+        merged, merges_existing, merge_conflicts = _merge_reviewed_duplicates(
+            stores, connection, actor_id=actor_id
+        )
         # Preflight after the merges so update payloads use the surviving brand.
         # Any conflict still rolls the entire transaction, including the merges,
         # back to its original state.
@@ -449,6 +492,7 @@ def apply_partner_cleanup(
         return {
             "merges_applied": merged,
             "merges_existing": merges_existing,
+            "merge_conflicts": merge_conflicts,
             **counters,
             "empty_merchants_hidden": hidden,
         }
