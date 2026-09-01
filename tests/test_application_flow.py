@@ -63,7 +63,7 @@ def incoming(app, text, *, user_id=101, group=False, sequence=1):
     return Update.de_json({"update_id": sequence, "message": message}, app.bot)
 
 
-def tapped(app, data, *, user_id=101, sequence=100):
+def tapped(app, data, *, user_id=101, sequence=100, message_id=80):
     return Update.de_json(
         {
             "update_id": sequence,
@@ -73,7 +73,7 @@ def tapped(app, data, *, user_id=101, sequence=100):
                 "data": data,
                 "from": {"id": user_id, "is_bot": False, "first_name": "Tester"},
                 "message": {
-                    "message_id": 80,
+                    "message_id": message_id,
                     "date": 1,
                     "text": "Result",
                     "chat": {"id": user_id, "type": "private"},
@@ -219,5 +219,136 @@ def test_owner_searches_brand_then_opens_the_compact_editor(telegram_app):
             await app.process_update(incoming(app, "Second brand", user_id=42, sequence=103))
             assert app.bot_data["community"].draft(42) is None
             assert "Second brand" in rendered(calls)[-1]["text"]
+            restored = [
+                data
+                for action, data in calls
+                if action == "sendMessage" and "keyboard" in data.get("reply_markup", {})
+            ]
+            assert len(restored) == 1
+            labels = [
+                button["text"] for row in restored[0]["reply_markup"]["keyboard"] for button in row
+            ]
+            assert "➕ Добавить данные" in labels
+            assert "❌ Отменить" not in labels
+
+    asyncio.run(scenario())
+
+
+def test_card_editor_installs_cancel_once_and_restores_menu_once(telegram_app):
+    app, calls = telegram_app
+    result = app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {"name": "Keyboard shop", "channel": "offline", "mcc": "5411"},
+        42,
+    )
+
+    async def scenario():
+        async with app:
+            calls.clear()
+            await app.process_update(
+                tapped(app, f"community:edit:{result.brand_id}", user_id=42, sequence=201)
+            )
+            sent = [data for action, data in calls if action == "sendMessage"]
+            edited = [data for action, data in calls if action == "editMessageText"]
+            assert len(sent) == len(edited) == 1
+            assert [
+                button["text"] for row in sent[0]["reply_markup"]["keyboard"] for button in row
+            ] == ["❌ Отменить"]
+            draft = app.bot_data["community"].draft(42)
+            bound = app.bot_data["community"].editor_message(42, draft.id)
+            assert bound is not None
+
+            calls.clear()
+            await app.process_update(
+                tapped(
+                    app,
+                    f"community:d:{draft.id}:{draft.version}:menu_mcc_new",
+                    user_id=42,
+                    sequence=202,
+                    message_id=bound[1],
+                )
+            )
+            assert not any(action == "sendMessage" for action, _data in calls)
+            assert len([1 for action, _data in calls if action == "editMessageText"]) == 1
+
+            draft = app.bot_data["community"].draft(42)
+            calls.clear()
+            await app.process_update(
+                tapped(
+                    app,
+                    f"community:d:{draft.id}:{draft.version}:form_cancel",
+                    user_id=42,
+                    sequence=203,
+                    message_id=bound[1],
+                )
+            )
+            sent = [data for action, data in calls if action == "sendMessage"]
+            assert len(sent) == 1
+            labels = [
+                button["text"] for row in sent[0]["reply_markup"]["keyboard"] for button in row
+            ]
+            assert "➕ Добавить данные" in labels
+            assert "❌ Отменить" not in labels
+            assert app.bot_data["community"].draft(42) is None
+
+    asyncio.run(scenario())
+
+
+def test_delete_no_reuses_the_bound_editor_message(telegram_app):
+    app, calls = telegram_app
+    result = app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {"name": "Keep MCC", "channel": "offline", "mcc": "5411"},
+        42,
+    )
+
+    async def scenario():
+        async with app:
+            await app.process_update(
+                tapped(app, f"community:edit:{result.brand_id}", user_id=42, sequence=301)
+            )
+            service = app.bot_data["community"]
+            draft = service.draft(42)
+            bound = service.editor_message(42, draft.id)
+            assert bound is not None
+
+            for sequence, action in ((302, "menu_mcc_list"), (303, "menu_mcc_delete:0")):
+                calls.clear()
+                await app.process_update(
+                    tapped(
+                        app,
+                        f"community:d:{draft.id}:{draft.version}:{action}",
+                        user_id=42,
+                        sequence=sequence,
+                        message_id=bound[1],
+                    )
+                )
+                assert not any(call_action == "sendMessage" for call_action, _data in calls)
+                assert (
+                    len([1 for call_action, _data in calls if call_action == "editMessageText"])
+                    == 1
+                )
+                draft = service.draft(42)
+
+            assert draft.stage == "form_delete"
+            calls.clear()
+            await app.process_update(
+                tapped(
+                    app,
+                    f"community:d:{draft.id}:{draft.version}:delete_no",
+                    user_id=42,
+                    sequence=304,
+                    message_id=bound[1],
+                )
+            )
+
+            returned = service.draft(42)
+            assert returned.id == draft.id
+            assert returned.stage == "form_menu"
+            assert service.editor_message(42, returned.id) == bound
+            assert not any(action == "sendMessage" for action, _data in calls)
+            edited = [data for action, data in calls if action == "editMessageText"]
+            assert len(edited) == 1
+            assert "Редактирование: Keep MCC" in edited[0]["text"]
 
     asyncio.run(scenario())

@@ -110,7 +110,7 @@ def click(flow, action, user=10, **kwargs):
     return event
 
 
-def start_data(flow, *, user=10, kind="new_store"):
+def start_data(flow, *, user=10, kind="store_mcc"):
     label = ADD if flow.application.bot_data["community"].is_admin(user) else SUGGEST
     opened = send(flow, label, user)
     assert any(button.callback_data == f"community:add:{kind}" for button in all_buttons(opened))
@@ -163,22 +163,29 @@ def all_buttons(event):
         markup = call.kwargs.get("reply_markup")
         if markup and hasattr(markup, "inline_keyboard"):
             result.extend(button for row in markup.inline_keyboard for button in row)
+    edited = event.effective_message.reply_text.return_value.edit_text
+    for call in edited.await_args_list:
+        markup = call.kwargs.get("reply_markup")
+        if markup and hasattr(markup, "inline_keyboard"):
+            result.extend(button for row in markup.inline_keyboard for button in row)
     return result
 
 
 def test_one_message_editor_marks_required_fields_and_saves_in_any_order(flow):
     started = start_data(flow)
     labels = [button.text for button in all_buttons(started)]
-    assert "❗ Название *" in labels
+    assert "❗ Магазин *" in labels
     assert "❗ MCC *" in labels
     assert "❗ Способ оплаты *" in labels
     assert "Необязательные поля" in labels
     assert "💾 Сохранить" not in labels
 
+    draft_click(flow, "form_field:brand_id")
+    send(flow, "Editor shop")
+    created = draft_click(flow, "form_new_store")
+    assert "Название нового магазина *" in [button.text for button in all_buttons(created)]
     draft_click(flow, "form_field:mcc")
     send(flow, "5411")
-    draft_click(flow, "form_field:name")
-    send(flow, "Editor shop")
     draft_click(flow, "form_field:channel")
     ready = draft_click(flow, "form_channel:offline")
     assert "💾 Сохранить" in [button.text for button in all_buttons(ready)]
@@ -192,18 +199,17 @@ def test_one_message_editor_marks_required_fields_and_saves_in_any_order(flow):
 
 def test_helper_uses_same_editor_and_publishes_directly(flow):
     start_data(flow, user=2)
+    draft_click(flow, "form_field:brand_id", 2)
+    send(flow, "Trusted editor shop", 2)
+    draft_click(flow, "form_new_store", 2)
     draft_click(flow, "form_field:channel", 2)
     draft_click(flow, "form_channel:online", 2)
-    draft_click(flow, "form_field:name", 2)
-    send(flow, "Trusted editor shop", 2)
     draft_click(flow, "form_field:mcc", 2)
     send(flow, "5812", 2)
     saved = draft_click(flow, "form_save", 2)
 
     assert "Изменение сохранено" in saved.effective_message.reply_text.await_args.args[0]
-    assert flow.application.bot_data["community"].stores.search(
-        "Trusted editor shop"
-    ).matches
+    assert flow.application.bot_data["community"].stores.search("Trusted editor shop").matches
 
 
 def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
@@ -226,7 +232,7 @@ def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
     start_data(flow, kind="partner")
     draft_click(flow, "form_field:brand_id")
     send(flow, "Partner editor")
-    draft_click(flow, f"form_select:{brand_id}")
+    assert service.draft(10).data["values"]["brand_id"] == brand_id
     draft_click(flow, "form_field:card_id")
     draft_click(flow, "form_card:0")
     draft_click(flow, "form_field:channel")
@@ -282,14 +288,11 @@ def test_user_partner_editor_explains_empty_store_restriction(flow):
     )
     service.catalog = catalog
     flow.application.bot_data["catalog"] = catalog
-    brand_id = service.stores.create_partner_store(
-        "Partner-only exception", "any", actor_id=1
-    ).brand_id
+    service.stores.create_partner_store("Partner-only exception", "any", actor_id=1)
 
     start_data(flow, kind="partner")
     draft_click(flow, "form_field:brand_id")
-    send(flow, "Partner-only exception")
-    rejected = draft_click(flow, f"form_select:{brand_id}")
+    rejected = send(flow, "Partner-only exception")
 
     assert (
         "только для магазина с подтверждённым MCC"
@@ -372,16 +375,17 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
 def test_unified_add_chooser_and_single_cancel_keyboard(flow):
     chooser = send(flow, SUGGEST)
     assert [button.text for button in all_buttons(chooser)] == [
-        "🏪 Новый магазин",
-        "🧾 MCC магазина",
+        "🏪 Магазин с MCC",
         "🤝 Партнёрство по карте",
     ]
     assert flow.application.bot_data["community"].draft(10) is None
 
+    # Both historical callback values open the same mcc_save editor.
     started = click(flow, "add:new_store")
     markup = started.effective_message.reply_text.await_args.kwargs["reply_markup"]
     assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
-    assert all_buttons(started) == []
+    assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
+    assert "❗ Магазин *" in [button.text for button in all_buttons(started)]
 
     cancelled = send(flow, CANCEL_DRAFT)
     assert flow.application.bot_data["community"].draft(10) is None
@@ -392,6 +396,161 @@ def test_unified_add_chooser_and_single_cancel_keyboard(flow):
     )
     assert restored.keyboard[-1][0].text == GUIDE
 
+    click(flow, "add:store_mcc")
+    assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
+
+
+def test_unified_store_selector_exact_similar_create_and_switch(flow):
+    service = flow.application.bot_data["community"]
+    for location in ("Минск", "Брест"):
+        service.stores.apply_change(
+            "add_merchant",
+            {
+                "name": "Twin shop",
+                "aliases": ["Twin alias"],
+                "location": location,
+                "channel": "offline",
+                "mcc": "5411",
+            },
+            1,
+        )
+    service.stores.import_store(
+        {
+            "id": 9901,
+            "network_id": 9901,
+            "network_name": "Twin shop",
+            "name": "Twin shop",
+            "is_online": False,
+            "address": "Адрес только из источника",
+        },
+        [
+            {
+                "mcc": "5411",
+                "payment_date": "2026-08",
+                "merchant_type": None,
+                "address_extra": None,
+            }
+        ],
+    )
+    unique = service.stores.apply_change(
+        "add_merchant",
+        {
+            "name": "Coffee House",
+            "aliases": ["Coffee alias"],
+            "location": "Гродно",
+            "channel": "offline",
+            "mcc": "5812",
+        },
+        1,
+    )
+
+    start_data(flow)
+    draft_click(flow, "form_field:brand_id")
+    exact = send(flow, " twin shop ")
+    labels = [button.text for button in all_buttons(exact)]
+    assert any("Twin shop · Минск" in label for label in labels)
+    assert any("Twin shop · Брест" in label for label in labels)
+    assert any("Twin shop · место не указано" in label for label in labels)
+    assert not any("Адрес только из источника" in label for label in labels)
+    assert not any("Создать новый" in label for label in labels)
+
+    selected_id = service.draft(10).data["matches"][0]
+    draft_click(flow, f"form_select:{selected_id}")
+    assert service.draft(10).data["values"] == {"brand_id": selected_id}
+
+    # A global form can switch away from its current store. A unique exact
+    # alias is selected automatically and existing mode has no name metadata.
+    draft_click(flow, "form_field:brand_id")
+    send(flow, "COFFEE ALIAS")
+    data = service.draft(10).data
+    assert data["values"] == {"brand_id": unique.brand_id}
+    fields = {button.text for button in all_buttons(draft_click(flow, "form_more"))}
+    assert "Название нового магазина *" not in fields
+    assert "Другие названия" not in fields
+    assert "Где находится" not in fields
+
+    draft_click(flow, "form_field:brand_id")
+    similar = send(flow, "Coffee")
+    labels = [button.text for button in all_buttons(similar)]
+    assert any("Coffee House · Гродно" in label for label in labels)
+    assert "➕ Создать новый «Coffee»" in labels
+    created = draft_click(flow, "form_new_store")
+    created_labels = [button.text for button in all_buttons(created)]
+    assert "Название нового магазина *" in created_labels
+    assert "Другие названия" in created_labels
+    assert "Где находится" in created_labels
+    assert data.get("locked_brand_id") is None
+
+    draft_click(flow, "form_field:brand_id")
+    no_matches = send(flow, "No such shop")
+    assert [button.text for button in all_buttons(no_matches)] == [
+        "➕ Создать новый «No such shop»"
+    ]
+
+
+def test_existing_context_locks_store_and_rejects_forged_selector(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Locked shop")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+
+    opened = click(flow, f"start:{brand_id}")
+    data = service.draft(10).data
+    assert data["locked_brand_id"] == brand_id
+    assert "Магазин *" not in [button.text for button in all_buttons(opened)]
+    before = service.draft(10)
+    stale = draft_click(flow, "form_field:brand_id")
+    assert "закреплён контекстом" in stale.effective_message.reply_text.await_args.args[0]
+    assert service.draft(10) == before
+
+    send(flow, CANCEL_DRAFT)
+    click(flow, f"edit:{brand_id}", 2)
+    form = draft_click(flow, "menu_mcc_new", 2)
+    locked = service.draft(2).data
+    assert locked["locked_brand_id"] == brand_id
+    assert "Магазин *" not in [button.text for button in all_buttons(form)]
+    markup = form.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
+
+
+def test_existing_review_editor_is_locked_and_restores_role_menu_once(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Review lock")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    draft = service.begin(
+        10,
+        stage="preview",
+        data={
+            "draft_mode": True,
+            "kind": "mcc_save",
+            "payload": {
+                "brand_id": brand_id,
+                "mcc": "5812",
+                "channel": "online",
+            },
+        },
+    )
+    proposal = service.submit(10, draft.id, draft.version)
+    claimed = service.claim(2, proposal.id, proposal.version)
+
+    opened = click(flow, f"q:{claimed.id}:{claimed.version}:edit", 2)
+    review_draft = service.draft(2)
+    assert review_draft.data["locked_brand_id"] == brand_id
+    assert "Магазин *" not in [button.text for button in all_buttons(opened)]
+    assert [
+        button.text
+        for row in opened.effective_message.reply_text.await_args.kwargs["reply_markup"].keyboard
+        for button in row
+    ] == [CANCEL_DRAFT]
+
+    closed = draft_click(flow, "form_cancel", 2)
+    restored = [
+        call.kwargs["reply_markup"]
+        for call in closed.effective_message.reply_text.await_args_list
+        if hasattr(call.kwargs.get("reply_markup"), "keyboard")
+    ]
+    assert len(restored) == 1
+    assert restored[0].keyboard[-1][0].text == GUIDE
+
 
 def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):
     user = send(flow, GUIDE, 10)
@@ -400,7 +559,7 @@ def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):
     assert "четыре цифры MCC из операции" in user_text
     assert "3% + 5% баллами" in user_text
     assert "Офлайн и онлайн показаны отдельно" in user_text
-    assert "новый магазин, MCC магазина или партнёрство по карте" in user_text
+    assert "магазин с MCC или партнёрство по карте" in user_text
     assert "официальная ссылка или скриншот" in user_text.lower()
 
     helper = send(flow, GUIDE, 2)
@@ -1055,7 +1214,15 @@ def test_clean_editor_text_closes_navigation_and_falls_through_to_search(flow):
     event = update(2, text="Другой магазин")
     assert not asyncio.run(handle_text(event, flow))
     assert service.draft(2) is None
-    event.effective_message.reply_text.assert_not_awaited()
+    event.effective_message.reply_text.assert_awaited_once()
+    markup = event.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for row in markup.keyboard for button in row] == [
+        INFO,
+        ADD,
+        QUEUE,
+        MANAGE,
+        GUIDE,
+    ]
 
 
 def test_dirty_navigation_and_input_stages_still_keep_the_draft(flow):
@@ -1926,7 +2093,6 @@ def test_screenshot_and_replace_validate_without_extending_the_lease(flow, monke
 # service/moderation assertions live in test_community.py; replacement editor,
 # delete, partner-policy and helper-edit paths are covered above.
 for _removed_wizard_test in (
-    test_unified_add_chooser_and_single_cancel_keyboard,
     test_user_flow_allows_official_url_instead_of_screenshot_and_submits,
     test_user_mcc_flow_still_submits_without_url_or_screenshot,
     test_card_partnership_user_queue_and_helper_direct_audited_save,

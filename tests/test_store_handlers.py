@@ -14,7 +14,12 @@ from telegram.error import BadRequest
 from mcc_bot.catalog import CardCatalog
 from mcc_bot.community import CommunityService
 from mcc_bot.descriptions import DescriptionCatalog
-from mcc_bot.store_handlers import handle_store_callback, pending_overlay, search_stores
+from mcc_bot.store_handlers import (
+    _brand_view,
+    handle_store_callback,
+    pending_overlay,
+    search_stores,
+)
 from mcc_bot.stores import StoreRepository
 
 
@@ -49,6 +54,38 @@ def setup(tmp_path, catalog_path):
 
 def buttons(markup):
     return [button for row in markup.inline_keyboard for button in row]
+
+
+def test_source_only_location_and_ids_are_not_public_even_to_helper(setup):
+    repository, _merchant_id, _update, context = setup
+    imported = repository.import_store(
+        {
+            "id": 2100,
+            "network_id": 21,
+            "network_name": "21vek",
+            "name": "21vek",
+            "is_online": True,
+            "address": "Минск, склад источника",
+        },
+        [
+            {
+                "mcc": "5411",
+                "payment_date": "2026-08",
+                "merchant_type": None,
+                "address_extra": None,
+            }
+        ],
+    )
+    service = CommunityService(repository, owner_id=1)
+    service.initialize()
+    context.application.bot_data["community"] = service
+    brand = repository.get_brand(imported.brand_id)
+
+    text, _markup = _brand_view(repository, brand, 0, context, 1, private=True)
+
+    assert "склад источника" not in text
+    assert "Источник: tannei.by" not in text
+    assert repository.brand_source_ids(brand.id) == ("2100",)
 
 
 def test_single_result_always_asks_mcc_with_category(setup):
@@ -89,10 +126,7 @@ def test_public_pending_overlay_folds_in_creation_order_without_authors(setup):
     assert "автор" not in text.casefold()
     asyncio.run(search_stores(update, context, "Евроопт"))
     markup = update.effective_message.reply_text.await_args.kwargs["reply_markup"]
-    assert any(
-        button.text == "⚠️ Неподтверждённые предложения · 2"
-        for button in buttons(markup)
-    )
+    assert any(button.text == "⚠️ Неподтверждённые предложения · 2" for button in buttons(markup))
 
 
 def test_brand_card_transport_preserves_html_contract(setup):

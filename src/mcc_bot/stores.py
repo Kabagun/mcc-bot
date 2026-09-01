@@ -1011,11 +1011,11 @@ class StoreRepository:
         connection=None,
         include_archived: bool = False,
     ) -> tuple[str, ...]:
-        """Return distinct manual/source locations for a brand.
+        """Return the manually maintained public location for a brand.
 
-        Manual locations live on ``store_brands``.  Tannei addresses stay in
-        ``store_sources.metadata_json`` so a network keeps one merchant
-        identity even when its branches have different addresses.
+        Imported source addresses remain private provenance in
+        ``store_sources.metadata_json``. They are observations about source
+        rows, not reviewed public brand metadata.
         """
 
         if connection is None:
@@ -1030,32 +1030,7 @@ class StoreRepository:
         ).fetchone()
         if brand is None or (brand["archived"] and not include_archived):
             return ()
-        values: list[str] = []
-        if brand["location"]:
-            values.append(brand["location"])
-        rows = connection.execute(
-            """SELECT s.metadata_json FROM store_sources s
-            JOIN store_brand_members bm ON bm.merchant_id=s.merchant_id
-            JOIN store_merchants m ON m.id=s.merchant_id
-            WHERE bm.brand_id=? AND (? OR m.archived=0)
-            ORDER BY s.id""",
-            (int(brand_id), include_archived),
-        ).fetchall()
-        for row in rows:
-            try:
-                address = json.loads(row["metadata_json"]).get("address")
-            except (TypeError, json.JSONDecodeError, AttributeError):
-                address = None
-            if isinstance(address, str) and address.strip():
-                values.append(address.strip())
-        result: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            key = normalize_location(value)
-            if key and key not in seen:
-                result.append(value)
-                seen.add(key)
-        return tuple(result)
+        return (brand["location"],) if brand["location"] else ()
 
     # Explicit aliases keep the read model discoverable to callers that use a
     # verb-first repository naming convention.
@@ -2459,9 +2434,7 @@ class StoreRepository:
         target_mcc = normalize_mcc(payload["mcc"])
         target_channel = payload.get("channel", source["channel"])
         channels = (
-            ("offline", "online")
-            if target_channel == "both"
-            else (_channel(target_channel),)
+            ("offline", "online") if target_channel == "both" else (_channel(target_channel),)
         )
 
         if (
@@ -2484,13 +2457,17 @@ class StoreRepository:
             members = self.list_brand_members(
                 target_brand_id, channel=channel, connection=connection
             )
-            target_id = members[0].id if members else self._insert(
-                connection,
-                changes,
-                "store_merchants",
-                name=brand["name"],
-                channel=channel,
-                aliases_json="[]",
+            target_id = (
+                members[0].id
+                if members
+                else self._insert(
+                    connection,
+                    changes,
+                    "store_merchants",
+                    name=brand["name"],
+                    channel=channel,
+                    aliases_json="[]",
+                )
             )
             if not members:
                 self._attach_brand(connection, changes, target_id, target_brand_id)

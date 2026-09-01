@@ -317,12 +317,59 @@ def test_remember_chat_refreshes_proposal_author_identity(catalog_path, tmp_path
     asyncio.run(remember_chat(known, context))
     asyncio.run(remember_chat(unknown, context))
 
+    recipients = registry.recipients()
+    assert (
+        recipients[0].username,
+        recipients[0].first_name,
+        recipients[0].last_name,
+    ) == ("new_name", "New", "Helper")
+    assert (
+        recipients[1].username,
+        recipients[1].first_name,
+        recipients[1].last_name,
+    ) == ("ordinary", "Ordinary", None)
     candidate = community.role_candidates(1)[0]
     assert (candidate["username"], candidate["first_name"]) == ("new_name", "New")
     with community.stores.connection() as connection:
         assert connection.execute(
             "SELECT 1 FROM community_role_profiles WHERE user_id=20"
         ).fetchone()
+
+
+@pytest.mark.parametrize("group_username", ["group_channel", None])
+def test_remember_chat_never_binds_group_recipient_to_effective_user(
+    catalog_path,
+    tmp_path,
+    group_username,
+) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(-1001, "stale_participant", "Stale", "Participant")
+    context = _context(CardCatalog.from_file(catalog_path))
+    context.application.bot_data["user_registry"] = registry
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(
+            id=-1001,
+            username=group_username,
+            first_name=None,
+            last_name=None,
+        ),
+        effective_user=SimpleNamespace(
+            id=20,
+            username="active_participant",
+            first_name="Active",
+            last_name="Participant",
+        ),
+    )
+
+    asyncio.run(remember_chat(update, context))
+
+    recipient = registry.recipients()[0]
+    assert (recipient.username, recipient.first_name, recipient.last_name) == (
+        group_username,
+        None,
+        None,
+    )
 
 
 def _callback(data: object, *, accessible: bool = True) -> SimpleNamespace:
@@ -359,9 +406,7 @@ def test_bare_lookup_attaches_details_button_with_normalized_mcc(catalog_path, r
 
 
 @pytest.mark.parametrize("raw_mcc", ["123", "12345", "9999"])
-def test_numeric_store_queries_do_not_open_mcc_details(
-    catalog_path, raw_mcc, monkeypatch
-) -> None:
+def test_numeric_store_queries_do_not_open_mcc_details(catalog_path, raw_mcc, monkeypatch) -> None:
     message = SimpleNamespace(text=raw_mcc, reply_text=AsyncMock())
     store_search = AsyncMock()
     monkeypatch.setattr("mcc_bot.bot.search_stores", store_search)

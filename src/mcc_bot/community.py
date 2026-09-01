@@ -70,6 +70,11 @@ STRUCTURAL_KINDS = frozenset(
         "edit_mcc_note",
     }
 )
+LOCKED_BRAND_KINDS = frozenset({"store_metadata", "mcc_save", "partner_save"})
+LOCKED_SOURCE_KEYS = {
+    "mcc_save": ("merchant_id", "merchant_ids", "channels", "old_mcc"),
+    "partner_save": ("offer_id",),
+}
 
 
 class CommunityError(ValueError):
@@ -605,6 +610,121 @@ class CommunityService:
             ).fetchone()
             return (row["chat_id"], row["message_id"]) if row else None
 
+    @staticmethod
+    def _draft_effect(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        kind = data.get("kind") or data.get("form")
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            payload = data.get("values")
+        return (
+            kind if isinstance(kind, str) else "",
+            payload if isinstance(payload, dict) else None,
+        )
+
+    @staticmethod
+    def _source_identity(kind: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if payload is None:
+            return {}
+        return {key: payload[key] for key in LOCKED_SOURCE_KEYS.get(kind, ()) if key in payload}
+
+    def _validate_effect_lock(
+        self,
+        conn: sqlite3.Connection,
+        kind: str,
+        payload: dict[str, Any] | None,
+        locked_brand_id: int,
+        source_identity: dict[str, Any],
+    ) -> None:
+        if kind not in LOCKED_BRAND_KINDS or payload is None:
+            return
+        if payload.get("brand_id") != locked_brand_id or (
+            kind in {"mcc_save", "partner_save"} and "name" in payload
+        ):
+            raise StaleAction("Магазин закреплён контекстом. Откройте редактирование заново.")
+        current_source = self._source_identity(kind, payload)
+        if source_identity and current_source != source_identity:
+            raise StaleAction("Исходная запись изменилась. Откройте редактирование заново.")
+        if kind == "mcc_save" and "merchant_id" in payload:
+            brand = self.stores.brand_for_merchant(payload["merchant_id"], connection=conn)
+            if brand is None or brand.id != locked_brand_id:
+                raise StaleAction("MCC больше не относится к этому магазину.")
+        if kind == "partner_save" and "offer_id" in payload:
+            if self.partners is None:
+                raise CommunityError("Хранилище партнёрств пока недоступно.")
+            offer = self.partners.get_offer(
+                payload["offer_id"], include_archived=True, connection=conn
+            )
+            if offer is None or offer.brand_id != locked_brand_id:
+                raise StaleAction("Партнёрство больше не относится к этому магазину.")
+
+    def _protect_draft_data(
+        self,
+        conn: sqlite3.Connection,
+        stage: str,
+        data: dict[str, Any],
+        *,
+        current: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Preserve the store and source record selected by an existing-context edit."""
+
+        protected = dict(data)
+        current_lock = current.get("locked_brand_id") if current is not None else None
+        requested_lock = protected.get("locked_brand_id")
+        for value in (current_lock, requested_lock):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ):
+                raise StaleAction("Контекст магазина повреждён. Откройте редактирование заново.")
+        if current_lock is not None and requested_lock not in {None, current_lock}:
+            raise StaleAction("Магазин закреплён контекстом. Откройте редактирование заново.")
+
+        kind, payload = self._draft_effect(protected)
+        locked_brand_id = current_lock if current_lock is not None else requested_lock
+        if (
+            locked_brand_id is None
+            and stage in {"preview", "response"}
+            and kind in LOCKED_BRAND_KINDS
+            and payload is not None
+            and isinstance(payload.get("brand_id"), int)
+            and not isinstance(payload.get("brand_id"), bool)
+        ):
+            locked_brand_id = payload["brand_id"]
+        if locked_brand_id is None and payload is not None:
+            if kind == "mcc_save" and "merchant_id" in payload:
+                brand = self.stores.brand_for_merchant(payload["merchant_id"], connection=conn)
+                if brand is None:
+                    raise StaleAction("Исходный MCC больше недоступен.")
+                locked_brand_id = brand.id
+            elif kind == "partner_save" and "offer_id" in payload:
+                if self.partners is None:
+                    raise CommunityError("Хранилище партнёрств пока недоступно.")
+                offer = self.partners.get_offer(
+                    payload["offer_id"], include_archived=True, connection=conn
+                )
+                if offer is None:
+                    raise StaleAction("Исходное партнёрство больше недоступно.")
+                locked_brand_id = offer.brand_id
+        if locked_brand_id is None:
+            return protected
+
+        top_level_brand = protected.get("brand_id")
+        if top_level_brand is not None and top_level_brand != locked_brand_id:
+            raise StaleAction("Магазин закреплён контекстом. Откройте редактирование заново.")
+        protected["locked_brand_id"] = locked_brand_id
+
+        current_source = current.get("locked_source_identity", {}) if current is not None else {}
+        if not isinstance(current_source, dict):
+            raise StaleAction("Контекст исходной записи повреждён. Откройте редактирование заново.")
+        next_source = self._source_identity(kind, payload)
+        current_kind, _current_payload = self._draft_effect(current or {})
+        source_bound = current_kind in LOCKED_SOURCE_KEYS
+        source_identity = current_source if source_bound else current_source or next_source
+        if source_bound and next_source != current_source:
+            raise StaleAction("Исходная запись изменилась. Откройте редактирование заново.")
+        protected["locked_source_identity"] = source_identity
+        self._validate_effect_lock(conn, kind, payload, locked_brand_id, source_identity)
+        return protected
+
     def begin(
         self,
         user_id: int,
@@ -621,7 +741,7 @@ class CommunityService:
                 raise AccessDenied("Нет доступа к редактированию.")
             self._discard_draft(conn, user_id)
             draft_id = uuid.uuid4().hex[:12]
-            data = dict(data or {})
+            data = self._protect_draft_data(conn, stage, dict(data or {}))
             if stage == "preview" and data.get("kind") in EDIT_KINDS:
                 data["expected"] = self._snapshot(conn, data["kind"], data["payload"])
             conn.execute(
@@ -720,7 +840,7 @@ class CommunityService:
                        created_at=excluded.created_at,expires_at=NULL""",
                     (draft.id, media[0], media[1], time.time()),
                 )
-            data = dict(data)
+            data = self._protect_draft_data(conn, stage, data, current=draft.data)
             if (
                 stage == "preview"
                 and draft.stage != "preview"
@@ -863,9 +983,7 @@ class CommunityService:
         result = dict(payload)
         if kind == "add_mcc_both" and (("brand_id" in result) == ("name" in result)):
             raise CommunityError("Выберите существующий магазин или задайте название нового.")
-        if kind in {"mcc_save", "partner_save"} and (
-            ("brand_id" in result) == ("name" in result)
-        ):
+        if kind in {"mcc_save", "partner_save"} and (("brand_id" in result) == ("name" in result)):
             raise CommunityError("Выберите существующий магазин или задайте название нового.")
         for key, value in result.items():
             if key in {"merchant_id", "brand_id", "target_id", "audit_id", "offer_id"}:
@@ -1035,9 +1153,13 @@ class CommunityService:
             elif kind == "partner_save" and key == "conditions":
                 result[key] = "" if not value else clean_text(value)
             elif kind == "partner_save" and key == "excluded_mccs":
-                if not isinstance(value, list) or len(value) > 50 or any(
-                    not isinstance(item, str) or not re.fullmatch(r"[0-9]{4}", item)
-                    for item in value
+                if (
+                    not isinstance(value, list)
+                    or len(value) > 50
+                    or any(
+                        not isinstance(item, str) or not re.fullmatch(r"[0-9]{4}", item)
+                        for item in value
+                    )
                 ):
                     raise CommunityError("Исключённые MCC должны состоять из четырёх цифр.")
                 result[key] = list(dict.fromkeys(value))
@@ -1052,9 +1174,10 @@ class CommunityService:
             if card is None:
                 raise CommunityError("Карта больше недоступна.")
             policy = card.partner_policy
-            if result.get("mode", policy.mode) != policy.mode or result.get(
-                "reward_kind", policy.reward_kind
-            ) != policy.reward_kind:
+            if (
+                result.get("mode", policy.mode) != policy.mode
+                or result.get("reward_kind", policy.reward_kind) != policy.reward_kind
+            ):
                 raise CommunityError("Правила партнёрства карты изменились. Откройте форму заново.")
             result["mode"] = policy.mode
             result["reward_kind"] = policy.reward_kind
@@ -1081,9 +1204,7 @@ class CommunityService:
         if "name" in values:
             values["name"] = normalize_store_name(values["name"])
         if "aliases" in values:
-            values["aliases"] = sorted(
-                {normalize_store_name(value) for value in values["aliases"]}
-            )
+            values["aliases"] = sorted({normalize_store_name(value) for value in values["aliases"]})
         if "location" in values:
             values["location"] = (
                 normalize_location(values["location"]) if values.get("location") else None
@@ -1143,9 +1264,7 @@ class CommunityService:
                         "Магазин с таким названием уже есть. Укажите, где он находится."
                     )
                 if location in existing_locations:
-                    raise CommunityError(
-                        "Магазин с таким названием и таким местом уже существует."
-                    )
+                    raise CommunityError("Магазин с таким названием и таким местом уже существует.")
         if kind == "store_metadata":
             needle = normalize_store_name(payload["name"])
             location = normalize_location(payload["location"]) if payload.get("location") else ""
@@ -1153,9 +1272,7 @@ class CommunityService:
                 normalized_aliases = sorted(
                     {normalize_store_name(value) for value in payload.get("aliases", [])}
                 )
-                current_aliases = sorted(
-                    {normalize_store_name(value) for value in brand.aliases}
-                )
+                current_aliases = sorted({normalize_store_name(value) for value in brand.aliases})
                 if (
                     brand.id == payload["brand_id"]
                     and needle == normalize_store_name(brand.name)
@@ -1185,23 +1302,14 @@ class CommunityService:
                             "Магазин с таким названием и таким местом уже существует."
                         )
         if kind == "mcc_save" and "merchant_id" not in payload and "brand_id" in payload:
-            wanted = (
-                {"offline", "online"}
-                if payload["channel"] == "both"
-                else {payload["channel"]}
-            )
-            existing = self.stores.list_brand_mcc_groups(
-                payload["brand_id"], connection=conn
-            )
+            wanted = {"offline", "online"} if payload["channel"] == "both" else {payload["channel"]}
+            existing = self.stores.list_brand_mcc_groups(payload["brand_id"], connection=conn)
             if any(
-                item.mcc == payload["mcc"] and wanted <= set(item.channels)
-                for item in existing
+                item.mcc == payload["mcc"] and wanted <= set(item.channels) for item in existing
             ):
                 raise CommunityError("Такой MCC уже есть у выбранного магазина.")
         if kind == "mcc_save" and "merchant_id" in payload:
-            source_brand = self.stores.brand_for_merchant(
-                payload["merchant_id"], connection=conn
-            )
+            source_brand = self.stores.brand_for_merchant(payload["merchant_id"], connection=conn)
             groups = (
                 self.stores.list_brand_mcc_groups(source_brand.id, connection=conn)
                 if source_brand is not None
@@ -1217,9 +1325,7 @@ class CommunityService:
                 None,
             )
             target_channels = (
-                ("offline", "online")
-                if payload["channel"] == "both"
-                else (payload["channel"],)
+                ("offline", "online") if payload["channel"] == "both" else (payload["channel"],)
             )
             if (
                 current is not None
@@ -1297,9 +1403,7 @@ class CommunityService:
             ),
             "excluded_mccs": sorted(
                 item.mcc
-                for item in self.partners.list_offer_exclusions(
-                    offer.id, connection=connection
-                )
+                for item in self.partners.list_offer_exclusions(offer.id, connection=connection)
                 if item.mcc
             ),
         }
@@ -1497,9 +1601,7 @@ class CommunityService:
             )
 
             starts_on = (
-                date.fromisoformat(payload["starts_on"])
-                if payload.get("starts_on")
-                else None
+                date.fromisoformat(payload["starts_on"]) if payload.get("starts_on") else None
             )
             ends_on = date.fromisoformat(payload["ends_on"]) if payload.get("ends_on") else None
             source_url = payload.get("source_url", "")
@@ -1793,9 +1895,7 @@ class CommunityService:
                 ],
                 "exclusions": [
                     item.mcc
-                    for item in self.partners.list_offer_exclusions(
-                        offer_id, connection=conn
-                    )
+                    for item in self.partners.list_offer_exclusions(offer_id, connection=conn)
                 ],
             }
         return result
@@ -1807,30 +1907,31 @@ class CommunityService:
             draft = self._draft(conn, user_id, draft_id, version)
             if draft.stage != "preview":
                 raise StaleAction("Сначала проверьте предложение.")
+            protected_data = self._protect_draft_data(
+                conn, draft.stage, draft.data, current=draft.data
+            )
             role = self._role(conn, user_id)[0]
-            kind = draft.data.get("kind", "")
+            kind = protected_data.get("kind", "")
             if kind not in (EDIT_KINDS if role != "user" else PUBLIC_KINDS):
                 raise AccessDenied("Это изменение доступно только помощникам.")
-            payload = self._validate_payload(kind, draft.data.get("payload", {}))
+            payload = self._validate_payload(kind, protected_data.get("payload", {}))
             if kind == "partner_save" and "name" in payload and role == "user":
                 raise AccessDenied("Новый магазин для партнёрства может создать только помощник.")
             if (
                 role == "user"
                 and kind in {"card_partnership", "partner_save"}
                 and "brand_id" in payload
-                and not self.stores.list_brand_mcc_groups(
-                    payload["brand_id"], connection=conn
-                )
+                and not self.stores.list_brand_mcc_groups(payload["brand_id"], connection=conn)
             ):
                 raise AccessDenied(
                     "Партнёрство можно предложить только для магазина с подтверждённым MCC."
                 )
-            response_id = draft.data.get("response_id")
+            response_id = protected_data.get("response_id")
             fingerprint = self._fingerprint(kind, payload)
             self._ensure_not_duplicate(
                 conn, kind, payload, fingerprint, exclude_proposal_id=response_id
             )
-            comment = draft.data.get("comment", "")
+            comment = protected_data.get("comment", "")
             if comment:
                 comment = clean_text(comment)
             media = conn.execute(
@@ -1840,7 +1941,7 @@ class CommunityService:
             if original and (
                 original.user_id != user_id
                 or original.status != "clarification"
-                or original.version != draft.data.get("response_version")
+                or original.version != protected_data.get("response_version")
             ):
                 raise StaleAction("Предложение уже изменилось.")
             now = time.time()
@@ -1879,7 +1980,7 @@ class CommunityService:
             # author received a role while their original proposal was pending.
             if role != "user" and not original:
                 audit_id = self._publish(
-                    conn, proposal, user_id, expected=draft.data.get("expected")
+                    conn, proposal, user_id, expected=protected_data.get("expected")
                 )
                 conn.execute(
                     """UPDATE community_proposals SET status='approved',version=version+1,
@@ -1926,6 +2027,7 @@ class CommunityService:
                 "response_version": version,
                 "draft_mode": True,
             }
+            data = self._protect_draft_data(conn, "response", data)
             conn.execute(
                 """INSERT INTO community_drafts VALUES(?,?,1,'response',?,?,?,?)""",
                 (user_id, draft_id, _safe_json(data), 0, epoch, time.time()),
@@ -2105,6 +2207,20 @@ class CommunityService:
         with self.stores.transaction() as conn:
             proposal = self._validate_review(conn, actor_id, proposal_id, version, current)
             validated = self._validate_payload(proposal.kind, payload)
+            original_source = self._source_identity(proposal.kind, proposal.payload)
+            if self._source_identity(proposal.kind, validated) != original_source:
+                raise StaleAction("Исходная запись закреплена заявкой и не может быть заменена.")
+            original_data = self._protect_draft_data(
+                conn,
+                "preview",
+                {"kind": proposal.kind, "payload": proposal.payload},
+            )
+            self._protect_draft_data(
+                conn,
+                "preview",
+                {"kind": proposal.kind, "payload": validated},
+                current=original_data,
+            )
             fingerprint = self._fingerprint(proposal.kind, validated)
             self._ensure_not_duplicate(
                 conn,

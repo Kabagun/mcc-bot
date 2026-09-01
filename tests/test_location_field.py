@@ -140,7 +140,7 @@ def test_form_marks_location_required_only_for_colliding_name(tmp_path):
     assert _form_complete(unique, service)
 
 
-def test_tannei_addresses_are_compactly_reported_without_splitting_network(tmp_path):
+def test_tannei_addresses_remain_private_until_location_is_manually_reviewed(tmp_path):
     repository = StoreRepository(tmp_path / "stores.sqlite3")
     repository.initialize()
     metadata = {
@@ -174,10 +174,35 @@ def test_tannei_addresses_are_compactly_reported_without_splitting_network(tmp_p
         ],
     )
     assert first.merchant_id == second.merchant_id
-    assert (
-        repository.brand_location_summary(first.brand_id)
-        == "Минск, ул. Ленина, 1 · ещё 1 адрес"
+    assert repository.brand_locations(first.brand_id) == ()
+    assert repository.brand_location_summary(first.brand_id) is None
+    assert repository.brand_source_ids(first.brand_id) == ("1", "2")
+
+    service = CommunityService(repository, owner_id=1)
+    service.initialize()
+    accepted = _submit(
+        service,
+        10,
+        {
+            "name": "Coffee",
+            "channel": "online",
+            "mcc": "5411",
+            "location": "Минск, ул. Ленина, 1",
+        },
     )
-    assert normalize_location(" Минск ул Ленина 1 ") == normalize_location(
-        "Минск, ул. Ленина, 1"
+    assert accepted.status == "pending"
+
+    brand = repository.get_brand(first.brand_id)
+    repository.apply_change(
+        "edit_brand_names",
+        {
+            "brand_id": brand.id,
+            "name": brand.name,
+            "aliases": list(brand.aliases),
+            "location": "Головной офис: Минск",
+        },
+        1,
     )
+    assert repository.brand_locations(first.brand_id) == ("Головной офис: Минск",)
+    assert repository.brand_location_summary(first.brand_id) == "Головной офис: Минск"
+    assert normalize_location(" Минск ул Ленина 1 ") == normalize_location("Минск, ул. Ленина, 1")

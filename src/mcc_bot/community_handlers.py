@@ -423,8 +423,8 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
             "означает обычное начисление карты и дополнительные баллы; условия, минимальную сумму "
             "и лимиты смотрите в подробностях. Перед оплатой сверяйте MCC.\n\n"
             "Добавление и исправление данных\n"
-            "• Нажмите «➕ Добавить данные» и выберите: новый магазин, MCC магазина или "
-            "партнёрство по карте. Из карточки магазина можно сразу открыть нужное изменение.\n"
+            "• Нажмите «➕ Добавить данные» и выберите магазин с MCC или партнёрство по "
+            "карте. Из карточки магазина можно сразу открыть нужное изменение.\n"
             "• Помощник сохраняет проверенные данные сразу. Для партнёрства укажите условия, "
             "исключения и официальный источник; если ссылки нет, приложите скриншот.\n"
             "• Пока форма открыта, нижняя кнопка «❌ Отменить» закрывает её; после сохранения "
@@ -455,8 +455,8 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
         "условия, "
         "минимальную сумму и лимиты.\n\n"
         "Предложить данные\n"
-        "• Нажмите «➕ Предложить данные» и выберите: новый магазин, MCC магазина или "
-        "партнёрство по карте. Для MCC укажите, относится ли он к офлайн- или онлайн-оплате.\n"
+        "• Нажмите «➕ Предложить данные» и выберите магазин с MCC или партнёрство по "
+        "карте. Для MCC укажите, относится ли он к офлайн- или онлайн-оплате.\n"
         "• Для партнёрства укажите карту, партнёра, выгоду, условия и исключения. Нужна "
         "официальная ссылка или скриншот источника. В остальных формах ссылка или скриншот "
         "также помогают помощнику проверить сведения.\n"
@@ -671,15 +671,6 @@ def _brand_editor_summary(service: CommunityService, brand_id: int) -> str:
     )
     if location:
         lines.append(f"Где находится: {location}")
-    source_getter = getattr(service.stores, "brand_source_ids", None)
-    source_ids = (
-        source_getter(brand.id, include_archived=True) if source_getter is not None else ()
-    )
-    if source_ids:
-        shown = ", ".join(source_ids[:3])
-        if len(source_ids) > 3:
-            shown += f" · ещё {len(source_ids) - 3}"
-        lines.append(f"Источник: tannei.by · ID {shown}")
     for channel in ("offline", "online"):
         facts = list(_brand_facts(service, brand_id, channel))
         if not facts:
@@ -1482,8 +1473,7 @@ async def _add_menu(update: Update, service: CommunityService, user_id: int) -> 
         f"Что хотите {verb.lower()}?",
         _keyboard(
             [
-                [("🏪 Новый магазин", "add:new_store")],
-                [("🧾 MCC магазина", "add:store_mcc")],
+                [("🏪 Магазин с MCC", "add:store_mcc")],
                 [("🤝 Партнёрство по карте", "add:partner")],
             ]
         ),
@@ -1566,14 +1556,16 @@ def _advance(
 
 
 _FORM_TITLES = {
-    "store_create": "Новый магазин и первый MCC",
+    "store_create": "🏪 Магазин с MCC",
     "store_metadata": "Данные магазина",
-    "mcc_save": "MCC магазина",
+    "mcc_save": "🏪 Магазин с MCC",
     "partner_save": "Партнёрство по карте",
 }
 
 
-def _form_fields(form: str) -> tuple[tuple[str, str, bool], ...]:
+def _form_fields(
+    form: str, data: dict[str, Any] | None = None
+) -> tuple[tuple[str, str, bool], ...]:
     """Return ordered editor fields as key, Russian label and mandatory flag."""
 
     if form == "store_create":
@@ -1594,30 +1586,47 @@ def _form_fields(form: str) -> tuple[tuple[str, str, bool], ...]:
             ("location", "Где находится", False),
         )
     if form == "mcc_save":
-        return (
-            ("brand_id", "Магазин", True),
-            ("mcc", "MCC", True),
-            ("channel", "Способ оплаты", True),
-            ("note", "Подпись к MCC", False),
-            ("source_url", "Источник", False),
-            ("screenshot", "Скриншот", False),
+        values = (data or {}).get("values", {})
+        fields: list[tuple[str, str, bool]] = []
+        if not (data or {}).get("locked_brand_id"):
+            fields.append(("brand_id", "Магазин", True))
+        if isinstance(values.get("name"), str) and not isinstance(values.get("brand_id"), int):
+            fields.extend(
+                (
+                    ("name", "Название нового магазина", True),
+                    ("aliases", "Другие названия", False),
+                    ("location", "Где находится", False),
+                )
+            )
+        fields.extend(
+            (
+                ("mcc", "MCC", True),
+                ("channel", "Способ оплаты", True),
+                ("note", "Подпись к MCC", False),
+                ("source_url", "Источник", False),
+                ("screenshot", "Скриншот", False),
+            )
         )
+        return tuple(fields)
     if form == "partner_save":
-        return (
-            ("brand_id", "Магазин", True),
-            ("card_id", "Карта", True),
-            ("channel", "Где действует", True),
-            ("value", "Размер выгоды", True),
-            ("conditions", "Условия", False),
-            ("starts_on", "Дата начала", False),
-            ("ends_on", "Дата окончания", False),
-            ("min_purchase", "Минимальная покупка", False),
-            ("max_purchase", "Максимальная покупка", False),
-            ("per_transaction_cap", "Лимит за операцию", False),
-            ("excluded_mccs", "Исключённые MCC", False),
-            ("source_url", "Источник", False),
-            ("screenshot", "Скриншот", False),
+        fields = [] if (data or {}).get("locked_brand_id") else [("brand_id", "Магазин", True)]
+        fields.extend(
+            (
+                ("card_id", "Карта", True),
+                ("channel", "Где действует", True),
+                ("value", "Размер выгоды", True),
+                ("conditions", "Условия", False),
+                ("starts_on", "Дата начала", False),
+                ("ends_on", "Дата окончания", False),
+                ("min_purchase", "Минимальная покупка", False),
+                ("max_purchase", "Максимальная покупка", False),
+                ("per_transaction_cap", "Лимит за операцию", False),
+                ("excluded_mccs", "Исключённые MCC", False),
+                ("source_url", "Источник", False),
+                ("screenshot", "Скриншот", False),
+            )
         )
+        return tuple(fields)
     raise CommunityError("Неизвестный редактор.")
 
 
@@ -1666,12 +1675,42 @@ def _form_value_text(
     return str(value) if value not in {None, ""} else ""
 
 
-def _location_required(
-    service: CommunityService | None, data: dict[str, Any]
-) -> bool:
+def _exact_store_brands(service: CommunityService, query: str) -> tuple[Any, ...]:
+    """Return all brands whose reviewed name or alias exactly normalizes to the query."""
+
+    needle = normalize_store_name(query)
+    return tuple(
+        brand
+        for brand in service.stores.list_brands()
+        if needle
+        in {
+            normalize_store_name(brand.name),
+            *(normalize_store_name(alias) for alias in brand.aliases),
+        }
+    )
+
+
+def _ensure_form_brand_selectable(service: CommunityService, draft: Draft, brand_id: int) -> None:
+    """Recheck restrictions before a searched brand becomes form state."""
+
+    if (
+        draft.data.get("form") == "partner_save"
+        and not service.is_admin(draft.user_id)
+        and not service.brand_has_confirmed_mcc(brand_id)
+    ):
+        raise CommunityError(
+            "Партнёрство можно предложить только для магазина с подтверждённым MCC."
+        )
+
+
+def _location_required(service: CommunityService | None, data: dict[str, Any]) -> bool:
     """Whether an entered name collides and therefore needs a location."""
 
-    if service is None or data.get("form") not in {"store_create", "store_metadata"}:
+    if service is None or data.get("form") not in {
+        "store_create",
+        "store_metadata",
+        "mcc_save",
+    }:
         return False
     values = data.get("values", {})
     name = values.get("name")
@@ -1691,12 +1730,13 @@ def _location_required(
     return False
 
 
-def _form_complete(
-    data: dict[str, Any], service: CommunityService | None = None
-) -> bool:
+def _form_complete(data: dict[str, Any], service: CommunityService | None = None) -> bool:
     values = data.get("values", {})
     form = data.get("form")
-    for key, _label, required in _form_fields(form):
+    locked_brand_id = data.get("locked_brand_id")
+    if locked_brand_id is not None and values.get("brand_id") != locked_brand_id:
+        return False
+    for key, _label, required in _form_fields(form, data):
         if key == "location" and _location_required(service, data):
             required = True
         if not required:
@@ -1714,6 +1754,9 @@ def _form_payload(
 ) -> tuple[str, dict[str, Any]]:
     form = data["form"]
     values = dict(data.get("values", {}))
+    locked_brand_id = data.get("locked_brand_id")
+    if locked_brand_id is not None and values.get("brand_id") != locked_brand_id:
+        raise StaleAction("Контекст магазина изменился. Откройте форму заново.")
     if form == "store_create":
         payload = {
             "name": values["name"],
@@ -1735,12 +1778,18 @@ def _form_payload(
         }
     if form == "mcc_save":
         payload: dict[str, Any] = {
-            "brand_id": values["brand_id"],
             "mcc": values["mcc"],
             "channel": values["channel"],
             "note": values.get("note", ""),
             "source_url": values.get("source_url", ""),
         }
+        if isinstance(values.get("brand_id"), int):
+            payload["brand_id"] = values["brand_id"]
+        else:
+            payload["name"] = values["name"]
+            payload["aliases"] = list(values.get("aliases", []))
+            if values.get("location"):
+                payload["location"] = values["location"]
         for key in ("merchant_id", "merchant_ids", "channels", "old_mcc"):
             if key in values:
                 payload[key] = values[key]
@@ -1811,11 +1860,14 @@ def _form_rows(
         for brand_id in data.get("matches", [])[:10]:
             brand = _brand(service, brand_id)
             if brand:
-                rows.append([(brand.name[:48], f"form_select:{brand.id}")])
-        if data.get("new_store_name") and service.is_admin(draft.user_id):
-            rows.append(
-                [(f"Создать «{data['new_store_name'][:38]}»", "form_new_store")]
-            )
+                location = getattr(brand, "location", None) or "место не указано"
+                label = f"{brand.name} · {location}"
+                rows.append([(label[:60], f"form_select:{brand.id}")])
+        can_create = data.get("form") == "mcc_save" or (
+            data.get("form") == "partner_save" and service.is_admin(draft.user_id)
+        )
+        if data.get("new_store_name") and can_create:
+            rows.append([(f"➕ Создать новый «{data['new_store_name'][:34]}»", "form_new_store")])
     elif active == "card_id":
         cards = getattr(context.application.bot_data.get("catalog"), "cards", ())
         rows.extend(
@@ -1841,7 +1893,7 @@ def _form_rows(
         rows.append([(label, f"form_channel:{value}") for label, value in options[1:]])
     else:
         optional_open = bool(data.get("optional_open")) or _location_required(service, data)
-        for key, label, required in _form_fields(data["form"]):
+        for key, label, required in _form_fields(data["form"], data):
             if key == "location" and _location_required(service, data):
                 required = True
             if not required and not optional_open:
@@ -1863,6 +1915,62 @@ def _form_rows(
     return rows
 
 
+async def _render_durable_form_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    draft: Draft,
+    text: str,
+    markup: InlineKeyboardMarkup,
+) -> None:
+    """Install cancel-only once and retain one bound inline form message."""
+
+    bound = service.editor_message(draft.user_id, draft.id)
+    if bound is not None:
+        query = update.callback_query
+        query_message = getattr(query, "message", None) if query is not None else None
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_id = getattr(query_message, "chat_id", getattr(query_chat, "id", None))
+        query_message_id = getattr(query_message, "message_id", None)
+        if (query_chat_id, query_message_id) == bound:
+            await _say_inline(update, text, markup)
+            return
+        try:
+            await context.bot.edit_message_text(
+                chat_id=bound[0], message_id=bound[1], text=text, reply_markup=markup
+            )
+            return
+        except TelegramError:
+            LOGGER.info("Could not update bound contribution editor; replacing it")
+    message = update.effective_message
+    if message is None:
+        return
+    # A reply keyboard can only be installed by sending a message. Edit that
+    # same message immediately into the durable inline editor so the form has
+    # one visible editor while the lower keyboard stays cancel-only.
+    sent = await message.reply_text(text, reply_markup=draft_keyboard_for())
+    chat = getattr(sent, "chat", None)
+    chat_id = getattr(sent, "chat_id", getattr(chat, "id", None))
+    message_id = getattr(sent, "message_id", None)
+    if isinstance(chat_id, int) and isinstance(message_id, int):
+        service.bind_editor_message(draft.user_id, draft.id, chat_id, message_id)
+    try:
+        await sent.edit_text(text, reply_markup=markup)
+    except (TelegramError, AttributeError):
+        LOGGER.info("Could not attach inline controls to the contribution editor")
+        replacement = await message.reply_text(text, reply_markup=markup)
+        replacement_chat = getattr(replacement, "chat", None)
+        replacement_chat_id = getattr(replacement, "chat_id", getattr(replacement_chat, "id", None))
+        replacement_message_id = getattr(replacement, "message_id", None)
+        if isinstance(replacement_chat_id, int) and isinstance(replacement_message_id, int):
+            service.bind_editor_message(
+                draft.user_id,
+                draft.id,
+                replacement_chat_id,
+                replacement_message_id,
+            )
+
+
 async def _render_form_editor(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1874,8 +1982,15 @@ async def _render_form_editor(
     """Render and update the one durable Telegram message for a form."""
 
     title = _FORM_TITLES[draft.data["form"]]
-    lines = [title, ""]
-    for key, label, required in _form_fields(draft.data["form"]):
+    lines = [title]
+    locked_brand_id = draft.data.get("locked_brand_id")
+    if isinstance(locked_brand_id, int):
+        locked_brand = _brand(service, locked_brand_id)
+        if locked_brand is None:
+            raise StaleAction("Магазин больше недоступен. Откройте форму заново.")
+        lines.append(f"Магазин: {locked_brand.name}")
+    lines.append("")
+    for key, label, required in _form_fields(draft.data["form"], draft.data):
         if key == "location" and _location_required(service, draft.data):
             required = True
         value = _form_value_text(context, service, draft, key)
@@ -1890,34 +2005,7 @@ async def _render_form_editor(
         lines.extend(("", notice))
     text = "\n".join(lines)
     markup = _draft_buttons(draft, _form_rows(context, service, draft))
-    query = update.callback_query
-    if query is not None and getattr(query, "message", None) is not None:
-        await _say_inline(update, text, markup)
-        message = query.message
-        chat = getattr(message, "chat", None)
-        chat_id = getattr(message, "chat_id", getattr(chat, "id", None))
-        message_id = getattr(message, "message_id", None)
-        if isinstance(chat_id, int) and isinstance(message_id, int):
-            service.bind_editor_message(draft.user_id, draft.id, chat_id, message_id)
-        return
-    bound = service.editor_message(draft.user_id, draft.id)
-    if bound is not None:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=bound[0], message_id=bound[1], text=text, reply_markup=markup
-            )
-            return
-        except TelegramError:
-            LOGGER.info("Could not update bound contribution editor; replacing it")
-    message = update.effective_message
-    if message is None:
-        return
-    sent = await message.reply_text(text, reply_markup=markup)
-    chat = getattr(sent, "chat", None)
-    chat_id = getattr(sent, "chat_id", getattr(chat, "id", None))
-    message_id = getattr(sent, "message_id", None)
-    if isinstance(chat_id, int) and isinstance(message_id, int):
-        service.bind_editor_message(draft.user_id, draft.id, chat_id, message_id)
+    await _render_durable_form_message(update, context, service, draft, text, markup)
 
 
 def _new_form_data(
@@ -1926,6 +2014,7 @@ def _new_form_data(
     form: str,
     *,
     values: dict[str, Any] | None = None,
+    locked_brand_id: int | None = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "draft_mode": True,
@@ -1936,6 +2025,11 @@ def _new_form_data(
     }
     if form == "partner_save":
         data["cards"] = [card.id for card in context.application.bot_data["catalog"].cards]
+    if locked_brand_id is not None:
+        if data["values"].get("brand_id") != locked_brand_id:
+            raise StaleAction("Контекст магазина изменился. Откройте форму заново.")
+        data["locked_brand_id"] = locked_brand_id
+        data["brand_id"] = locked_brand_id
     return data
 
 
@@ -1945,15 +2039,30 @@ async def _begin_form(
     form: str,
     *,
     values: dict[str, Any] | None = None,
+    locked_brand_id: int | None = None,
+    store_query: str | None = None,
 ) -> None:
     service = _service(context)
     user_id = _identity(update)
     if user_id is None:
         raise CommunityError("Редактор доступен в личном чате с ботом.")
+    data = _new_form_data(
+        context,
+        service,
+        form,
+        values=values,
+        locked_brand_id=locked_brand_id,
+    )
+    if store_query is not None:
+        data.update(
+            active_field="brand_id",
+            matches=[],
+            new_store_name=store_query,
+        )
     draft = service.begin(
         user_id,
         stage="form_editor",
-        data=_new_form_data(context, service, form, values=values),
+        data=data,
         privileged=False,
     )
     await _render_form_editor(update, context, service, draft)
@@ -1971,7 +2080,7 @@ async def begin_contribution(
     """Open the canonical one-message MCC/store editor with optional context."""
 
     service = _service(context)
-    if flow_kind not in {"new_store", "store_mcc"}:
+    if flow_kind not in {"new_store", "store_mcc", "mcc_save"}:
         raise CommunityError("Неизвестный вид данных.")
     values: dict[str, Any] = {}
     if brand_id is not None:
@@ -1979,14 +2088,19 @@ async def begin_contribution(
         if brand is None:
             raise CommunityError("Магазин больше недоступен. Найдите его заново.")
         values["brand_id"] = brand.id
-    elif name:
-        values["name"] = clean_text(name, maximum=MAX_NAME)
+    searched_name = clean_text(name, maximum=MAX_NAME) if name else None
     if channel is not None:
         if channel not in {"offline", "online"} or brand_id is None:
             raise CommunityError("Некорректный способ оплаты.")
         values["channel"] = channel
-    form = "store_create" if flow_kind == "new_store" else "mcc_save"
-    await _begin_form(update, context, form, values=values)
+    await _begin_form(
+        update,
+        context,
+        "mcc_save",
+        values=values,
+        locked_brand_id=brand_id,
+        store_query=searched_name,
+    )
 
 
 async def begin_partner_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2012,12 +2126,29 @@ def _consume_form_text(
     if field in {"channel", "card_id", "screenshot"}:
         raise CommunityError(_form_prompt(field))
     if field == "brand_id":
+        if data.get("locked_brand_id") is not None:
+            raise StaleAction("Магазин закреплён контекстом формы.")
         query = clean_text(text, maximum=MAX_NAME)
-        results = service.stores.search(query, limit=10)
-        matches = (*results.matches, *results.suggestions)
-        data["matches"] = list(dict.fromkeys(item.id for item in matches))[:10]
-        data["new_store_name"] = query if data.get("form") == "partner_save" else ""
-        data["dirty"] = True
+        exact = _exact_store_brands(service, query)
+        if len(exact) == 1:
+            _ensure_form_brand_selectable(service, draft, exact[0].id)
+            values["brand_id"] = exact[0].id
+            values.pop("name", None)
+            values.pop("aliases", None)
+            values.pop("location", None)
+            data.update(values=values, active_field=None, dirty=True)
+            data.pop("matches", None)
+            data.pop("new_store_name", None)
+        else:
+            results = service.stores.search(query, limit=100)
+            similar = (*results.matches, *results.suggestions)
+            data["matches"] = list(
+                dict.fromkeys(item.id for item in (exact if exact else similar))
+            )[:10]
+            if exact:
+                data.pop("new_store_name", None)
+            else:
+                data["new_store_name"] = query
         return service.advance(
             draft.user_id,
             draft.id,
@@ -2038,9 +2169,7 @@ def _consume_form_text(
         values[field] = (
             []
             if text == "-"
-            else list(
-                dict.fromkeys(clean_text(item, maximum=MAX_NAME) for item in text.split(","))
-            )
+            else list(dict.fromkeys(clean_text(item, maximum=MAX_NAME) for item in text.split(",")))
         )
         if len(values[field]) > 20:
             raise CommunityError("Можно сохранить не больше 20 названий.")
@@ -2213,9 +2342,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             if draft is None:
                 return False
             if draft.stage == "form_editor":
-                draft = _consume_form_text(
-                    service, draft, text, getattr(update, "update_id", None)
-                )
+                draft = _consume_form_text(service, draft, text, getattr(update, "update_id", None))
                 await _render_form_editor(update, context, service, draft)
                 return True
             if (
@@ -2230,6 +2357,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
                 and not service.draft_has_media(user_id, draft.id)
             ):
                 service.cancel_draft(user_id, draft.id, draft.version)
+                await _say(update, "Редактор закрыт.", keyboard_for(service, user_id))
                 return False
             draft = _consume_text(service, draft, text, getattr(update, "update_id", None))
             await _render_draft(update, service, draft)
@@ -2658,7 +2786,9 @@ async def _form_editor_callback(
     values = dict(data.get("values", {}))
     if action == "form_field":
         field = parts[1]
-        if field not in {item[0] for item in _form_fields(data["form"])}:
+        if field == "brand_id" and data.get("locked_brand_id") is not None:
+            raise StaleAction("Магазин закреплён контекстом формы.")
+        if field not in {item[0] for item in _form_fields(data["form"], data)}:
             raise StaleAction("Поле больше недоступно.")
         data["active_field"] = field
         data.pop("matches", None)
@@ -2667,30 +2797,34 @@ async def _form_editor_callback(
         data["optional_open"] = not bool(data.get("optional_open"))
         data["active_field"] = None
     elif action == "form_select" and data.get("active_field") == "brand_id":
+        if data.get("locked_brand_id") is not None:
+            raise StaleAction("Магазин закреплён контекстом формы.")
         brand_id = int(parts[1])
         if brand_id not in data.get("matches", []):
             raise StaleAction("Выберите магазин из текущих результатов.")
         if _brand(service, brand_id) is None:
             raise StaleAction("Магазин больше недоступен.")
-        if (
-            data.get("form") == "partner_save"
-            and not service.is_admin(draft.user_id)
-            and not service.brand_has_confirmed_mcc(brand_id)
-        ):
-            raise CommunityError(
-                "Партнёрство можно предложить только для магазина с подтверждённым MCC."
-            )
+        _ensure_form_brand_selectable(service, draft, brand_id)
         values["brand_id"] = brand_id
         values.pop("name", None)
+        values.pop("aliases", None)
+        values.pop("location", None)
         data.update(values=values, active_field=None, dirty=True)
     elif action == "form_new_store" and data.get("active_field") == "brand_id":
-        if data.get("form") != "partner_save" or not service.is_admin(draft.user_id):
+        if data.get("locked_brand_id") is not None:
+            raise StaleAction("Магазин закреплён контекстом формы.")
+        if data.get("form") not in {"mcc_save", "partner_save"}:
+            raise StaleAction("Новый магазин больше нельзя выбрать в этой форме.")
+        if data.get("form") == "partner_save" and not service.is_admin(draft.user_id):
             raise CommunityError("Новый магазин для партнёрства может создать только помощник.")
         name = data.get("new_store_name")
         if not isinstance(name, str) or not name:
             raise StaleAction("Сначала отправьте название магазина.")
         values["name"] = name
         values.pop("brand_id", None)
+        if data.get("form") == "mcc_save":
+            values.pop("aliases", None)
+            values.pop("location", None)
         data.update(values=values, active_field=None, dirty=True)
     elif action == "form_card" and data.get("active_field") == "card_id":
         cards = getattr(context.application.bot_data.get("catalog"), "cards", ())
@@ -2717,6 +2851,7 @@ async def _form_editor_callback(
         if data.get("review_edit"):
             proposal_id = data["review_edit"]["proposal_id"]
             service.cancel_draft(draft.user_id, draft.id, draft.version)
+            await _say(update, "Редактор закрыт.", keyboard_for(service, draft.user_id))
             await _review_view(update, service, service.proposal(draft.user_id, proposal_id))
         else:
             await _close_draft(update, context, service, draft)
@@ -2738,6 +2873,11 @@ async def _form_editor_callback(
                 payload,
             )
             service.cancel_draft(draft.user_id, draft.id, draft.version)
+            await _say(
+                update,
+                "Изменения в заявке сохранены.",
+                keyboard_for(service, draft.user_id),
+            )
             await _review_view(update, service, proposal)
             return
         preview = {
@@ -2748,16 +2888,12 @@ async def _form_editor_callback(
             "brand_id": payload.get("brand_id"),
             "name": payload.get("name"),
         }
-        draft = service.advance(
-            draft.user_id, draft.id, draft.version, "preview", preview
-        )
+        draft = service.advance(draft.user_id, draft.id, draft.version, "preview", preview)
         await _finish_form_submission(update, context, service, draft)
         return
     else:
         raise StaleAction("Кнопка не относится к редактору.")
-    draft = service.advance(
-        draft.user_id, draft.id, draft.version, "form_editor", data
-    )
+    draft = service.advance(draft.user_id, draft.id, draft.version, "form_editor", data)
     await _render_form_editor(update, context, service, draft)
 
 
@@ -2801,9 +2937,7 @@ async def _render_form_menu(
         channels: dict[str, list[str]] = {"offline": [], "online": []}
         for item in draft.data.get("facts", []):
             item_channels = (
-                ("offline", "online")
-                if item["channel"] == "both"
-                else (item["channel"],)
+                ("offline", "online") if item["channel"] == "both" else (item["channel"],)
             )
             for channel in item_channels:
                 if item["mcc"] not in channels[channel]:
@@ -2821,8 +2955,11 @@ async def _render_form_menu(
             [("⋯ Ещё", "menu_more")],
             [("⬅️ К магазину", "form_cancel")],
         ]
-    await _say_inline(
+    await _render_durable_form_message(
         update,
+        context,
+        service,
+        draft,
         text,
         _draft_buttons(draft, rows),
     )
@@ -2893,9 +3030,7 @@ def _menu_data(service: CommunityService, brand_id: int) -> dict[str, Any]:
                         else None
                     ),
                     "excluded_mccs": [
-                        item.mcc
-                        for item in partners.list_offer_exclusions(offer.id)
-                        if item.mcc
+                        item.mcc for item in partners.list_offer_exclusions(offer.id) if item.mcc
                     ],
                     "source_url": offer.source_url,
                 }
@@ -2904,6 +3039,7 @@ def _menu_data(service: CommunityService, brand_id: int) -> dict[str, Any]:
         "draft_mode": True,
         "dirty": False,
         "brand_id": brand_id,
+        "locked_brand_id": brand_id,
         "facts": facts,
         "offers": offers,
     }
@@ -2923,9 +3059,7 @@ async def _begin_form_menu(
     await _render_form_menu(update, context, service, draft)
 
 
-async def _render_delete_confirm(
-    update: Update, service: CommunityService, draft: Draft
-) -> None:
+async def _render_delete_confirm(update: Update, service: CommunityService, draft: Draft) -> None:
     warning = draft.data.get("warning")
     text = draft.data["title"] + "\n\nУдалить?"
     if warning:
@@ -2956,9 +3090,7 @@ async def _form_menu_callback(
             "menu_mcc_list": "mcc",
             "menu_more": "more",
         }[action]
-        next_draft = service.advance(
-            draft.user_id, draft.id, draft.version, "form_menu", next_data
-        )
+        next_draft = service.advance(draft.user_id, draft.id, draft.version, "form_menu", next_data)
         await _render_form_menu(update, context, service, next_draft)
         return
     if action == "menu_metadata":
@@ -2972,10 +3104,15 @@ async def _form_menu_callback(
                 "aliases": list(brand.aliases),
                 "location": brand.location,
             },
+            locked_brand_id=brand.id,
         )
     elif action == "menu_mcc_new":
         form_data = _new_form_data(
-            context, service, "mcc_save", values={"brand_id": brand.id}
+            context,
+            service,
+            "mcc_save",
+            values={"brand_id": brand.id},
+            locked_brand_id=brand.id,
         )
     elif action in {"menu_mcc_edit", "menu_mcc_delete"}:
         item = data["facts"][int(parts[1])]
@@ -3017,10 +3154,15 @@ async def _form_menu_callback(
                 "channel": item["channel"],
                 "note": item["note"],
             },
+            locked_brand_id=brand.id,
         )
     elif action == "menu_partner_new":
         form_data = _new_form_data(
-            context, service, "partner_save", values={"brand_id": brand.id}
+            context,
+            service,
+            "partner_save",
+            values={"brand_id": brand.id},
+            locked_brand_id=brand.id,
         )
     elif action in {"menu_partner_edit", "menu_partner_delete"}:
         item = data["offers"][int(parts[1])]
@@ -3038,12 +3180,16 @@ async def _form_menu_callback(
             )
             await _render_delete_confirm(update, service, draft)
             return
-        form_data = _new_form_data(context, service, "partner_save", values=item)
+        form_data = _new_form_data(
+            context,
+            service,
+            "partner_save",
+            values=item,
+            locked_brand_id=brand.id,
+        )
     else:
         raise StaleAction("Действие больше недоступно.")
-    next_draft = service.advance(
-        draft.user_id, draft.id, draft.version, "form_editor", form_data
-    )
+    next_draft = service.advance(draft.user_id, draft.id, draft.version, "form_editor", form_data)
     await _render_form_editor(update, context, service, next_draft)
 
 
@@ -3056,8 +3202,16 @@ async def _form_delete_callback(
 ) -> None:
     if parts[0] == "delete_no":
         brand_id = draft.data.get("brand_id")
-        service.cancel_draft(draft.user_id, draft.id, draft.version)
-        await _begin_form_menu(update, context, service, brand_id)
+        if not isinstance(brand_id, int):
+            raise StaleAction("Магазин больше недоступен.")
+        draft = service.advance(
+            draft.user_id,
+            draft.id,
+            draft.version,
+            "form_menu",
+            _menu_data(service, brand_id),
+        )
+        await _render_form_menu(update, context, service, draft)
         return
     if parts[0] != "delete_yes":
         raise StaleAction("Выберите подтверждение или отмену.")
@@ -3909,9 +4063,18 @@ async def _review_callback(
         elif proposal.kind == "partner_save":
             form = "partner_save"
         else:
-            form = "store_create" if "name" in proposal.payload else "mcc_save"
+            form = "mcc_save"
         values = dict(proposal.payload)
-        data = _new_form_data(context, service, form, values=values)
+        locked_brand_id = (
+            values.get("brand_id") if isinstance(values.get("brand_id"), int) else None
+        )
+        data = _new_form_data(
+            context,
+            service,
+            form,
+            values=values,
+            locked_brand_id=locked_brand_id,
+        )
         data["review_edit"] = {
             "proposal_id": proposal.id,
             "proposal_version": proposal.version,

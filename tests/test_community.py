@@ -112,7 +112,7 @@ def test_form_operations_publish_atomically_and_keep_empty_store_searchable(comm
     assert community.stores.list_brand_mcc_groups(brand.id) == ()
 
 
-def test_form_mcc_move_can_create_the_target_channel_branch(community):
+def test_form_mcc_edit_cannot_move_the_source_fact_to_another_brand(community):
     source = community.stores.apply_change(
         "add_merchant", {"name": "Move source", "channel": "offline", "mcc": "5411"}, 1
     )
@@ -121,28 +121,159 @@ def test_form_mcc_move_can_create_the_target_channel_branch(community):
     )
     fact = community.stores.list_brand_mcc_groups(source.brand_id)[0]
 
-    proposal = submit_form(
-        community,
+    with pytest.raises(StaleAction, match="не относится"):
+        submit_form(
+            community,
+            2,
+            "mcc_save",
+            {
+                "brand_id": target.brand_id,
+                "merchant_id": fact.merchant_ids[0],
+                "merchant_ids": list(fact.merchant_ids),
+                "channels": list(fact.channels),
+                "old_mcc": fact.mcc,
+                "mcc": "5411",
+                "channel": "online",
+                "note": "перенесён",
+            },
+        )
+    with pytest.raises(StaleAction, match="закреплён контекстом"):
+        submit_form(
+            community,
+            2,
+            "mcc_save",
+            {
+                "name": "Move to new store",
+                "merchant_id": fact.merchant_ids[0],
+                "merchant_ids": list(fact.merchant_ids),
+                "channels": list(fact.channels),
+                "old_mcc": fact.mcc,
+                "mcc": "5411",
+                "channel": "online",
+            },
+        )
+
+    assert community.stores.list_brand_mcc_groups(source.brand_id) == (fact,)
+    assert community.stores.list_brand_mcc_groups(target.brand_id) == ()
+
+
+def test_locked_form_rejects_advance_and_submit_identity_changes(community):
+    source = community.stores.apply_change(
+        "add_merchant", {"name": "Locked source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = community.stores.apply_change(
+        "add_merchant", {"name": "Locked target", "channel": "offline"}, 1
+    )
+    fact = community.stores.list_brand_mcc_groups(source.brand_id)[0]
+    values = {
+        "brand_id": source.brand_id,
+        "merchant_id": fact.merchant_ids[0],
+        "merchant_ids": list(fact.merchant_ids),
+        "channels": list(fact.channels),
+        "old_mcc": fact.mcc,
+        "mcc": "5812",
+        "channel": "offline",
+    }
+    draft = community.begin(
         2,
-        "mcc_save",
-        {
-            "brand_id": target.brand_id,
-            "merchant_id": fact.merchant_ids[0],
-            "merchant_ids": list(fact.merchant_ids),
-            "channels": list(fact.channels),
-            "old_mcc": fact.mcc,
-            "mcc": "5411",
-            "channel": "online",
-            "note": "перенесён",
+        stage="form_editor",
+        data={
+            "form": "mcc_save",
+            "values": values,
+            "locked_brand_id": source.brand_id,
         },
     )
 
-    assert proposal.status == "approved"
-    assert community.stores.list_brand_mcc_groups(source.brand_id) == ()
-    moved = community.stores.list_brand_mcc_groups(target.brand_id)
-    assert [(item.mcc, item.channel, item.note) for item in moved] == [
-        ("5411", "online", "перенесён")
-    ]
+    with pytest.raises(StaleAction, match="закреплён контекстом"):
+        community.advance(
+            2,
+            draft.id,
+            draft.version,
+            "form_editor",
+            {"form": "mcc_save", "values": {**values, "brand_id": target.brand_id}},
+        )
+    with pytest.raises(StaleAction, match="Исходная запись"):
+        community.advance(
+            2,
+            draft.id,
+            draft.version,
+            "form_editor",
+            {
+                "form": "mcc_save",
+                "values": {key: value for key, value in values.items() if key != "merchant_id"},
+            },
+        )
+    assert community.draft(2) == draft
+
+    add_draft = community.begin(
+        2,
+        stage="form_editor",
+        data={
+            "form": "mcc_save",
+            "values": {"brand_id": source.brand_id},
+            "locked_brand_id": source.brand_id,
+        },
+    )
+    with pytest.raises(StaleAction, match="Исходная запись"):
+        community.advance(
+            2,
+            add_draft.id,
+            add_draft.version,
+            "form_editor",
+            {"form": "mcc_save", "values": values},
+        )
+
+    preview = community.begin(
+        2,
+        stage="preview",
+        data={"kind": "mcc_save", "payload": values, "draft_mode": True},
+    )
+    community.stores.apply_change(
+        "set_brand_membership",
+        {"merchant_id": fact.merchant_ids[0], "brand_id": target.brand_id},
+        1,
+    )
+    with pytest.raises(StaleAction, match="не относится"):
+        community.submit(2, preview.id, preview.version)
+
+
+def test_review_edit_preserves_existing_brand_and_mcc_source_identity(community):
+    source = community.stores.apply_change(
+        "add_merchant", {"name": "Review source", "channel": "offline", "mcc": "5411"}, 1
+    )
+    target = community.stores.apply_change(
+        "add_merchant", {"name": "Review target", "channel": "offline"}, 1
+    )
+    fact = community.stores.list_brand_mcc_groups(source.brand_id)[0]
+    payload = {
+        "brand_id": source.brand_id,
+        "merchant_id": fact.merchant_ids[0],
+        "merchant_ids": list(fact.merchant_ids),
+        "channels": list(fact.channels),
+        "old_mcc": fact.mcc,
+        "mcc": "5812",
+        "channel": "offline",
+    }
+    queued = submit_form(community, 10, "mcc_save", payload)
+    claimed = community.claim(2, queued.id, queued.version, now=100)
+
+    with pytest.raises(StaleAction, match="закреплён контекстом"):
+        community.edit_review_payload(
+            2,
+            claimed.id,
+            claimed.version,
+            {**payload, "brand_id": target.brand_id},
+            now=101,
+        )
+    with pytest.raises(StaleAction, match="Исходная запись"):
+        community.edit_review_payload(
+            2,
+            claimed.id,
+            claimed.version,
+            {**payload, "merchant_id": 999, "merchant_ids": [999]},
+            now=101,
+        )
+    assert community.proposal(2, queued.id) == claimed
 
 
 def test_form_duplicates_are_blocked_without_a_pending_quota(community):
@@ -227,6 +358,46 @@ def test_partner_form_derives_policy_and_reconciles_linked_exclusions(tmp_path):
     offer = partners.list_offers(brand_id)[0]
     assert (offer.mode, offer.reward_kind) == ("total", "points")
     assert [item.mcc for item in partners.list_offer_exclusions(offer.id)] == ["4900"]
+    target_brand_id = stores.apply_change(
+        "add_merchant", {"name": "Partner target", "channel": "offline", "mcc": "5411"}, 1
+    ).brand_id
+    edit_payload = {
+        "offer_id": offer.id,
+        "brand_id": brand_id,
+        "card_id": "card",
+        "channel": "any",
+        "value": "6",
+        "excluded_mccs": ["4900"],
+    }
+    with pytest.raises(StaleAction, match="не относится"):
+        submit_form(
+            service,
+            1,
+            "partner_save",
+            {**edit_payload, "brand_id": target_brand_id},
+        )
+    with pytest.raises(StaleAction, match="закреплён контекстом"):
+        submit_form(
+            service,
+            1,
+            "partner_save",
+            {
+                **{key: value for key, value in edit_payload.items() if key != "brand_id"},
+                "name": "Partner move target",
+            },
+        )
+
+    queued = submit_form(service, 10, "partner_save", edit_payload)
+    claimed = service.claim(1, queued.id, queued.version, now=100)
+    with pytest.raises(StaleAction, match="закреплён контекстом"):
+        service.edit_review_payload(
+            1,
+            claimed.id,
+            claimed.version,
+            {**edit_payload, "brand_id": target_brand_id},
+            now=101,
+        )
+    service.cancel(10, claimed.id, claimed.version)
     removed = submit_form(service, 1, "partner_delete", {"offer_id": offer.id})
     assert removed.status == "approved"
     assert partners.list_offer_exclusions(offer.id) == ()
@@ -247,9 +418,7 @@ def test_only_helpers_can_save_partnership_for_store_without_confirmed_mcc(tmp_p
     service = CommunityService(stores, owner_id=1, partners=partners, catalog=catalog)
     service.initialize()
     service.set_role(1, 2, True)
-    brand_id = stores.create_partner_store(
-        "Partner-only exception", "any", actor_id=1
-    ).brand_id
+    brand_id = stores.create_partner_store("Partner-only exception", "any", actor_id=1).brand_id
     payload = {
         "brand_id": brand_id,
         "card_id": "card",
@@ -805,9 +974,7 @@ def test_pending_input_has_no_fixed_quota(community):
         make_proposal(
             community, payload={"name": f"Shop {number}", "channel": "offline", "mcc": "5411"}
         )
-    make_proposal(
-        community, payload={"name": "Shop 20", "channel": "offline", "mcc": "5411"}
-    )
+    make_proposal(community, payload={"name": "Shop 20", "channel": "offline", "mcc": "5411"})
     assert len(community.own_proposals(10, offset=11)) == 10
 
 

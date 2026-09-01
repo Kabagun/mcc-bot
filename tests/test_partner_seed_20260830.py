@@ -66,15 +66,15 @@ def test_seed_is_insert_missing_and_preserves_manual_edits(tmp_path) -> None:
 
     first = apply_partner_seed(stores, partners, actor_id=1)
     assert first == {
-        "brands_created": 164,
-        "brands_reused": 20,
+        "brands_created": 163,
+        "brands_reused": 17,
         "brands_skipped_missing": 22,
         "brands_skipped_ambiguous": 0,
         "brand_mappings_repaired": 0,
         "brand_mapping_conflicts": 0,
-        "offers_added": 181,
+        "offers_added": 177,
         "offers_existing": 0,
-        "offers_skipped": 22,
+        "offers_skipped": 26,
         "exclusions_added": 7,
         "exclusions_existing": 0,
         "exclusions_skipped": 0,
@@ -86,14 +86,14 @@ def test_seed_is_insert_missing_and_preserves_manual_edits(tmp_path) -> None:
     second = apply_partner_seed(stores, partners, actor_id=1)
     assert second == {
         "brands_created": 0,
-        "brands_reused": 184,
+        "brands_reused": 180,
         "brands_skipped_missing": 22,
         "brands_skipped_ambiguous": 0,
         "brand_mappings_repaired": 0,
         "brand_mapping_conflicts": 0,
         "offers_added": 0,
-        "offers_existing": 181,
-        "offers_skipped": 22,
+        "offers_existing": 177,
+        "offers_skipped": 26,
         "exclusions_added": 0,
         "exclusions_existing": 7,
         "exclusions_skipped": 0,

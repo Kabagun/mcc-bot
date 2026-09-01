@@ -96,11 +96,16 @@ All numbers use ordinary digits, including rewards such as `1%`, `2,5% (2,435%)`
 and `1% + 3% баллами`. Both views keep the same layout and card order. Catalog
 text is escaped for Telegram HTML; the local CLI and information view stay plain text.
 
-`var/users.sqlite3` stores Telegram chat IDs and first/last-seen timestamps for
-operator broadcasts. The separate merchant/community database also stores
-contributions, user IDs for permissions and attribution, helper usernames and
-Telegram display names, drafts, decisions and audit history as described below. Run a
-broadcast from the configured server with:
+`var/users.sqlite3` stores Telegram chat IDs, first/last-seen timestamps and the
+latest known username/display name for operator broadcasts. Profiles are refreshed
+on every interaction. Before a broadcast, missing legacy profiles are filled from
+the merchant/community database where possible, then looked up through Telegram
+sequentially with a small rate-safety delay before delivery. Profile lookup failures
+never prevent the actual delivery attempt.
+The separate merchant/community database also stores contributions, user IDs for
+permissions and attribution, helper usernames and Telegram display names, drafts,
+decisions and audit history as described below. Run a broadcast from the configured
+server with:
 
 ```bash
 mcc-broadcast --message 'Бот обновлён. Выполните /start.'
@@ -108,7 +113,21 @@ mcc-broadcast --message 'Бот обновлён. Выполните /start.'
 
 `mcc-broadcast` always sends broadcasts silently, without a notification sound,
 including delivery attempts that Telegram rejects. This is a permanent operator
-contract and is not configurable per run.
+contract and is not configurable per run. Every run is created before delivery and
+stores only timestamps, counters, status and the SHA-256 of the message. Each failed
+delivery is recorded immediately with an identity snapshot and Telegram's reason;
+the message itself is never written to the registry. An interrupted run stays
+visible as `in_progress`. There is no automatic retry.
+
+Inspect the newest completed or interrupted run with:
+
+```bash
+mcc-broadcast-failures --latest
+```
+
+The report shows aggregate counters and each failed recipient as `@username` or a
+display name with the exact safe error reason. It never prints the bot token or
+numeric Telegram chat IDs.
 
 ## Contributions and moderation
 
@@ -413,9 +432,21 @@ mcc-reconcile-partners-20260831 --database /srv/bots/mcc-bot/var/stores.sqlite3
 mcc-apply-partner-seed-20260831 --database /srv/bots/mcc-bot/var/stores.sqlite3
 ```
 
-The command reads the audit actor from `BOT_OWNER_TELEGRAM_ID`, validates the
-expected source rows before changing anything, and is safe to run again. Its
-evidence keys are derived from each source image hash and visual row number.
+Imported addresses remain private provenance. Apply the reviewed manual-location
+manifest after a dry-run; it validates exact brand IDs, names, revisions, old
+locations and source fingerprints, then updates the whole batch in one transaction:
+
+```bash
+mcc-apply-location-review-20260901 --database /srv/bots/mcc-bot/var/stores.sqlite3
+mcc-apply-location-review-20260901 --database /srv/bots/mcc-bot/var/stores.sqlite3 --apply
+```
+
+The manifest keeps networks and uncertain stores addressless, explicitly including
+`21vek`, and is idempotent after a successful application.
+
+The dated partner commands read the audit actor from `BOT_OWNER_TELEGRAM_ID`,
+validate expected source rows before changing anything, and are safe to run again.
+Their evidence keys are derived from each source image hash and visual row number.
 
 ## Tests and checks
 

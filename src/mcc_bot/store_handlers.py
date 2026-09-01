@@ -177,14 +177,6 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     )
     if location:
         text += f"\n📍 {escape(location)}"
-    if admin:
-        source_getter = getattr(repository, "brand_source_ids", None)
-        source_ids = source_getter(brand.id) if source_getter is not None else ()
-        if source_ids:
-            source_preview = ", ".join(source_ids[:3])
-            if len(source_ids) > 3:
-                source_preview += f" · ещё {len(source_ids) - 3}"
-            text += f"\nИсточник: tannei.by · ID {escape(source_preview)}"
     rows: list[list[InlineKeyboardButton]] = []
     for scope in ("both", "offline", "online"):
         scoped_facts = [fact for fact in shown if fact.channel == scope]
@@ -418,9 +410,7 @@ def pending_overlay(context, brand_id: int) -> tuple[str, int, tuple[int, ...]]:
                     facts.pop((channel, payload.get("old_mcc", payload["mcc"])), None)
             if target_id == brand_id:
                 channels = (
-                    ("offline", "online")
-                    if payload["channel"] == "both"
-                    else (payload["channel"],)
+                    ("offline", "online") if payload["channel"] == "both" else (payload["channel"],)
                 )
                 for channel in channels:
                     facts[(channel, payload["mcc"])] = payload.get("note", "")
@@ -471,14 +461,10 @@ def pending_new_overlay(context, proposal_id: int) -> tuple[str, tuple[int, ...]
     if target is None or target["kind"] != "mcc_save" or "name" not in target["payload"]:
         raise ValueError("Предложение больше недоступно.")
     payload = target["payload"]
-    channels = (
-        ("offline", "online") if payload["channel"] == "both" else (payload["channel"],)
-    )
+    channels = ("offline", "online") if payload["channel"] == "both" else (payload["channel"],)
     lines = [f"🏪 <b>{escape(payload['name'])}</b>"]
     for channel in channels:
-        lines.extend(
-            ("", f"<b>{_channel_label(channel)}</b>", f"• MCC {payload['mcc']}")
-        )
+        lines.extend(("", f"<b>{_channel_label(channel)}</b>", f"• MCC {payload['mcc']}"))
     lines.extend(
         ("", "<i>Магазин появится в подтверждённых данных после проверки предложения.</i>")
     )

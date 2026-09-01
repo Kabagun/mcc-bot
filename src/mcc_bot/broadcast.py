@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
+import sqlite3
 from collections.abc import Sequence
 
 from telegram import Bot
@@ -11,6 +13,8 @@ from telegram import Bot
 from .bot import load_environment
 from .config import BotSettings, SettingsError
 from .users import BroadcastResult, UserRegistry, broadcast_message
+
+LOGGER = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
 async def _broadcast(settings: BotSettings, message: str) -> BroadcastResult:
     registry = UserRegistry(settings.user_registry_path)
     registry.initialize()
+    try:
+        registry.backfill_profiles(settings.stores_path)
+    except sqlite3.Error:
+        LOGGER.warning("Could not backfill broadcast recipient profiles")
     async with Bot(settings.token) as bot:
         return await broadcast_message(bot, registry, message)
 
