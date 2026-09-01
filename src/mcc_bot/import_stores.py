@@ -267,6 +267,7 @@ class StoreImporter:
         """Union moneyback sitemap IDs with both channel searches per network."""
 
         stores, networks, metadata = set(), set(), {}
+        tombstoned = self.repository.tannei_source_tombstones()
         ambiguity = 0
         pending, visited = deque([SITEMAP]), set()
         while pending:
@@ -296,7 +297,9 @@ class StoreImporter:
                         pending.append(link)
                     continue
                 if match := _STORE_PATH.fullmatch(parsed.path):
-                    stores.add(int(match[1]))
+                    source_id = int(match[1])
+                    if str(source_id) not in tombstoned:
+                        stores.add(source_id)
                 if match := _NETWORK_PATH.fullmatch(parsed.path):
                     networks.add(int(match[1]))
         for network_id in sorted(networks):
@@ -316,7 +319,8 @@ class StoreImporter:
                     if parsed["network_id"] != network_id or parsed["is_online"] != is_online:
                         ambiguity += 1
                         continue
-                    stores.add(parsed["id"])
+                    if str(parsed["id"]) not in tombstoned:
+                        stores.add(parsed["id"])
                     if parsed["id"] in metadata and metadata[parsed["id"]] != parsed:
                         # The exact item endpoint will resolve conflicting search metadata.
                         metadata.pop(parsed["id"])
@@ -337,6 +341,7 @@ class StoreImporter:
             "processed": 0,
             "imported": 0,
             "skipped": 0,
+            "tombstoned": 0,
             "ambiguous": 0,
             "errors": 0,
             "remaining": 0,

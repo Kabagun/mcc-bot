@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import normalize_mcc
+from .reviewed_store_policy import filter_observations as apply_reviewed_store_policy
 
 
 class StoreError(ValueError):
@@ -380,6 +381,16 @@ class StoreRepository:
                 CREATE TABLE IF NOT EXISTS store_import_checkpoints (
                     key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS store_tannei_tombstones (
+                    source_id TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS partner_seed_tombstones (
+                    source_key TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS store_tannei_snapshots (
                     id INTEGER PRIMARY KEY, brand_id INTEGER NOT NULL UNIQUE
@@ -3120,6 +3131,80 @@ class StoreRepository:
             ).fetchone()
             return json.loads(row[0]) if row else None
 
+    def is_tannei_source_tombstoned(self, source_id: object, *, connection=None) -> bool:
+        """Return whether a reviewed source store ID is permanently blocked.
+
+        Tombstones are deliberately keyed by the exact Tannei store ID rather
+        than a merchant name.  This prevents a later import from recreating a
+        reviewed deletion while leaving unrelated stores untouched.
+        """
+
+        key = str(source_id)
+        if connection is None:
+            with self.connection() as current:
+                return self.is_tannei_source_tombstoned(key, connection=current)
+        return (
+            connection.execute(
+                "SELECT 1 FROM store_tannei_tombstones WHERE source_id=?", (key,)
+            ).fetchone()
+            is not None
+        )
+
+    def tannei_source_tombstones(self, *, connection=None) -> frozenset[str]:
+        """Load all exact Tannei source tombstones in one bounded query."""
+
+        if connection is None:
+            with self.connection() as current:
+                return self.tannei_source_tombstones(connection=current)
+        return frozenset(
+            str(row["source_id"])
+            for row in connection.execute("SELECT source_id FROM store_tannei_tombstones")
+        )
+
+    def tombstone_tannei_source(self, source_id: object, reason: str, *, connection=None) -> bool:
+        """Record an exact Tannei source deletion; return ``True`` when new."""
+
+        key = str(source_id)
+        if not isinstance(reason, str) or not reason.strip():
+            raise StoreError("Для блокировки источника нужна причина")
+        if connection is None:
+            with self.transaction() as current:
+                return self.tombstone_tannei_source(key, reason, connection=current)
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO store_tannei_tombstones(source_id,reason) VALUES(?,?)",
+            (key, reason.strip()),
+        )
+        return cursor.rowcount > 0
+
+    def is_partner_seed_tombstoned(self, source_key: object, *, connection=None) -> bool:
+        """Return whether a reviewed partner seed source key is blocked."""
+
+        key = str(source_key)
+        if connection is None:
+            with self.connection() as current:
+                return self.is_partner_seed_tombstoned(key, connection=current)
+        return (
+            connection.execute(
+                "SELECT 1 FROM partner_seed_tombstones WHERE source_key=?", (key,)
+            ).fetchone()
+            is not None
+        )
+
+    def tombstone_partner_seed(self, source_key: object, reason: str, *, connection=None) -> bool:
+        """Record an exact partner seed deletion; return ``True`` when new."""
+
+        key = str(source_key)
+        if not isinstance(reason, str) or not reason.strip():
+            raise StoreError("Для блокировки партнёрского источника нужна причина")
+        if connection is None:
+            with self.transaction() as current:
+                return self.tombstone_partner_seed(key, reason, connection=current)
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO partner_seed_tombstones(source_key,reason) VALUES(?,?)",
+            (key, reason.strip()),
+        )
+        return cursor.rowcount > 0
+
     def import_store(self, metadata: dict, observations: list[dict]) -> ChangeResult:
         """Publish one validated Tannei source record through the batch transaction."""
 
@@ -3178,7 +3263,10 @@ class StoreRepository:
         """Merge one source response into a transaction-local canonical snapshot."""
 
         source_id, network_id = str(metadata["id"]), metadata.get("network_id")
+        if self.is_tannei_source_tombstoned(source_id, connection=connection):
+            raise StoreError(f"Источник Tannei #{source_id} заблокирован проверенным удалением")
         channel = "online" if metadata["is_online"] else "offline"
+        observations = apply_reviewed_store_policy(metadata, observations)
         identity = self._tannei_identity(metadata)
         link = connection.execute(
             "SELECT * FROM store_sources WHERE source='tannei' AND store_id=?", (source_id,)

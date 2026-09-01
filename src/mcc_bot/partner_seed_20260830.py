@@ -29,6 +29,19 @@ from .stores import StoreRepository
 
 SEED_PATH = default_data_path("partner_seed_20260830.json")
 
+# These source keys were explicitly reviewed for physical deletion.  The
+# static guard is intentionally kept next to the immutable seed so a fresh
+# database cannot recreate historical Aqua-Minsk rows before durable
+# tombstones are present.
+REVIEWED_BLOCKED_PARTNER_SOURCE_KEYS = frozenset(
+    {
+        "cactus:81415a90ecabeae920dd",
+        "cactus:bb7c5f2e3492dcbaa835",
+        "cactus:f4833a8bc49c708453a2",
+        "cactus:5fe14f84a95e23367e17",
+    }
+)
+
 _BrandResolution = Literal["created", "reused", "missing", "ambiguous"]
 
 
@@ -231,8 +244,20 @@ def apply_partner_seed(
         "exclusions_existing": 0,
         "exclusions_skipped": 0,
     }
+    with stores.connection() as readonly:
+        blocked_seed_keys = set(REVIEWED_BLOCKED_PARTNER_SOURCE_KEYS)
+        blocked_seed_keys.update(
+            row["source_key"]
+            for row in readonly.execute("SELECT source_key FROM partner_seed_tombstones")
+        )
     with stores.transaction() as connection:
         for item in raw["offers"]:
+            # Reviewed deletions are durable source-key tombstones.  Check
+            # before resolving/creating a brand so a rerun cannot recreate a
+            # deliberately removed partner entity.
+            if item["source_key"] in blocked_seed_keys:
+                counters["offers_skipped"] += 1
+                continue
             brand_id, resolution, repair_from = _brand_for_seed(
                 stores,
                 connection,
@@ -290,6 +315,9 @@ def apply_partner_seed(
             )
             counters["offers_added" if added else "offers_existing"] += 1
         for item in raw["exclusions"]:
+            if item["source_key"] in blocked_seed_keys:
+                counters["exclusions_skipped"] += 1
+                continue
             if item.get("brand_key") is None:
                 brand_id = None
             else:

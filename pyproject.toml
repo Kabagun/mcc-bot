@@ -32,6 +32,7 @@ mcc-apply-partner-seed-20260830 = "mcc_bot.partner_seed_20260830:main"
 mcc-reconcile-partners-20260830 = "mcc_bot.partner_cleanup_20260830:main"
 mcc-apply-partner-seed-20260831 = "mcc_bot.partner_seed_20260831:main"
 mcc-reconcile-partners-20260831 = "mcc_bot.partner_cleanup_20260831:main"
+mcc-apply-dedup-cleanup-20260901 = "mcc_bot.dedup_cleanup_20260901:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcc_bot"]
