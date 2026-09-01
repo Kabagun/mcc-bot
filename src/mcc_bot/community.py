@@ -24,13 +24,14 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
-from .stores import StoreRepository, normalize_store_name
+from .stores import StoreRepository, normalize_location, normalize_store_name
 
 LEASE_SECONDS = 15 * 60
 CLARIFICATION_SECONDS = 24 * 60 * 60
 MEDIA_RETENTION_SECONDS = 5 * 86400
 MAX_COMMENT = 1000
 MAX_NAME = 160
+MAX_LOCATION = 500
 MAX_NOTE = 48
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
@@ -772,12 +773,12 @@ class CommunityService:
         schemas = {
             "add_merchant": (
                 {"name", "channel", "mcc"},
-                {"brand_id", "note", "aliases", "source_url"},
+                {"brand_id", "note", "aliases", "location", "source_url"},
             ),
             "add_mcc": ({"merchant_id", "mcc"}, {"note", "source_url"}),
             "add_mcc_both": (
                 {"mcc"},
-                {"brand_id", "name", "note", "aliases", "source_url"},
+                {"brand_id", "name", "note", "aliases", "location", "source_url"},
             ),
             "replace_mcc": (
                 {"merchant_id", "old_mcc", "mcc"},
@@ -790,7 +791,7 @@ class CommunityService:
             "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids", "channels"}),
             "rename_brand": ({"brand_id", "name"}, set()),
             "brand_aliases": ({"brand_id", "aliases"}, set()),
-            "edit_brand_names": ({"brand_id", "name", "aliases"}, set()),
+            "edit_brand_names": ({"brand_id", "name", "aliases"}, {"location"}),
             "set_brand_membership": ({"merchant_id", "brand_id"}, set()),
             "merge_brand": ({"brand_id", "target_id"}, set()),
             "edit_mcc_note": (
@@ -814,7 +815,7 @@ class CommunityService:
                 },
                 set(),
             ),
-            "store_metadata": ({"brand_id", "name", "aliases"}, {"source_url"}),
+            "store_metadata": ({"brand_id", "name", "aliases"}, {"location", "source_url"}),
             "mcc_save": (
                 {"mcc", "channel"},
                 {
@@ -826,6 +827,7 @@ class CommunityService:
                     "channels",
                     "old_mcc",
                     "note",
+                    "location",
                     "source_url",
                 },
             ),
@@ -917,6 +919,20 @@ class CommunityService:
                 if not isinstance(value, list) or len(value) > 20:
                     raise CommunityError("Можно сохранить не больше 20 названий.")
                 result[key] = [clean_text(alias, maximum=MAX_NAME) for alias in value]
+            elif key == "location":
+                if value is None:
+                    result[key] = None
+                elif not isinstance(value, str):
+                    raise CommunityError("Поле «Где находится» должно быть текстом.")
+                else:
+                    value = value.strip()
+                    if len(value) > MAX_LOCATION:
+                        raise CommunityError(
+                            f"Поле «Где находится» — не больше {MAX_LOCATION} символов."
+                        )
+                    if any(ord(ch) < 32 for ch in value):
+                        raise CommunityError("Поле «Где находится» содержит недопустимые символы.")
+                    result[key] = value or None
             elif key == "source_url":
                 if not isinstance(value, str) or len(value) > 2048:
                     raise CommunityError("Официальная ссылка слишком длинная.")
@@ -1068,8 +1084,17 @@ class CommunityService:
             values["aliases"] = sorted(
                 {normalize_store_name(value) for value in values["aliases"]}
             )
+        if "location" in values:
+            values["location"] = (
+                normalize_location(values["location"]) if values.get("location") else None
+            )
         if kind == "mcc_save" and "merchant_id" not in values and "name" in values:
-            values = {"name": values["name"]}
+            values = {
+                "name": values["name"],
+                "location": normalize_location(values["location"])
+                if values.get("location")
+                else None,
+            }
         encoded = json.dumps(
             {"kind": kind, "payload": values},
             ensure_ascii=False,
@@ -1097,17 +1122,33 @@ class CommunityService:
 
         if kind in {"mcc_save", "partner_save"} and "name" in payload:
             needle = normalize_store_name(payload["name"])
-            if any(
-                needle
-                in {
-                    normalize_store_name(item.name),
-                    *(normalize_store_name(alias) for alias in item.aliases),
-                }
-                for item in self.stores.list_brands(connection=conn)
-            ):
-                raise CommunityError("Магазин с таким названием уже существует.")
+            location = normalize_location(payload["location"]) if payload.get("location") else ""
+            for brand in self.stores.list_brands(connection=conn):
+                if needle not in {
+                    normalize_store_name(brand.name),
+                    *(normalize_store_name(alias) for alias in brand.aliases),
+                }:
+                    continue
+                location_getter = getattr(self.stores, "brand_locations", None)
+                raw_locations = (
+                    location_getter(brand.id, connection=conn)
+                    if location_getter is not None
+                    else ((brand.location,) if getattr(brand, "location", None) else ())
+                )
+                existing_locations = tuple(
+                    normalize_location(value) for value in raw_locations if value
+                )
+                if not location:
+                    raise CommunityError(
+                        "Магазин с таким названием уже есть. Укажите, где он находится."
+                    )
+                if location in existing_locations:
+                    raise CommunityError(
+                        "Магазин с таким названием и таким местом уже существует."
+                    )
         if kind == "store_metadata":
             needle = normalize_store_name(payload["name"])
+            location = normalize_location(payload["location"]) if payload.get("location") else ""
             for brand in self.stores.list_brands(connection=conn):
                 normalized_aliases = sorted(
                     {normalize_store_name(value) for value in payload.get("aliases", [])}
@@ -1119,13 +1160,30 @@ class CommunityService:
                     brand.id == payload["brand_id"]
                     and needle == normalize_store_name(brand.name)
                     and normalized_aliases == current_aliases
+                    and location == (normalize_location(brand.location) if brand.location else "")
                 ):
                     raise CommunityError("Такие данные магазина уже подтверждены.")
                 if brand.id != payload["brand_id"] and needle in {
                     normalize_store_name(brand.name),
                     *(normalize_store_name(alias) for alias in brand.aliases),
                 }:
-                    raise CommunityError("Магазин с таким названием уже существует.")
+                    location_getter = getattr(self.stores, "brand_locations", None)
+                    raw_locations = (
+                        location_getter(brand.id, connection=conn)
+                        if location_getter is not None
+                        else ((brand.location,) if getattr(brand, "location", None) else ())
+                    )
+                    existing_locations = tuple(
+                        normalize_location(value) for value in raw_locations if value
+                    )
+                    if not location:
+                        raise CommunityError(
+                            "Магазин с таким названием уже есть. Укажите, где он находится."
+                        )
+                    if location in existing_locations:
+                        raise CommunityError(
+                            "Магазин с таким названием и таким местом уже существует."
+                        )
         if kind == "mcc_save" and "merchant_id" not in payload and "brand_id" in payload:
             wanted = (
                 {"offline", "online"}
@@ -1386,15 +1444,15 @@ class CommunityService:
                     "Данные изменились после просмотра. Откройте редактор предложения заново."
                 )
         if kind == "store_metadata":
+            values = {
+                "brand_id": payload["brand_id"],
+                "name": payload["name"],
+                "aliases": payload["aliases"],
+            }
+            if "location" in payload:
+                values["location"] = payload["location"]
             return self.stores.apply_change(
-                "edit_brand_names",
-                {
-                    "brand_id": payload["brand_id"],
-                    "name": payload["name"],
-                    "aliases": payload["aliases"],
-                },
-                actor_id,
-                connection=conn,
+                "edit_brand_names", values, actor_id, connection=conn
             ).audit_id
         if kind == "mcc_delete":
             values = {
@@ -1640,7 +1698,7 @@ class CommunityService:
                 brand = self.stores.get_brand(value, connection=conn, include_archived=True)
                 if brand is None:
                     raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
-                result["brands"][str(value)] = [brand.revision, brand.archived]
+                result["brands"][str(value)] = [brand.revision, brand.archived, brand.location]
         if kind == "add_mcc_both" and brand_id is not None:
             for merchant in self.stores.list_brand_members(
                 brand_id, connection=conn, include_archived=True

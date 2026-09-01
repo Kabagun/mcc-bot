@@ -169,6 +169,22 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     shown = facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
     text = _header(brand)
+    location_getter = getattr(repository, "brand_location_summary", None)
+    location = (
+        location_getter(brand.id)
+        if location_getter is not None
+        else getattr(brand, "location", None)
+    )
+    if location:
+        text += f"\n📍 {escape(location)}"
+    if admin:
+        source_getter = getattr(repository, "brand_source_ids", None)
+        source_ids = source_getter(brand.id) if source_getter is not None else ()
+        if source_ids:
+            source_preview = ", ".join(source_ids[:3])
+            if len(source_ids) > 3:
+                source_preview += f" · ещё {len(source_ids) - 3}"
+            text += f"\nИсточник: tannei.by · ID {escape(source_preview)}"
     rows: list[list[InlineKeyboardButton]] = []
     for scope in ("both", "offline", "online"):
         scoped_facts = [fact for fact in shown if fact.channel == scope]

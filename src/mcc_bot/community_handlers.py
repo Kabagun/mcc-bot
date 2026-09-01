@@ -18,6 +18,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .community import (
+    MAX_LOCATION,
     MAX_MEDIA_BYTES,
     MAX_NAME,
     MAX_NOTE,
@@ -29,7 +30,7 @@ from .community import (
     clean_text,
 )
 from .formatting import format_limits, split_message
-from .stores import BrandMccGroup
+from .stores import BrandMccGroup, normalize_store_name
 
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
@@ -535,6 +536,8 @@ def _display_payload(service: CommunityService, kind: str, payload: dict[str, An
             )
     if "name" in payload:
         parts.append("Название: " + payload["name"])
+    if "location" in payload:
+        parts.append("Где находится: " + (payload["location"] or "не указано"))
     if "channel" in payload:
         parts.append("Способ оплаты: " + _channel_label(payload["channel"]))
     if "old_mcc" in payload:
@@ -660,6 +663,23 @@ def _brand_editor_summary(service: CommunityService, brand_id: int) -> str:
         return "Магазин недоступен."
     aliases = ", ".join(brand.aliases) or "нет"
     lines = [f"Редактирование: {brand.name}", f"Другие названия: {aliases}"]
+    location_getter = getattr(service.stores, "brand_location_summary", None)
+    location = (
+        location_getter(brand.id, include_archived=True)
+        if location_getter is not None
+        else getattr(brand, "location", None)
+    )
+    if location:
+        lines.append(f"Где находится: {location}")
+    source_getter = getattr(service.stores, "brand_source_ids", None)
+    source_ids = (
+        source_getter(brand.id, include_archived=True) if source_getter is not None else ()
+    )
+    if source_ids:
+        shown = ", ".join(source_ids[:3])
+        if len(source_ids) > 3:
+            shown += f" · ещё {len(source_ids) - 3}"
+        lines.append(f"Источник: tannei.by · ID {shown}")
     for channel in ("offline", "online"):
         facts = list(_brand_facts(service, brand_id, channel))
         if not facts:
@@ -1562,6 +1582,7 @@ def _form_fields(form: str) -> tuple[tuple[str, str, bool], ...]:
             ("mcc", "MCC", True),
             ("channel", "Способ оплаты", True),
             ("aliases", "Другие названия", False),
+            ("location", "Где находится", False),
             ("note", "Подпись к MCC", False),
             ("source_url", "Источник", False),
             ("screenshot", "Скриншот", False),
@@ -1570,6 +1591,7 @@ def _form_fields(form: str) -> tuple[tuple[str, str, bool], ...]:
         return (
             ("name", "Название", True),
             ("aliases", "Другие названия", False),
+            ("location", "Где находится", False),
         )
     if form == "mcc_save":
         return (
@@ -1635,6 +1657,8 @@ def _form_value_text(
         }.get(value, "")
     if key == "aliases":
         return ", ".join(value or ())
+    if key == "location":
+        return str(value or "")
     if key == "excluded_mccs":
         return ", ".join(value or ())
     if key == "screenshot":
@@ -1642,10 +1666,39 @@ def _form_value_text(
     return str(value) if value not in {None, ""} else ""
 
 
-def _form_complete(data: dict[str, Any]) -> bool:
+def _location_required(
+    service: CommunityService | None, data: dict[str, Any]
+) -> bool:
+    """Whether an entered name collides and therefore needs a location."""
+
+    if service is None or data.get("form") not in {"store_create", "store_metadata"}:
+        return False
+    values = data.get("values", {})
+    name = values.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return False
+    excluded = values.get("brand_id") if data.get("form") == "store_metadata" else None
+    needle = normalize_store_name(name)
+    for brand in service.stores.list_brands():
+        if excluded == brand.id:
+            continue
+        names = {
+            normalize_store_name(brand.name),
+            *(normalize_store_name(alias) for alias in brand.aliases),
+        }
+        if needle in names:
+            return True
+    return False
+
+
+def _form_complete(
+    data: dict[str, Any], service: CommunityService | None = None
+) -> bool:
     values = data.get("values", {})
     form = data.get("form")
     for key, _label, required in _form_fields(form):
+        if key == "location" and _location_required(service, data):
+            required = True
         if not required:
             continue
         if key == "brand_id":
@@ -1662,7 +1715,7 @@ def _form_payload(
     form = data["form"]
     values = dict(data.get("values", {}))
     if form == "store_create":
-        return "mcc_save", {
+        payload = {
             "name": values["name"],
             "aliases": list(values.get("aliases", [])),
             "mcc": values["mcc"],
@@ -1670,11 +1723,15 @@ def _form_payload(
             "note": values.get("note", ""),
             "source_url": values.get("source_url", ""),
         }
+        if values.get("location"):
+            payload["location"] = values["location"]
+        return "mcc_save", payload
     if form == "store_metadata":
         return "store_metadata", {
             "brand_id": values["brand_id"],
             "name": values["name"],
             "aliases": list(values.get("aliases", [])),
+            "location": values.get("location"),
         }
     if form == "mcc_save":
         payload: dict[str, Any] = {
@@ -1728,6 +1785,7 @@ def _form_prompt(key: str) -> str:
         "mcc": "Отправьте MCC: ровно четыре цифры.",
         "value": "Отправьте размер выгоды в процентах, например 5 или 2,5.",
         "aliases": "Отправьте названия через запятую. Чтобы очистить поле, отправьте «-».",
+        "location": "Отправьте адрес или описание места. Чтобы очистить поле, отправьте «-».",
         "note": "Отправьте подпись к MCC. Чтобы очистить поле, отправьте «-».",
         "conditions": "Отправьте условия. Чтобы очистить поле, отправьте «-».",
         "starts_on": "Отправьте дату в формате ГГГГ-ММ-ДД или «-».",
@@ -1782,8 +1840,10 @@ def _form_rows(
         rows.append([(label, f"form_channel:{value}") for label, value in options[:1]])
         rows.append([(label, f"form_channel:{value}") for label, value in options[1:]])
     else:
-        optional_open = bool(data.get("optional_open"))
+        optional_open = bool(data.get("optional_open")) or _location_required(service, data)
         for key, label, required in _form_fields(data["form"]):
+            if key == "location" and _location_required(service, data):
+                required = True
             if not required and not optional_open:
                 continue
             value = _form_value_text(context, service, draft, key)
@@ -1797,7 +1857,7 @@ def _form_rows(
                 )
             ]
         )
-        if _form_complete(data):
+        if _form_complete(data, service):
             rows.append([("💾 Сохранить", "form_save")])
         rows.append([("❌ Отменить", "form_cancel")])
     return rows
@@ -1816,6 +1876,8 @@ async def _render_form_editor(
     title = _FORM_TITLES[draft.data["form"]]
     lines = [title, ""]
     for key, label, required in _form_fields(draft.data["form"]):
+        if key == "location" and _location_required(service, draft.data):
+            required = True
         value = _form_value_text(context, service, draft, key)
         marker = "❗" if required and not value else "•"
         lines.append(f"{marker} {label}{' *' if required else ''}: {value or 'не заполнено'}")
@@ -1982,6 +2044,11 @@ def _consume_form_text(
         )
         if len(values[field]) > 20:
             raise CommunityError("Можно сохранить не больше 20 названий.")
+    elif field == "location":
+        if text == "-":
+            values.pop(field, None)
+        else:
+            values[field] = clean_text(text, maximum=MAX_LOCATION)
     elif field == "excluded_mccs":
         items = [] if text == "-" else [item.strip() for item in text.split(",")]
         if len(items) > 50 or any(not re.fullmatch(r"[0-9]{4}", item) for item in items):
@@ -2655,7 +2722,11 @@ async def _form_editor_callback(
             await _close_draft(update, context, service, draft)
         return
     elif action == "form_save":
-        if not _form_complete(data):
+        if not _form_complete(data, service):
+            if _location_required(service, data):
+                raise CommunityError(
+                    "У магазина уже есть такое название. Укажите, где он находится."
+                )
             raise CommunityError("Заполните все поля со знаком *.")
         kind, payload = _form_payload(context, service, data)
         if data.get("review_edit"):
@@ -2895,7 +2966,12 @@ async def _form_menu_callback(
             context,
             service,
             "store_metadata",
-            values={"brand_id": brand.id, "name": brand.name, "aliases": list(brand.aliases)},
+            values={
+                "brand_id": brand.id,
+                "name": brand.name,
+                "aliases": list(brand.aliases),
+                "location": brand.location,
+            },
         )
     elif action == "menu_mcc_new":
         form_data = _new_form_data(

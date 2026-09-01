@@ -56,6 +56,7 @@ class Brand:
     aliases: tuple[str, ...]
     archived: bool
     revision: int
+    location: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +232,29 @@ def _name(value: Any) -> str:
     value = value.strip()
     if any(unicodedata.category(char).startswith("C") for char in value):
         raise StoreError("Название содержит недопустимые символы")
+    return value
+
+
+def normalize_location(value: str) -> str:
+    """Normalize a user-entered location for duplicate checks."""
+
+    return normalize_store_name(value)
+
+
+def _location(value: Any) -> str | None:
+    """Validate an optional user-entered store location."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise StoreError("Где находится должно быть текстом")
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) > 500:
+        raise StoreError("Где находится должно содержать не более 500 символов")
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        raise StoreError("Где находится содержит недопустимые символы")
     return value
 
 
@@ -429,11 +453,17 @@ class StoreRepository:
                     """CREATE TABLE IF NOT EXISTS store_brands (
                         id INTEGER PRIMARY KEY, name TEXT NOT NULL,
                         aliases_json TEXT NOT NULL DEFAULT '[]',
+                        location TEXT,
                         archived INTEGER NOT NULL DEFAULT 0,
                         revision INTEGER NOT NULL DEFAULT 1, merged_into INTEGER
                           REFERENCES store_brands(id)
                     )"""
                 )
+                brand_columns = {
+                    row["name"] for row in connection.execute("PRAGMA table_info(store_brands)")
+                }
+                if "location" not in brand_columns:
+                    connection.execute("ALTER TABLE store_brands ADD COLUMN location TEXT")
                 connection.execute(
                     """CREATE TABLE IF NOT EXISTS store_brand_members (
                         id INTEGER PRIMARY KEY, brand_id INTEGER NOT NULL
@@ -466,12 +496,13 @@ class StoreRepository:
                     if brand is None:
                         connection.execute(
                             """INSERT INTO store_brands
-                            (id,name,aliases_json,archived,revision)
-                            VALUES(?,?,?,?,?)""",
+                            (id,name,aliases_json,location,archived,revision)
+                            VALUES(?,?,?,?,?,?)""",
                             (
                                 merchant["id"],
                                 merchant["name"],
                                 merchant["aliases_json"],
+                                None,
                                 merchant["archived"],
                                 merchant["revision"],
                             ),
@@ -482,10 +513,11 @@ class StoreRepository:
                     else:
                         brand_id = connection.execute(
                             """INSERT INTO store_brands
-                            (name,aliases_json,archived,revision) VALUES(?,?,?,?)""",
+                            (name,aliases_json,location,archived,revision) VALUES(?,?,?,?,?)""",
                             (
                                 merchant["name"],
                                 merchant["aliases_json"],
+                                None,
                                 merchant["archived"],
                                 merchant["revision"],
                             ),
@@ -527,6 +559,7 @@ class StoreRepository:
             tuple(json.loads(row["aliases_json"])),
             bool(row["archived"]),
             row["revision"],
+            row["location"],
         )
 
     @staticmethod
@@ -970,6 +1003,100 @@ class StoreRepository:
             (include_archived,),
         )
         return tuple(self._brand(row) for row in rows)
+
+    def brand_locations(
+        self,
+        brand_id: int,
+        *,
+        connection=None,
+        include_archived: bool = False,
+    ) -> tuple[str, ...]:
+        """Return distinct manual/source locations for a brand.
+
+        Manual locations live on ``store_brands``.  Tannei addresses stay in
+        ``store_sources.metadata_json`` so a network keeps one merchant
+        identity even when its branches have different addresses.
+        """
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.brand_locations(
+                    brand_id,
+                    connection=conn,
+                    include_archived=include_archived,
+                )
+        brand = connection.execute(
+            "SELECT location,archived FROM store_brands WHERE id=?", (int(brand_id),)
+        ).fetchone()
+        if brand is None or (brand["archived"] and not include_archived):
+            return ()
+        values: list[str] = []
+        if brand["location"]:
+            values.append(brand["location"])
+        rows = connection.execute(
+            """SELECT s.metadata_json FROM store_sources s
+            JOIN store_brand_members bm ON bm.merchant_id=s.merchant_id
+            JOIN store_merchants m ON m.id=s.merchant_id
+            WHERE bm.brand_id=? AND (? OR m.archived=0)
+            ORDER BY s.id""",
+            (int(brand_id), include_archived),
+        ).fetchall()
+        for row in rows:
+            try:
+                address = json.loads(row["metadata_json"]).get("address")
+            except (TypeError, json.JSONDecodeError, AttributeError):
+                address = None
+            if isinstance(address, str) and address.strip():
+                values.append(address.strip())
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            key = normalize_location(value)
+            if key and key not in seen:
+                result.append(value)
+                seen.add(key)
+        return tuple(result)
+
+    # Explicit aliases keep the read model discoverable to callers that use a
+    # verb-first repository naming convention.
+    locations_for_brand = brand_locations
+
+    def brand_location_summary(
+        self, brand_id: int, *, connection=None, include_archived: bool = False
+    ) -> str | None:
+        """Return a compact first-address/remaining-count label for a brand."""
+
+        locations = self.brand_locations(
+            brand_id, connection=connection, include_archived=include_archived
+        )
+        if not locations:
+            return None
+        if len(locations) == 1:
+            return locations[0]
+        remaining = len(locations) - 1
+        word = "адрес" if remaining % 10 == 1 and remaining % 100 != 11 else "адреса"
+        if remaining % 10 not in {1, 2, 3, 4} or remaining % 100 in {11, 12, 13, 14}:
+            word = "адресов"
+        return f"{locations[0]} · ещё {remaining} {word}"
+
+    def brand_source_ids(
+        self, brand_id: int, *, connection=None, include_archived: bool = False
+    ) -> tuple[str, ...]:
+        """Return compact source IDs for helper/admin details."""
+
+        if connection is None:
+            with self.connection() as conn:
+                return self.brand_source_ids(
+                    brand_id, connection=conn, include_archived=include_archived
+                )
+        rows = connection.execute(
+            """SELECT s.store_id FROM store_sources s
+            JOIN store_brand_members bm ON bm.merchant_id=s.merchant_id
+            JOIN store_merchants m ON m.id=s.merchant_id
+            WHERE bm.brand_id=? AND (? OR m.archived=0) ORDER BY s.id""",
+            (int(brand_id), include_archived),
+        ).fetchall()
+        return tuple(str(row["store_id"]) for row in rows)
 
     def brand_for_merchant(
         self, merchant_id: int, *, connection=None, include_archived=False
@@ -1457,6 +1584,20 @@ class StoreRepository:
         for edit in edits:
             before, after = edit.get("before"), edit.get("after")
             if (
+                edit.get("table") == "store_brands"
+                and isinstance(before, dict)
+                and isinstance(after, dict)
+                and before.get("location") != after.get("location")
+            ):
+                return (
+                    "место: "
+                    f"«{clipped(before.get('location') or 'не указано')}» → "
+                    f"«{clipped(after.get('location') or 'не указано')}»"
+                )
+
+        for edit in edits:
+            before, after = edit.get("before"), edit.get("after")
+            if (
                 edit.get("table") not in {"store_brands", "store_merchants"}
                 or not isinstance(before, dict)
                 or not isinstance(after, dict)
@@ -1683,6 +1824,8 @@ class StoreRepository:
             elif table == "store_brands":
                 if before is None and after:
                     details.append(f"Добавлен магазин «{clipped(after.get('name', ''))}».")
+                    if after.get("location"):
+                        details.append(f"Где находится: {clipped(after['location'])}.")
                     continue
                 if not before or not after:
                     continue
@@ -1695,6 +1838,11 @@ class StoreRepository:
                     details.append(
                         f"Другие названия магазина: {aliases(before.get('aliases_json'))} → "
                         f"{aliases(after.get('aliases_json'))}."
+                    )
+                if before.get("location") != after.get("location"):
+                    details.append(
+                        f"Где находится: {clipped(before.get('location') or 'не указано')} → "
+                        f"{clipped(after.get('location') or 'не указано')}."
                     )
                 if before.get("merged_into") != after.get("merged_into") and after.get(
                     "merged_into"
@@ -1808,13 +1956,14 @@ class StoreRepository:
         changes.touch(table, cursor.lastrowid, new=True)
         return cursor.lastrowid
 
-    def _create_brand(self, connection, changes, *, name, aliases=()):
+    def _create_brand(self, connection, changes, *, name, aliases=(), location=None):
         return self._insert(
             connection,
             changes,
             "store_brands",
             name=_name(name),
             aliases_json=_json(_aliases(aliases)),
+            location=_location(location),
         )
 
     def _attach_brand(self, connection, changes, merchant_id, brand_id):
@@ -2110,6 +2259,7 @@ class StoreRepository:
             merchant_id, reverted = self._revert(connection, changes, payload["audit_id"])
             brand_id = self._brand_id_for_merchant(connection, merchant_id)
         elif kind == "add_merchant":
+            location = _location(payload.get("location"))
             merchant_id = self._insert(
                 connection,
                 changes,
@@ -2124,6 +2274,7 @@ class StoreRepository:
                     changes,
                     name=payload["name"],
                     aliases=payload.get("aliases", []),
+                    location=location,
                 )
             else:
                 brand_id = int(payload["brand_id"])
@@ -2168,6 +2319,11 @@ class StoreRepository:
                         revision=brand["revision"] + 1,
                     )
                 elif kind == "edit_brand_names":
+                    location = (
+                        _location(payload.get("location"))
+                        if "location" in payload
+                        else brand["location"]
+                    )
                     self._update(
                         connection,
                         changes,
@@ -2175,6 +2331,7 @@ class StoreRepository:
                         brand_id,
                         name=_name(payload["name"]),
                         aliases_json=_json(_aliases(payload["aliases"])),
+                        location=location,
                         revision=brand["revision"] + 1,
                     )
                 elif kind == "brand_aliases":
@@ -2374,7 +2531,13 @@ class StoreRepository:
         else:
             name = _name(payload["name"])
             aliases = _aliases(payload.get("aliases", []))
-            brand_id = self._create_brand(connection, changes, name=name, aliases=aliases)
+            brand_id = self._create_brand(
+                connection,
+                changes,
+                name=name,
+                aliases=aliases,
+                location=payload.get("location"),
+            )
             brand = connection.execute(
                 "SELECT * FROM store_brands WHERE id=?", (brand_id,)
             ).fetchone()
