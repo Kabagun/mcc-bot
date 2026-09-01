@@ -250,10 +250,18 @@ def test_card_editor_installs_cancel_once_and_restores_menu_once(telegram_app):
             )
             sent = [data for action, data in calls if action == "sendMessage"]
             edited = [data for action, data in calls if action == "editMessageText"]
-            assert len(sent) == len(edited) == 1
+            assert len(sent) == 2
+            assert edited == []
+            assert sent[0]["text"] == "Для отмены действия используйте кнопку ниже."
             assert [
                 button["text"] for row in sent[0]["reply_markup"]["keyboard"] for button in row
             ] == ["❌ Отменить"]
+            inline_labels = [
+                button["text"]
+                for row in sent[1]["reply_markup"]["inline_keyboard"]
+                for button in row
+            ]
+            assert "❌ Отменить" not in inline_labels
             draft = app.bot_data["community"].draft(42)
             bound = app.bot_data["community"].editor_message(42, draft.id)
             assert bound is not None
@@ -290,6 +298,54 @@ def test_card_editor_installs_cancel_once_and_restores_menu_once(telegram_app):
             assert "➕ Добавить данные" in labels
             assert "❌ Отменить" not in labels
             assert app.bot_data["community"].draft(42) is None
+
+    asyncio.run(scenario())
+
+
+def test_store_search_add_new_prefills_the_unified_form(telegram_app):
+    app, calls = telegram_app
+    app.bot_data["stores"].apply_change(
+        "add_merchant",
+        {"name": "Coffee House", "channel": "offline", "mcc": "5411"},
+        42,
+    )
+
+    async def scenario():
+        async with app:
+            await app.process_update(incoming(app, "Coffe House", user_id=42, sequence=211))
+            search = rendered(calls)[-1]
+            buttons = [
+                button for row in search["reply_markup"]["inline_keyboard"] for button in row
+            ]
+            assert any(button["text"] == "Coffee House" for button in buttons)
+            add_new = next(
+                button for button in buttons if button["text"] == "➕ Добавить новый магазин"
+            )
+
+            calls.clear()
+            await app.process_update(
+                tapped(app, add_new["callback_data"], user_id=42, sequence=212)
+            )
+
+            sent = [data for action, data in calls if action == "sendMessage"]
+            assert len(sent) == 2
+            assert sent[0]["text"] == "Для отмены действия используйте кнопку ниже."
+            assert [
+                button["text"] for row in sent[0]["reply_markup"]["keyboard"] for button in row
+            ] == ["❌ Отменить"]
+            assert "Название нового магазина *: Coffe House" in sent[1]["text"]
+            labels = [
+                button["text"]
+                for row in sent[1]["reply_markup"]["inline_keyboard"]
+                for button in row
+            ]
+            assert "❌ Отменить" not in labels
+            assert not any(label.startswith("➕ Создать новый") for label in labels)
+            draft = app.bot_data["community"].draft(42)
+            assert draft.data["values"] == {"name": "Coffe House", "aliases": []}
+            assert "active_field" not in draft.data
+            assert "new_store_name" not in draft.data
+            assert app.bot_data["community"].editor_message(42, draft.id) is not None
 
     asyncio.run(scenario())
 

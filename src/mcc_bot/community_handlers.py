@@ -1911,7 +1911,6 @@ def _form_rows(
         )
         if _form_complete(data, service):
             rows.append([("💾 Сохранить", "form_save")])
-        rows.append([("❌ Отменить", "form_cancel")])
     return rows
 
 
@@ -1923,7 +1922,7 @@ async def _render_durable_form_message(
     text: str,
     markup: InlineKeyboardMarkup,
 ) -> None:
-    """Install cancel-only once and retain one bound inline form message."""
+    """Install cancel-only once, then retain one separate bound inline form message."""
 
     bound = service.editor_message(draft.user_id, draft.id)
     if bound is not None:
@@ -1964,35 +1963,16 @@ async def _render_durable_form_message(
     message = update.effective_message
     if message is None:
         return
-    # A reply keyboard can only be installed by sending a message. Edit that
-    # same message immediately into the durable inline editor so the form has
-    # one visible editor while the lower keyboard stays cancel-only.
-    sent = await message.reply_text(text, reply_markup=draft_keyboard_for())
-    chat = getattr(sent, "chat", None)
-    chat_id = getattr(sent, "chat_id", getattr(chat, "id", None))
-    message_id = getattr(sent, "message_id", None)
+    await message.reply_text(
+        "Для отмены действия используйте кнопку ниже.",
+        reply_markup=draft_keyboard_for(),
+    )
+    form_message = await message.reply_text(text, reply_markup=markup)
+    chat = getattr(form_message, "chat", None)
+    chat_id = getattr(form_message, "chat_id", getattr(chat, "id", None))
+    message_id = getattr(form_message, "message_id", None)
     if isinstance(chat_id, int) and isinstance(message_id, int):
         service.bind_editor_message(draft.user_id, draft.id, chat_id, message_id)
-    try:
-        await sent.edit_text(text, reply_markup=markup)
-    except (TelegramError, AttributeError):
-        LOGGER.info("Could not attach inline controls; replacing the editor safely")
-        try:
-            await sent.delete()
-        except (TelegramError, AttributeError):
-            LOGGER.info("Could not delete cancel-only editor; keeping it")
-            return
-        replacement = await message.reply_text(text, reply_markup=markup)
-        replacement_chat = getattr(replacement, "chat", None)
-        replacement_chat_id = getattr(replacement, "chat_id", getattr(replacement_chat, "id", None))
-        replacement_message_id = getattr(replacement, "message_id", None)
-        if isinstance(replacement_chat_id, int) and isinstance(replacement_message_id, int):
-            service.bind_editor_message(
-                draft.user_id,
-                draft.id,
-                replacement_chat_id,
-                replacement_message_id,
-            )
 
 
 async def _render_form_editor(
@@ -2064,7 +2044,6 @@ async def _begin_form(
     *,
     values: dict[str, Any] | None = None,
     locked_brand_id: int | None = None,
-    store_query: str | None = None,
 ) -> None:
     service = _service(context)
     user_id = _identity(update)
@@ -2077,12 +2056,6 @@ async def _begin_form(
         values=values,
         locked_brand_id=locked_brand_id,
     )
-    if store_query is not None:
-        data.update(
-            active_field="brand_id",
-            matches=[],
-            new_store_name=store_query,
-        )
     draft = service.begin(
         user_id,
         stage="form_editor",
@@ -2101,7 +2074,7 @@ async def begin_contribution(
     name: str | None = None,
     flow_kind: str = "new_store",
 ) -> None:
-    """Open the canonical one-message MCC/store editor with optional context."""
+    """Open the canonical MCC/store editor with optional context."""
 
     service = _service(context)
     if flow_kind not in {"new_store", "store_mcc", "mcc_save"}:
@@ -2113,6 +2086,10 @@ async def begin_contribution(
             raise CommunityError("Магазин больше недоступен. Найдите его заново.")
         values["brand_id"] = brand.id
     searched_name = clean_text(name, maximum=MAX_NAME) if name else None
+    if searched_name is not None:
+        if brand_id is not None:
+            raise CommunityError("Выберите существующий или новый магазин, но не оба варианта.")
+        values.update(name=searched_name, aliases=[])
     if channel is not None:
         if channel not in {"offline", "online"} or brand_id is None:
             raise CommunityError("Некорректный способ оплаты.")
@@ -2123,7 +2100,6 @@ async def begin_contribution(
         "mcc_save",
         values=values,
         locked_brand_id=brand_id,
-        store_query=searched_name,
     )
 
 

@@ -384,10 +384,16 @@ def test_unified_add_chooser_and_single_cancel_keyboard(flow):
 
     # Both historical callback values open the same mcc_save editor.
     started = click(flow, "add:new_store")
-    markup = started.effective_message.reply_text.await_args.kwargs["reply_markup"]
-    assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
+    helper_call, form_call = started.effective_message.reply_text.await_args_list
+    assert helper_call.args == ("Для отмены действия используйте кнопку ниже.",)
+    assert [
+        button.text for row in helper_call.kwargs["reply_markup"].keyboard for button in row
+    ] == [CANCEL_DRAFT]
+    assert hasattr(form_call.kwargs["reply_markup"], "inline_keyboard")
     assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
-    assert "❗ Магазин *" in [button.text for button in all_buttons(started)]
+    labels = [button.text for button in all_buttons(started)]
+    assert "❗ Магазин *" in labels
+    assert CANCEL_DRAFT not in labels
 
     cancelled = send(flow, CANCEL_DRAFT)
     assert flow.application.bot_data["community"].draft(10) is None
@@ -402,7 +408,7 @@ def test_unified_add_chooser_and_single_cancel_keyboard(flow):
     assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
 
 
-def test_initial_form_edit_failure_replaces_only_after_successful_delete(flow):
+def test_initial_form_uses_distinct_cancel_helper_and_bound_inline_message(flow):
     service = flow.application.bot_data["community"]
     draft = service.begin(
         10,
@@ -413,50 +419,34 @@ def test_initial_form_edit_failure_replaces_only_after_successful_delete(flow):
         [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
     )
     event = update()
-    sent = SimpleNamespace(
-        chat_id=10,
-        message_id=501,
-        edit_text=AsyncMock(side_effect=BadRequest("message cannot be edited")),
-        delete=AsyncMock(),
-    )
-    replacement = SimpleNamespace(chat_id=10, message_id=502)
-    event.effective_message.reply_text.side_effect = [sent, replacement]
+    helper = SimpleNamespace(chat_id=10, message_id=501)
+    form_message = SimpleNamespace(chat_id=10, message_id=502)
+    event.effective_message.reply_text.side_effect = [helper, form_message]
 
     asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
 
     assert event.effective_message.reply_text.await_count == 2
-    reply_markup = event.effective_message.reply_text.await_args_list[0].kwargs["reply_markup"]
+    helper_call, form_call = event.effective_message.reply_text.await_args_list
+    assert helper_call.args == ("Для отмены действия используйте кнопку ниже.",)
+    reply_markup = helper_call.kwargs["reply_markup"]
     assert [button.text for row in reply_markup.keyboard for button in row] == [CANCEL_DRAFT]
-    assert event.effective_message.reply_text.await_args_list[1].kwargs["reply_markup"] == markup
-    sent.edit_text.assert_awaited_once_with("Форма", reply_markup=markup)
-    sent.delete.assert_awaited_once_with()
+    assert form_call.args == ("Форма",)
+    assert form_call.kwargs["reply_markup"] == markup
     assert service.editor_message(10, draft.id) == (10, 502)
 
+    refresh = update()
+    flow.bot.edit_message_text = AsyncMock()
+    asyncio.run(_render_durable_form_message(refresh, flow, service, draft, "Форма 2", markup))
 
-def test_initial_form_edit_and_delete_failure_never_sends_a_duplicate(flow):
-    service = flow.application.bot_data["community"]
-    draft = service.begin(
-        10,
-        stage="form_editor",
-        data={"draft_mode": True, "form": "mcc_save", "values": {}},
-    )
-    markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
-    )
-    event = update()
-    sent = SimpleNamespace(
+    flow.bot.edit_message_text.assert_awaited_once_with(
         chat_id=10,
-        message_id=511,
-        edit_text=AsyncMock(side_effect=BadRequest("message cannot be edited")),
-        delete=AsyncMock(side_effect=BadRequest("message cannot be deleted")),
+        message_id=502,
+        text="Форма 2",
+        reply_markup=markup,
     )
-    event.effective_message.reply_text.return_value = sent
-
-    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
-
-    event.effective_message.reply_text.assert_awaited_once()
-    sent.delete.assert_awaited_once_with()
-    assert service.editor_message(10, draft.id) == (10, 511)
+    flow.bot.send_message.assert_not_awaited()
+    refresh.effective_message.reply_text.assert_not_awaited()
+    assert service.editor_message(10, draft.id) == (10, 502)
 
 
 def test_bound_form_edit_failure_deletes_then_sends_one_inline_replacement(flow):
@@ -478,12 +468,6 @@ def test_bound_form_edit_failure_deletes_then_sends_one_inline_replacement(flow)
 
     asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
 
-    flow.bot.edit_message_text.assert_awaited_once_with(
-        chat_id=10,
-        message_id=521,
-        text="Форма",
-        reply_markup=markup,
-    )
     flow.bot.delete_message.assert_awaited_once_with(chat_id=10, message_id=521)
     flow.bot.send_message.assert_awaited_once_with(chat_id=10, text="Форма", reply_markup=markup)
     event.effective_message.reply_text.assert_not_awaited()
@@ -537,12 +521,6 @@ def test_bound_form_delete_failure_never_sends_a_replacement(flow):
 
     asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
 
-    flow.bot.edit_message_text.assert_awaited_once_with(
-        chat_id=10,
-        message_id=531,
-        text="Форма",
-        reply_markup=markup,
-    )
     flow.bot.delete_message.assert_awaited_once_with(chat_id=10, message_id=531)
     flow.bot.send_message.assert_not_awaited()
     event.effective_message.reply_text.assert_not_awaited()
@@ -657,7 +635,11 @@ def test_existing_context_locks_store_and_rejects_forged_selector(flow):
     locked = service.draft(2).data
     assert locked["locked_brand_id"] == brand_id
     assert "Магазин *" not in [button.text for button in all_buttons(form)]
-    markup = form.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    markup = next(
+        call.kwargs["reply_markup"]
+        for call in form.effective_message.reply_text.await_args_list
+        if hasattr(call.kwargs.get("reply_markup"), "keyboard")
+    )
     assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
 
 
@@ -685,11 +667,12 @@ def test_existing_review_editor_is_locked_and_restores_role_menu_once(flow):
     review_draft = service.draft(2)
     assert review_draft.data["locked_brand_id"] == brand_id
     assert "Магазин *" not in [button.text for button in all_buttons(opened)]
-    assert [
-        button.text
-        for row in opened.effective_message.reply_text.await_args.kwargs["reply_markup"].keyboard
-        for button in row
-    ] == [CANCEL_DRAFT]
+    markup = next(
+        call.kwargs["reply_markup"]
+        for call in opened.effective_message.reply_text.await_args_list
+        if hasattr(call.kwargs.get("reply_markup"), "keyboard")
+    )
+    assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
 
     closed = draft_click(flow, "form_cancel", 2)
     restored = [
