@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 
@@ -29,6 +30,7 @@ from mcc_bot.community_handlers import (
     QUEUE,
     SUGGEST,
     VOLUNTEER,
+    _render_durable_form_message,
     callback,
     handle_media,
     handle_text,
@@ -398,6 +400,153 @@ def test_unified_add_chooser_and_single_cancel_keyboard(flow):
 
     click(flow, "add:store_mcc")
     assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
+
+
+def test_initial_form_edit_failure_replaces_only_after_successful_delete(flow):
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        10,
+        stage="form_editor",
+        data={"draft_mode": True, "form": "mcc_save", "values": {}},
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
+    )
+    event = update()
+    sent = SimpleNamespace(
+        chat_id=10,
+        message_id=501,
+        edit_text=AsyncMock(side_effect=BadRequest("message cannot be edited")),
+        delete=AsyncMock(),
+    )
+    replacement = SimpleNamespace(chat_id=10, message_id=502)
+    event.effective_message.reply_text.side_effect = [sent, replacement]
+
+    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
+
+    assert event.effective_message.reply_text.await_count == 2
+    reply_markup = event.effective_message.reply_text.await_args_list[0].kwargs["reply_markup"]
+    assert [button.text for row in reply_markup.keyboard for button in row] == [CANCEL_DRAFT]
+    assert event.effective_message.reply_text.await_args_list[1].kwargs["reply_markup"] == markup
+    sent.edit_text.assert_awaited_once_with("Форма", reply_markup=markup)
+    sent.delete.assert_awaited_once_with()
+    assert service.editor_message(10, draft.id) == (10, 502)
+
+
+def test_initial_form_edit_and_delete_failure_never_sends_a_duplicate(flow):
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        10,
+        stage="form_editor",
+        data={"draft_mode": True, "form": "mcc_save", "values": {}},
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
+    )
+    event = update()
+    sent = SimpleNamespace(
+        chat_id=10,
+        message_id=511,
+        edit_text=AsyncMock(side_effect=BadRequest("message cannot be edited")),
+        delete=AsyncMock(side_effect=BadRequest("message cannot be deleted")),
+    )
+    event.effective_message.reply_text.return_value = sent
+
+    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
+
+    event.effective_message.reply_text.assert_awaited_once()
+    sent.delete.assert_awaited_once_with()
+    assert service.editor_message(10, draft.id) == (10, 511)
+
+
+def test_bound_form_edit_failure_deletes_then_sends_one_inline_replacement(flow):
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        10,
+        stage="form_editor",
+        data={"draft_mode": True, "form": "mcc_save", "values": {}},
+    )
+    service.bind_editor_message(10, draft.id, 10, 521)
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
+    )
+    event = update()
+    replacement = SimpleNamespace(chat_id=10, message_id=522)
+    flow.bot.edit_message_text = AsyncMock(side_effect=BadRequest("message cannot be edited"))
+    flow.bot.delete_message = AsyncMock()
+    flow.bot.send_message.return_value = replacement
+
+    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
+
+    flow.bot.edit_message_text.assert_awaited_once_with(
+        chat_id=10,
+        message_id=521,
+        text="Форма",
+        reply_markup=markup,
+    )
+    flow.bot.delete_message.assert_awaited_once_with(chat_id=10, message_id=521)
+    flow.bot.send_message.assert_awaited_once_with(chat_id=10, text="Форма", reply_markup=markup)
+    event.effective_message.reply_text.assert_not_awaited()
+    assert service.editor_message(10, draft.id) == (10, 522)
+
+
+def test_matching_bound_callback_failure_uses_safe_replacement(flow):
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        10,
+        stage="form_editor",
+        data={"draft_mode": True, "form": "mcc_save", "values": {}},
+    )
+    service.bind_editor_message(10, draft.id, 10, 526)
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
+    )
+    event = update(data="community:unused")
+    event.callback_query.message.chat_id = 10
+    event.callback_query.message.message_id = 526
+    event.callback_query.edit_message_text = AsyncMock(
+        side_effect=BadRequest("callback message cannot be edited")
+    )
+    replacement = SimpleNamespace(chat_id=10, message_id=527)
+    flow.bot.delete_message = AsyncMock()
+    flow.bot.send_message.return_value = replacement
+
+    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
+
+    event.callback_query.edit_message_text.assert_awaited_once_with("Форма", reply_markup=markup)
+    flow.bot.delete_message.assert_awaited_once_with(chat_id=10, message_id=526)
+    flow.bot.send_message.assert_awaited_once_with(chat_id=10, text="Форма", reply_markup=markup)
+    event.effective_message.reply_text.assert_not_awaited()
+    assert service.editor_message(10, draft.id) == (10, 527)
+
+
+def test_bound_form_delete_failure_never_sends_a_replacement(flow):
+    service = flow.application.bot_data["community"]
+    draft = service.begin(
+        10,
+        stage="form_editor",
+        data={"draft_mode": True, "form": "mcc_save", "values": {}},
+    )
+    service.bind_editor_message(10, draft.id, 10, 531)
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Поле", callback_data="community:unused")]]
+    )
+    event = update()
+    flow.bot.edit_message_text = AsyncMock(side_effect=BadRequest("message cannot be edited"))
+    flow.bot.delete_message = AsyncMock(side_effect=BadRequest("message cannot be deleted"))
+
+    asyncio.run(_render_durable_form_message(event, flow, service, draft, "Форма", markup))
+
+    flow.bot.edit_message_text.assert_awaited_once_with(
+        chat_id=10,
+        message_id=531,
+        text="Форма",
+        reply_markup=markup,
+    )
+    flow.bot.delete_message.assert_awaited_once_with(chat_id=10, message_id=531)
+    flow.bot.send_message.assert_not_awaited()
+    event.effective_message.reply_text.assert_not_awaited()
+    assert service.editor_message(10, draft.id) == (10, 531)
 
 
 def test_unified_store_selector_exact_similar_create_and_switch(flow):

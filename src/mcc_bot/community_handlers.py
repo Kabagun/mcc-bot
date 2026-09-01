@@ -1932,16 +1932,35 @@ async def _render_durable_form_message(
         query_chat = getattr(query_message, "chat", None)
         query_chat_id = getattr(query_message, "chat_id", getattr(query_chat, "id", None))
         query_message_id = getattr(query_message, "message_id", None)
-        if (query_chat_id, query_message_id) == bound:
-            await _say_inline(update, text, markup)
-            return
         try:
-            await context.bot.edit_message_text(
-                chat_id=bound[0], message_id=bound[1], text=text, reply_markup=markup
-            )
+            if (query_chat_id, query_message_id) == bound and hasattr(query, "edit_message_text"):
+                await query.edit_message_text(text, reply_markup=markup)
+            else:
+                await context.bot.edit_message_text(
+                    chat_id=bound[0], message_id=bound[1], text=text, reply_markup=markup
+                )
             return
         except TelegramError:
-            LOGGER.info("Could not update bound contribution editor; replacing it")
+            LOGGER.info("Could not update bound contribution editor; replacing it safely")
+        try:
+            await context.bot.delete_message(chat_id=bound[0], message_id=bound[1])
+        except TelegramError:
+            LOGGER.info("Could not delete bound contribution editor; keeping it")
+            return
+        replacement = await context.bot.send_message(
+            chat_id=bound[0], text=text, reply_markup=markup
+        )
+        replacement_chat = getattr(replacement, "chat", None)
+        replacement_chat_id = getattr(replacement, "chat_id", getattr(replacement_chat, "id", None))
+        replacement_message_id = getattr(replacement, "message_id", None)
+        if isinstance(replacement_chat_id, int) and isinstance(replacement_message_id, int):
+            service.bind_editor_message(
+                draft.user_id,
+                draft.id,
+                replacement_chat_id,
+                replacement_message_id,
+            )
+        return
     message = update.effective_message
     if message is None:
         return
@@ -1957,7 +1976,12 @@ async def _render_durable_form_message(
     try:
         await sent.edit_text(text, reply_markup=markup)
     except (TelegramError, AttributeError):
-        LOGGER.info("Could not attach inline controls to the contribution editor")
+        LOGGER.info("Could not attach inline controls; replacing the editor safely")
+        try:
+            await sent.delete()
+        except (TelegramError, AttributeError):
+            LOGGER.info("Could not delete cancel-only editor; keeping it")
+            return
         replacement = await message.reply_text(text, reply_markup=markup)
         replacement_chat = getattr(replacement, "chat", None)
         replacement_chat_id = getattr(replacement, "chat_id", getattr(replacement_chat, "id", None))
