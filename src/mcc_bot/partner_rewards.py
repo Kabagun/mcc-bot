@@ -712,9 +712,13 @@ class PartnerRepository:
         _validate_exclusion(payload)
         self._actor(actor_id)
         with self._write(connection) as current:
-            if offer_id is not None and current.execute(
-                "SELECT 1 FROM partner_offers WHERE id=?", (offer_id,)
-            ).fetchone() is None:
+            if (
+                offer_id is not None
+                and current.execute(
+                    "SELECT 1 FROM partner_offers WHERE id=?", (offer_id,)
+                ).fetchone()
+                is None
+            ):
                 raise PartnerRewardError("Родительское партнёрство не найдено")
             try:
                 cursor = current.execute(

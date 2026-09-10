@@ -57,9 +57,7 @@ def _seed_rows(stores: StoreRepository, partners: PartnerRepository) -> tuple[in
         ),
     }
     for source_key, (brand_id, item) in placements.items():
-        partners.create_offer(
-            _input(item, brand_id), actor_id=1, source_key=source_key
-        )
+        partners.create_offer(_input(item, brand_id), actor_id=1, source_key=source_key)
     exclusion_item = desired["exclusions"][0]
     partners.create_exclusion(
         _exclusion_input(exclusion_item, unistore.brand_id),

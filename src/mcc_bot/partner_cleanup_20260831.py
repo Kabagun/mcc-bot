@@ -137,8 +137,7 @@ def _assert_seed_rows_belong_to_candidates(
                 conflicts.append(source_key)
     if conflicts:
         raise PartnerCleanupError(
-            "Изменённая привязка статических партнёров не перезаписана: "
-            + ", ".join(conflicts)
+            "Изменённая привязка статических партнёров не перезаписана: " + ", ".join(conflicts)
         )
 
 
@@ -189,16 +188,14 @@ def _preflight_updates(
             continue
         exclusion = partners._exclusion_from_row(row)
         wanted = _exclusion_input(item, exclusion.brand_id)
-        if not exclusion.archived and _exclusion_signature(
-            exclusion
-        ) == _exclusion_input_signature(wanted):
+        if not exclusion.archived and _exclusion_signature(exclusion) == _exclusion_input_signature(
+            wanted
+        ):
             already_current += 1
             continue
         legacy_item = previous_exclusions.get(source_key)
         legacy = (
-            _exclusion_input(legacy_item, exclusion.brand_id)
-            if legacy_item is not None
-            else None
+            _exclusion_input(legacy_item, exclusion.brand_id) if legacy_item is not None else None
         )
         if (
             not exclusion.archived
@@ -211,8 +208,7 @@ def _preflight_updates(
 
     if conflicts:
         raise PartnerCleanupError(
-            "Изменённые статические партнёрские правила не перезаписаны: "
-            + ", ".join(conflicts)
+            "Изменённые статические партнёрские правила не перезаписаны: " + ", ".join(conflicts)
         )
     return offer_updates, exclusion_updates, already_current
 

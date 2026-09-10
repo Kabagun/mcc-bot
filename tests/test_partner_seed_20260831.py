@@ -28,9 +28,7 @@ def test_correction_snapshot_contains_only_the_reviewed_partner_rules() -> None:
         "vitamin_d": 1,
         "statusbank_statuskarta": 1,
     }
-    assert {item["card_id"] for item in offers}.isdisjoint(
-        {"sber", "alfa", "paritet_combo", "vtb"}
-    )
+    assert {item["card_id"] for item in offers}.isdisjoint({"sber", "alfa", "paritet_combo", "vtb"})
     status = next(item for item in offers if item["card_id"] == "statusbank_statuskarta")
     assert status["brand"] == "21век"
     assert status["channel"] == "online"
@@ -41,9 +39,7 @@ def test_correction_snapshot_contains_only_the_reviewed_partner_rules() -> None:
     assert vitamin["channel"] == "online"
     assert vitamin["mode"] == "additional"
     assert vitamin["reward_kind"] == "points"
-    assert vitamin["tiers"] == [
-        {"value": "5", "min_purchase": "100", "per_transaction_cap": "50"}
-    ]
+    assert vitamin["tiers"] == [{"value": "5", "min_purchase": "100", "per_transaction_cap": "50"}]
     assert seed["exclusions"] == [
         {
             "source_key": "plushki:exclusion:1",
