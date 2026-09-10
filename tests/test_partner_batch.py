@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -11,6 +13,7 @@ from mcc_bot.partner_batch import (
     PartnerBatchError,
     StalePartnerPlanError,
     _backup_database,
+    _write_json_result,
     apply_partner_batch,
     preview_partner_batch,
 )
@@ -52,6 +55,16 @@ def _snapshot(*offers, exclusions=None, problems=None):
 def _offer_count(stores) -> int:
     with stores.connection() as connection:
         return connection.execute("SELECT count(*) FROM partner_offers").fetchone()[0]
+
+
+def test_json_result_uses_utf8_when_windows_stream_defaults_to_cp1252():
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252")
+
+    _write_json_result({"merchant": "Кактус"}, stream=stream)
+    stream.flush()
+
+    assert json.loads(raw.getvalue().decode("utf-8")) == {"merchant": "Кактус"}
 
 
 def test_preview_is_deterministic_and_does_not_modify_target(tmp_path):

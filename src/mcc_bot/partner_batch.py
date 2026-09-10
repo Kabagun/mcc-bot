@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -49,6 +50,16 @@ def _canonical(value: Any) -> str:
 
 def _sha256(value: str | bytes) -> str:
     return hashlib.sha256(value if isinstance(value, bytes) else value.encode("utf-8")).hexdigest()
+
+
+def _write_json_result(result: dict[str, Any], *, stream: Any = None) -> None:
+    """Write one UTF-8 JSON line even when Windows selected a legacy code page."""
+
+    output = sys.stdout if stream is None else stream
+    reconfigure = getattr(output, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8")
+    output.write(f"{_canonical(result)}\n")
 
 
 def _decimal(value: Any, field: str) -> Decimal:
@@ -1659,7 +1670,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     else:
         result = preview_partner_batch(args.database, args.snapshot)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    _write_json_result(result)
 
 
 if __name__ == "__main__":
