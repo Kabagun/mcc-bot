@@ -9527,7 +9527,7 @@
       "reward_programs": [
         {
           "id": "cash",
-          "kind": "cash",
+          "kind": "points",
           "tax_exempt": false,
           "minimum_payment": {
             "amount": 0,

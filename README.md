@@ -264,6 +264,117 @@ seed and only after a consistent SQLite backup. The reviewed sources, inclusion
 rules, counts and deliberately omitted conflicts are documented in
 [docs/PARTNER_DATA_SOURCE.md](docs/PARTNER_DATA_SOURCE.md).
 
+### Local official-source collection and partner batch
+
+The versioned collector is an explicit local review step. It is not a bot
+startup task or a periodic refresh: it writes a reviewed v1 JSON snapshot and a
+JSON report to the caller's paths, and it never writes SQLite. The first four
+sources use `mcc_bot.official_partner_sources` (or the installed
+`mcc-collect-official-partners` command):
+
+| Source | Official collector input | Stored result |
+| --- | --- | --- |
+| Cactus / MTBank | <https://www.mtbank.by/cards/cactus/part/> | `cactus_mtbank`, total points; follows linked pages and records `source.page_sha256` per response |
+| БНБ 1-2-3 | <https://bnb.by/bonus/> | `bnb_1_2_3`, total cash; records `source.html_sha256` |
+| Izi / Belarusbank | <https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/> plus linked detail pages | `belarusbank_izi`, total cash; records listing `html_sha256` and each detail `detail_sha256` |
+| Statuscard / StatusBank | list <https://stbank.by/local/ajax/partners_maney-back.php> plus linked detail pages | `statusbank_statuskarta`, total cash; records list `html_sha256` and each detail `detail_sha256` |
+
+Run one source at a time with its official URL; Izi and Statuscard fetch their
+linked detail pages during the same bounded run:
+
+```powershell
+# Cactus follows the linked pagination pages.
+.\.venv\Scripts\python.exe -m mcc_bot.official_partner_sources `
+  --source cactus `
+  --url https://www.mtbank.by/cards/cactus/part/ `
+  --output temp/cactus-snapshot.json `
+  --report temp/cactus-report.json
+# BNB 1-2-3 reads the public bonus catalogue.
+.\.venv\Scripts\python.exe -m mcc_bot.official_partner_sources `
+  --source bnb `
+  --url https://bnb.by/bonus/ `
+  --output temp/bnb-snapshot.json `
+  --report temp/bnb-report.json
+# Izi fetches the map and its linked detail pages.
+.\.venv\Scripts\python.exe -m mcc_bot.official_partner_sources `
+  --source izi `
+  --url https://belarusbank.by/fizicheskim_licam/cards/bonusy/izi/ `
+  --output temp/izi-snapshot.json `
+  --report temp/izi-report.json
+# Statuscard fetches the maniback list and linked detail pages.
+.\.venv\Scripts\python.exe -m mcc_bot.official_partner_sources `
+  --source statuscard `
+  --url https://stbank.by/local/ajax/partners_maney-back.php `
+  --output temp/statuscard-snapshot.json `
+  --report temp/statuscard-report.json
+```
+
+For Cactus or BNB, a caller-owned saved response can be supplied with `--html`;
+use URL mode for Izi and Statuscard so their linked detail pages are fetched in
+the same run. The equivalent installed command is
+`mcc-collect-official-partners`.
+
+The Paritet page has its own adapter (or the installed `mcc-collect-paritet`):
+
+```powershell
+.\.venv\Scripts\python.exe -m mcc_bot.paritet_source `
+  --url https://www.paritetbank.by/private/partners/ `
+  --output temp/paritet-snapshot.json `
+  --report temp/paritet-report.json
+```
+
+Paritet reads only the canonical `#all` panel, validates category copies and
+emits only the first visible percentage for the existing `paritet_combo` card
+as `mode=total`, cash. ORO and Adrenalin remain held problems when their terms
+cannot be represented safely. The collectors fail closed when required source
+structure or reward fields change. Inspect each report's `status`, `counts` and
+`problems`; `review_required` and `action=hold` are review evidence, not offers.
+The response hashes in each snapshot's `source` object (and repeated in the
+report) preserve which source bodies were reviewed.
+
+Cashalot and Vitamin D/Plushki deliberately remain reviewed static fallbacks in
+the dated seed packages. They are not fetched by these collectors and should
+not be treated as missing merely because an official-source snapshot does not
+contain them.
+
+Preview a snapshot before any database change. Preview opens the existing
+database in SQLite query-only mode, computes a deterministic plan and prints
+its `plan_sha256`; it does not write the database:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcc_bot.partner_batch `
+  --database var/stores.sqlite3 `
+  --snapshot temp/paritet-snapshot.json
+```
+
+After reviewing the counters and conflicts, copy the exact `plan_sha256` from
+that unchanged preview. Apply is an explicit approval operation: pass the exact
+plan SHA, a positive owner/reviewer ID, and a new backup path. The command
+creates the SQLite backup before the transaction, rechecks the database and
+plan fingerprints, inserts only safe new rows, and archives only explicitly
+approved exact retirement rows. Inserts and archives are atomic and roll back
+together if validation or a write fails; existing partner rows are never
+silently updated.
+
+```powershell
+$planSha = '<copy plan_sha256 from the preview JSON>'
+.\.venv\Scripts\python.exe -m mcc_bot.partner_batch `
+  --database var/stores.sqlite3 `
+  --snapshot temp/paritet-snapshot.json `
+  --apply `
+  --expected-plan-sha256 $planSha `
+  --backup temp/stores-before-paritet.sqlite3 `
+  --actor-id $env:BOT_OWNER_TELEGRAM_ID
+```
+
+The backup path must be new and different from the database. A database or
+snapshot change makes the plan SHA stale and aborts the apply. Apply one
+reviewed snapshot at a time; it may be a single source or an explicitly
+combined atomic batch. When applying several snapshots sequentially, preview
+each next snapshot again because the database fingerprint has changed. These
+commands are local data-review and SQLite operations only; they do not deploy
+or publish the bot.
+
 ## Version 2 catalog contract
 
 `MCC_CATALOG_PATH` optionally points to an external UTF-8 JSON file. When it is

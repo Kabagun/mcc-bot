@@ -459,6 +459,21 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     )
 
 
+def test_real_catalog_uses_requested_mcc_descriptions_and_cactus_points_label() -> None:
+    catalog = _catalog()
+    descriptions = _descriptions()
+
+    rendered_5541 = format_matches("5541", catalog.lookup("5541"), descriptions)
+    rendered_5960 = format_matches("5960", catalog.lookup("5960"), descriptions)
+
+    assert "MCC 5541 — Автозаправочные станции (АЗС)" in rendered_5541  # noqa: RUF001
+    assert "MCC 5960 — Страховые услуги" in rendered_5960
+    assert "Кактус — 3% баллами (2,87%)" in rendered_5541
+    cactus = next(match for match in catalog.lookup("5541") if match.card.id == "cactus_mtbank")
+    assert cactus.components[0].kind == "points"
+    assert format_moneyback(cactus) == "3% баллами (2,87%)"
+
+
 def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() -> None:
     cards = {
         card["id"]: card for card in json.loads(DATA_PATH.read_text(encoding="utf-8"))["cards"]
