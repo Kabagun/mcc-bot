@@ -2144,7 +2144,7 @@ def test_bundled_partner_migration_20260911_keeps_reviewed_decisions():
     )
 
     assert snapshot["reviewed"] is True
-    assert len(snapshot["offers"]) == 659
+    assert len(snapshot["offers"]) == 660
     assert len(snapshot["exclusions"]) == 7
     assert len(snapshot["offer_retirements"]) == 165
     assert [item["offer_id"] for item in snapshot["manual_offer_retirements"]] == [209, 213]
@@ -2162,17 +2162,31 @@ def test_bundled_partner_migration_20260911_keeps_reviewed_decisions():
     assert repair["expected_offer"]["card_id"] == "vitamin_d"
     assert snapshot["partner_seed_tombstones"][0]["source_key"] == "cashalot:21vek-by"
     assert snapshot["partner_seed_tombstones"][0]["offer_id"] == 115
-    assert snapshot["problems"] == [
-        {
-            "action": "hold",
-            "brand": "ORO",
-            "kind": "ambiguous_reward",
-            "observed_combo_rate": "8",
-            "reason": "Плитка ORO и видимый popup содержат разные ставки; offer не создаётся.",
-            "source_id": 104700,
-            "source_key": "paritet:104700:paritet_combo:offline",
-        }
-    ]
+    assert snapshot["problems"] == []
+
+    offers_by_key = {item["source_key"]: item for item in snapshot["offers"]}
+    stable_lower_bounds = {
+        "bnb:309139:offline": ("4", "Стабильная нижняя граница — 4%."),
+        "paritet:111408:paritet_combo:any": (
+            "2.4",
+            "Стабильная нижняя граница — 2,4%.",
+        ),
+        "izi:401298:general:536d75ebd23b82e4ac15": (
+            "1",
+            "Стабильная нижняя граница — 1%.",
+        ),
+        "izi:401298:general:70fc91c3465a09462517": (
+            "1",
+            "Стабильная нижняя граница — 1%.",
+        ),
+        "paritet:104700:paritet_combo:offline": (
+            "2.5",
+            "Стабильная нижняя граница — 2,5%.",
+        ),
+    }
+    for source_key, (value, conditions) in stable_lower_bounds.items():
+        assert offers_by_key[source_key]["tiers"] == [{"value": value}]
+        assert offers_by_key[source_key]["conditions"] == conditions
 
     offer_keys = {item["source_key"] for item in snapshot["offers"]}
     assert "cashalot:21vek-by" not in offer_keys

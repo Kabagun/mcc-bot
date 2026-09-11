@@ -12141,6 +12141,51 @@
       ]
     },
     {
+      "id": "reshenie_visa_pay",
+      "name": "Visa · оплата Apple Pay и др.",
+      "issuer": "Банк Решение",
+      "emoji": "💳",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "cash"
+      },
+      "reward_programs": [
+        {
+          "id": "cash",
+          "kind": "cash",
+          "tax_exempt": true,
+          "minimum_payment": {
+            "amount": 0,
+            "currency": "BYN"
+          },
+          "default": {
+            "value": 10
+          },
+          "excluded_mccs": [
+            "4829",
+            "6010",
+            "6011",
+            "6012",
+            "6050",
+            "6051",
+            "6211",
+            "6531",
+            "6536",
+            "6537",
+            "6538",
+            "6539",
+            "6540",
+            "7995",
+            "8398",
+            "9222",
+            "9223",
+            "9311",
+            "9399"
+          ]
+        }
+      ]
+    },
+    {
       "id": "yarkaya_karta",
       "name": "Яркая",
       "issuer": "Приорбанк",

@@ -4276,7 +4276,7 @@
       "brand_key": "brand:bnb:309139",
       "card_id": "bnb_1_2_3",
       "channel": "offline",
-      "conditions": "Общая консервативная ставка — 4%; 6% начисляется за ветеринарные услуги. Ставку не следует повторно складывать с базовым манибэком БНБ-Банка.",
+      "conditions": "Стабильная нижняя граница — 4%.",
       "ends_on": null,
       "migration_from_source_key": "bnb-1-2-3:478b9e8f",
       "mode": "total",
@@ -11225,7 +11225,7 @@
       "brand_key": "brand:izi:401298:536d75ebd23b82e4ac15",
       "card_id": "belarusbank_izi",
       "channel": "offline",
-      "conditions": "Общая консервативная ставка — 1%; официальная таблица также содержит 3% для той же точки. Организация «ООО ДОКСАТ»; адрес: Витебская область, г. Докшицы, ул. Ленинская 16Г; MCC 5065.",
+      "conditions": "Стабильная нижняя граница — 1%.",
       "ends_on": null,
       "mode": "total",
       "require_existing_mcc": false,
@@ -11247,7 +11247,7 @@
       "brand_key": "brand:izi:401298:70fc91c3465a09462517",
       "card_id": "belarusbank_izi",
       "channel": "offline",
-      "conditions": "Общая консервативная ставка — 1%; официальная таблица также содержит 3% для той же точки. Организация «ООО ДОКСАТ»; адрес: Витебская область, г. Докшицы, ул. Пионерская 17Б; MCC 5065.",
+      "conditions": "Стабильная нижняя граница — 1%.",
       "ends_on": null,
       "mode": "total",
       "require_existing_mcc": false,
@@ -14299,6 +14299,26 @@
     },
     {
       "aliases": [],
+      "brand": "ORO",
+      "brand_key": "brand:paritet:104700",
+      "card_id": "paritet_combo",
+      "channel": "offline",
+      "conditions": "Стабильная нижняя граница — 2,5%.",
+      "ends_on": null,
+      "mode": "total",
+      "require_existing_mcc": false,
+      "reward_kind": "cash",
+      "source_key": "paritet:104700:paritet_combo:offline",
+      "source_url": "https://oro.by/",
+      "starts_on": null,
+      "tiers": [
+        {
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "aliases": [],
       "brand": "meko.by",
       "brand_key": "brand:paritet:104701",
       "card_id": "paritet_combo",
@@ -14985,7 +15005,7 @@
       "brand_key": "brand:paritet:111408",
       "card_id": "paritet_combo",
       "channel": "any",
-      "conditions": "Общая консервативная ставка — 2,4%; до 5% в зависимости от адреса и способа оплаты.",
+      "conditions": "Стабильная нижняя граница — 2,4%.",
       "ends_on": null,
       "mode": "total",
       "require_existing_mcc": false,
@@ -16903,17 +16923,7 @@
       "source_key": "cashalot:21vek-by"
     }
   ],
-  "problems": [
-    {
-      "action": "hold",
-      "brand": "ORO",
-      "kind": "ambiguous_reward",
-      "observed_combo_rate": "8",
-      "reason": "Плитка ORO и видимый popup содержат разные ставки; offer не создаётся.",
-      "source_id": 104700,
-      "source_key": "paritet:104700:paritet_combo:offline"
-    }
-  ],
+  "problems": [],
   "reviewed": true,
   "source": {
     "id": "official_partner_sources",
@@ -16928,6 +16938,7 @@
         "bnb:309139",
         "brand:izi:401298:536d75ebd23b82e4ac15",
         "brand:izi:401298:70fc91c3465a09462517",
+        "paritet:104700:paritet_combo:offline",
         "paritet:111408:paritet_combo:any"
       ],
       "legacy_offer_retirements": 165,

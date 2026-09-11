@@ -311,7 +311,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 18
+    assert len(raw["cards"]) == 19
     assert (
         sum(
             len(program.get("offers", []))
@@ -392,6 +392,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     matches = _catalog().lookup("5411")
 
     assert [match.card.id for match in matches] == [
+        "reshenie_visa_pay",
         "vitamin_d",
         "oplati",
         "shopper_mtbank",
@@ -409,7 +410,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "belgazprombank_cashalot",
         "statusbank_statuskarta",
     ]
-    vitamin = matches[0]
+    vitamin = next(match for match in matches if match.card.id == "vitamin_d")
     assert vitamin.gross_percent == Decimal("4")
     assert [component.gross_percent for component in vitamin.components] == [
         Decimal("1"),
@@ -440,22 +441,23 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
-        "1. 💳 Витамин Д — 1% + 3% баллами\n"
-        "2. 💳 Оплати — 3%\n"
-        "3. 💳 Шоппер — 2,5% (2,435%)\n"
-        "4. 💳 Цептер Card — 2%\n"
-        "5. 💳 Цептер PLUS — 2%\n"
-        "6. 💳 R-карта — 1,5%\n"
-        "7. 💳 КОМБОкарта — 1,2%\n"
-        "8. 💳 Спраўная — 1,11%\n"
-        "9. 💳 1-2-3 — 1%\n"
-        "10. 💳 Движение — 1%\n"
-        "11. 💳 Куфар — 1% баллами\n"
-        "12. 💳 МТкарта — 1% баллами\n"
-        "13. 💳 Социальная — 1%\n"
-        "14. 💳 Яркая — 1%\n"
-        "15. 💳 Cashalot — 0,5%\n"
-        "16. 💳 Статускарта — 0,5%"
+        "1. 💳 Visa · оплата Apple Pay и др. — 10%\n"
+        "2. 💳 Витамин Д — 1% + 3% баллами\n"
+        "3. 💳 Оплати — 3%\n"
+        "4. 💳 Шоппер — 2,5% (2,435%)\n"
+        "5. 💳 Цептер Card — 2%\n"
+        "6. 💳 Цептер PLUS — 2%\n"
+        "7. 💳 R-карта — 1,5%\n"
+        "8. 💳 КОМБОкарта — 1,2%\n"
+        "9. 💳 Спраўная — 1,11%\n"
+        "10. 💳 1-2-3 — 1%\n"
+        "11. 💳 Движение — 1%\n"
+        "12. 💳 Куфар — 1% баллами\n"
+        "13. 💳 МТкарта — 1% баллами\n"
+        "14. 💳 Социальная — 1%\n"
+        "15. 💳 Яркая — 1%\n"
+        "16. 💳 Cashalot — 0,5%\n"
+        "17. 💳 Статускарта — 0,5%"
     )
 
 
@@ -611,22 +613,23 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
 
     assert rendered == (
         "<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n"
-        "1. 💳 <b>Витамин Д</b> — 1% + 3% баллами\n"
-        "2. 💳 <b>Оплати</b> — 3%\n"
-        "3. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
-        "4. 💳 <b>Цептер Card</b> — 2%\n"
-        "5. 💳 <b>Цептер PLUS</b> — 2%\n"
-        "6. 💳 <b>R-карта</b> — 1,5%\n"
-        "7. 💳 <b>КОМБОкарта</b> — 1,2%\n"
-        "8. 💳 <b>Спраўная</b> — 1,11%\n"
-        "9. 💳 <b>1-2-3</b> — 1%\n"
-        "10. 💳 <b>Движение</b> — 1%\n"
-        "11. 💳 <b>Куфар</b> — 1% баллами\n"
-        "12. 💳 <b>МТкарта</b> — 1% баллами\n"
-        "13. 💳 <b>Социальная</b> — 1%\n"
-        "14. 💳 <b>Яркая</b> — 1%\n"
-        "15. 💳 <b>Cashalot</b> — 0,5%\n"
-        "16. 💳 <b>Статускарта</b> — 0,5%"
+        "1. 💳 <b>Visa · оплата Apple Pay и др.</b> — 10%\n"
+        "2. 💳 <b>Витамин Д</b> — 1% + 3% баллами\n"
+        "3. 💳 <b>Оплати</b> — 3%\n"
+        "4. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
+        "5. 💳 <b>Цептер Card</b> — 2%\n"
+        "6. 💳 <b>Цептер PLUS</b> — 2%\n"
+        "7. 💳 <b>R-карта</b> — 1,5%\n"
+        "8. 💳 <b>КОМБОкарта</b> — 1,2%\n"
+        "9. 💳 <b>Спраўная</b> — 1,11%\n"
+        "10. 💳 <b>1-2-3</b> — 1%\n"
+        "11. 💳 <b>Движение</b> — 1%\n"
+        "12. 💳 <b>Куфар</b> — 1% баллами\n"
+        "13. 💳 <b>МТкарта</b> — 1% баллами\n"
+        "14. 💳 <b>Социальная</b> — 1%\n"
+        "15. 💳 <b>Яркая</b> — 1%\n"
+        "16. 💳 <b>Cashalot</b> — 0,5%\n"
+        "17. 💳 <b>Статускарта</b> — 0,5%"
     )
     pages = format_match_pages("5411", matches, _descriptions(), html=True)
     assert len(pages) == 1
@@ -657,6 +660,47 @@ def test_real_catalog_r_karta_default_and_exclusions() -> None:
     assert r_karta.gross_percent == Decimal("1.5")
     assert format_moneyback(r_karta) == "1,5%"
     assert all(match.card.id != "reshenie_r_karta" for match in catalog.lookup("4812"))
+
+
+def test_real_catalog_reshenie_visa_pay_default_and_exact_mcc_exclusions() -> None:
+    catalog = _catalog()
+    card_id = "reshenie_visa_pay"
+    match = next(match for match in catalog.lookup("5411") if match.card.id == card_id)
+
+    assert match.card.name == "Visa · оплата Apple Pay и др."
+    assert match.card.issuer == "Банк Решение"
+    assert match.gross_percent == match.net_percent == Decimal("10")
+    assert format_moneyback(match) == "10%"
+    program = match.card.reward_programs[0]
+    assert program.default_value == Decimal("10")
+    assert program.tax_exempt is True
+    assert program.excluded_mccs == frozenset(
+        {
+            "4829",
+            "6010",
+            "6011",
+            "6012",
+            "6050",
+            "6051",
+            "6211",
+            "6531",
+            "6536",
+            "6537",
+            "6538",
+            "6539",
+            "6540",
+            "7995",
+            "8398",
+            "9222",
+            "9223",
+            "9311",
+            "9399",
+        }
+    )
+    assert all(
+        all(item.card.id != card_id for item in catalog.lookup(mcc))
+        for mcc in program.excluded_mccs
+    )
 
 
 def test_real_catalog_cashalot_default_override_and_exclusions() -> None:
@@ -795,6 +839,7 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
         "belgazprombank_cashalot": "💳",
         "statusbank_statuskarta": "💳",
         "reshenie_r_karta": "💳",
+        "reshenie_visa_pay": "💳",
         "yarkaya_karta": "💳",
     }
     assert {card_id: cards[card_id].emoji for card_id in expected_markers} == expected_markers
@@ -822,6 +867,8 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["paritet_combo"].issuer == "Паритетбанк"
     assert cards["reshenie_r_karta"].issuer == "Банк Решение"
     assert cards["reshenie_r_karta"].name == "R-карта"
+    assert cards["reshenie_visa_pay"].issuer == "Банк Решение"
+    assert cards["reshenie_visa_pay"].name == "Visa · оплата Apple Pay и др."
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
         assert cards[card_id].issuer == "МТбанк"
@@ -838,6 +885,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("zepter_card", "cash"),
         ("statusbank_statuskarta", "cash"),
         ("belarusbank_izi", "cash"),
+        ("reshenie_visa_pay", "cash"),
     ):
         program = next(
             program for program in cards[card_id].reward_programs if program.id == program_id
@@ -873,6 +921,11 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         assert program.maximum_reward is not None
         assert program.maximum_reward.amount == Decimal(maximum)
         assert program.maximum_reward.unit == unit
+
+    visa_pay = cards["reshenie_visa_pay"].reward_programs[0]
+    assert visa_pay.minimum_payment is not None
+    assert visa_pay.minimum_payment.amount == Decimal("0")
+    assert visa_pay.maximum_reward is None
     yarkaya = cards["yarkaya_karta"].reward_programs[0]
     assert yarkaya.minimum_payment is not None
     assert yarkaya.minimum_payment.amount == Decimal("10")
@@ -951,6 +1004,10 @@ def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() ->
     assert "100 BYN/мес." in social
     bnb = format_matches("5411", (by_id["bnb_1_2_3"],), details=True)
     assert "10 BYN" in bnb and "123 BYN/мес." in bnb
+
+    visa_pay = format_matches("5411", (by_id["reshenie_visa_pay"],), details=True)
+    assert "💳 Visa · оплата Apple Pay и др. — 10%" in visa_pay
+    assert "Банк Решение" in visa_pay
 
     pages = format_match_pages("5411", matches, _descriptions())
     assert len(pages) == 1
