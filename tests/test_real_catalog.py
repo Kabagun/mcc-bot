@@ -181,7 +181,6 @@ STATUSKARTA_EXCLUSIONS = {
     "9402",
 }
 BNB_1_2_3_EXCLUSIONS = {
-    "4814",
     "4829",
     "4900",
     "6012",
@@ -318,7 +317,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2828
+        == 2829
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -575,7 +574,7 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
 
     bnb_program = cards["bnb_1_2_3"]["reward_programs"][0]
     assert bnb_program["default"] == {"value": 1}
-    assert bnb_program.get("offers", []) == []
+    assert bnb_program["offers"] == [{"mcc": "4814", "value": 2}]
     assert "6012" in bnb_program["excluded_mccs"]
 
     for card_id in (
@@ -732,7 +731,7 @@ def test_real_catalog_statuskarta_default_overrides_and_exclusions() -> None:
     assert all(match.card.id != "statusbank_statuskarta" for match in catalog.lookup("4812"))
 
 
-def test_real_catalog_bnb_1_2_3_default_and_exclusions() -> None:
+def test_real_catalog_bnb_1_2_3_default_mobile_rate_and_exclusions() -> None:
     catalog = _catalog()
     grocery = next(match for match in catalog.lookup("5411") if match.card.id == "bnb_1_2_3")
 
@@ -740,8 +739,9 @@ def test_real_catalog_bnb_1_2_3_default_and_exclusions() -> None:
     assert format_moneyback(grocery) == "1%"
     travel = next(match for match in catalog.lookup("4722") if match.card.id == "bnb_1_2_3")
     assert travel.gross_percent == Decimal("1")
+    mobile = next(match for match in catalog.lookup("4814") if match.card.id == "bnb_1_2_3")
+    assert mobile.gross_percent == Decimal("2")
     assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("6012"))
-    assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("4814"))
 
 
 def test_real_catalog_combo_default_and_exclusions() -> None:
