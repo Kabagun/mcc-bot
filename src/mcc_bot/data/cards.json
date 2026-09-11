@@ -12142,7 +12142,7 @@
     },
     {
       "id": "reshenie_visa_pay",
-      "name": "Visa · оплата Apple Pay и др.",
+      "name": "Visa Решение · оплата Apple Pay и др.",
       "issuer": "Банк Решение",
       "emoji": "💳",
       "partner_policy": {

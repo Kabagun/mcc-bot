@@ -499,7 +499,7 @@ separately.
 Typed conditions remain in the catalog for validation and future filtering, but
 the user-facing answer does not render those internal conditions or raw notes.
 The bundled Bank Reshenie Visa entry is shown as
-`Visa · оплата Apple Pay и др.`; the other reviewed mobile-wallet methods are
+`Visa Решение · оплата Apple Pay и др.`; the other reviewed mobile-wallet methods are
 Samsung Pay, Rbank (digital wallet) and Swoo Pay. At the owner's direction it
 has an undated tax-exempt 10% default and only the 19 MCC exclusions listed in
 the reviewed Visa Extra rules. The lookup applies no date, payment threshold or

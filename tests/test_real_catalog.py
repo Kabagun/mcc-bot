@@ -441,7 +441,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
-        "1. 💳 Visa · оплата Apple Pay и др. — 10%\n"
+        "1. 💳 Visa Решение · оплата Apple Pay и др. — 10%\n"
         "2. 💳 Витамин Д — 1% + 3% баллами\n"
         "3. 💳 Оплати — 3%\n"
         "4. 💳 Шоппер — 2,5% (2,435%)\n"
@@ -613,7 +613,7 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
 
     assert rendered == (
         "<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n"
-        "1. 💳 <b>Visa · оплата Apple Pay и др.</b> — 10%\n"
+        "1. 💳 <b>Visa Решение · оплата Apple Pay и др.</b> — 10%\n"
         "2. 💳 <b>Витамин Д</b> — 1% + 3% баллами\n"
         "3. 💳 <b>Оплати</b> — 3%\n"
         "4. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
@@ -667,7 +667,7 @@ def test_real_catalog_reshenie_visa_pay_default_and_exact_mcc_exclusions() -> No
     card_id = "reshenie_visa_pay"
     match = next(match for match in catalog.lookup("5411") if match.card.id == card_id)
 
-    assert match.card.name == "Visa · оплата Apple Pay и др."
+    assert match.card.name == "Visa Решение · оплата Apple Pay и др."
     assert match.card.issuer == "Банк Решение"
     assert match.gross_percent == match.net_percent == Decimal("10")
     assert format_moneyback(match) == "10%"
@@ -868,7 +868,7 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["reshenie_r_karta"].issuer == "Банк Решение"
     assert cards["reshenie_r_karta"].name == "R-карта"
     assert cards["reshenie_visa_pay"].issuer == "Банк Решение"
-    assert cards["reshenie_visa_pay"].name == "Visa · оплата Apple Pay и др."
+    assert cards["reshenie_visa_pay"].name == "Visa Решение · оплата Apple Pay и др."
     assert cards["yarkaya_karta"].issuer == "Приорбанк"
     for card_id in ("mtkarta", "mtbank_social", "shopper_mtbank", "cactus_mtbank"):
         assert cards[card_id].issuer == "МТбанк"
@@ -1006,7 +1006,7 @@ def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() ->
     assert "10 BYN" in bnb and "123 BYN/мес." in bnb
 
     visa_pay = format_matches("5411", (by_id["reshenie_visa_pay"],), details=True)
-    assert "💳 Visa · оплата Apple Pay и др. — 10%" in visa_pay
+    assert "💳 Visa Решение · оплата Apple Pay и др. — 10%" in visa_pay
     assert "Банк Решение" in visa_pay
 
     pages = format_match_pages("5411", matches, _descriptions())
