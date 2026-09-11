@@ -375,6 +375,34 @@ each next snapshot again because the database fingerprint has changed. These
 commands are local data-review and SQLite operations only; they do not deploy
 or publish the bot.
 
+The reviewed combined one-shot migration for the 11 September 2026 source
+snapshot is bundled as
+`src/mcc_bot/data/partner_migration_20260911.json`. It combines the five live
+official catalogues with the reviewed Cashalot and Vitamin D fallbacks. Its
+only held source row is ORO: the Paritet tile says up to 2.5%, while the linked
+Combo terms say 8%, so no ORO offer is emitted until that conflict is resolved.
+
+Version-1 snapshots may also contain three explicit maintenance lists. Each is
+part of the approval-plan hash and is revalidated inside the apply transaction:
+
+- `manual_offer_retirements` archives only a source-less offer whose ID and
+  complete persisted semantics still match the supplied guard;
+- `partner_mapping_repairs` rebinds one exact stale brand mapping and its exact
+  source-backed offer to the direct active merge target, with audit records;
+- `partner_seed_tombstones` durably blocks a source key and requires a complete
+  offer guard whenever an active row must be archived.
+
+The bundled migration uses these guards to replace two manual Paritet rows with
+official source-backed rows, repair the HELIX binding, and keep the removed
+Cashalot 21vek source from returning. Preview the bundled file against the exact
+database copy that will be applied; do not reuse a plan hash from another copy:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcc_bot.partner_batch `
+  --database var/stores.sqlite3 `
+  --snapshot src/mcc_bot/data/partner_migration_20260911.json
+```
+
 ## Version 2 catalog contract
 
 `MCC_CATALOG_PATH` optionally points to an external UTF-8 JSON file. When it is

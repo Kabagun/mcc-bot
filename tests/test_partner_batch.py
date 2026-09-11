@@ -6,6 +6,7 @@ import io
 import json
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +16,15 @@ from mcc_bot.partner_batch import (
     _backup_database,
     _write_json_result,
     apply_partner_batch,
+    load_snapshot,
     preview_partner_batch,
 )
-from mcc_bot.partner_rewards import PartnerOfferInput, PartnerRepository, PartnerTierInput
+from mcc_bot.partner_rewards import (
+    PartnerExclusionInput,
+    PartnerOfferInput,
+    PartnerRepository,
+    PartnerTierInput,
+)
 from mcc_bot.stores import StoreRepository
 
 
@@ -42,6 +49,37 @@ def _offer(source_key: str, brand_id: int, *, value: str = "2", card_id: str = "
         "mode": "total",
         "reward_kind": "cash",
         "tiers": [{"value": value}],
+    }
+
+
+def _offer_guard(offer):
+    return {
+        "brand_id": offer.brand_id,
+        "card_id": offer.card_id,
+        "channel": offer.channel,
+        "mode": offer.mode,
+        "reward_kind": offer.reward_kind,
+        "starts_on": offer.starts_on.isoformat() if offer.starts_on else None,
+        "ends_on": offer.ends_on.isoformat() if offer.ends_on else None,
+        "conditions": offer.conditions,
+        "source_url": offer.source_url,
+        "tiers": [
+            {
+                "value": format(tier.value, "f"),
+                "min_purchase": format(tier.min_purchase, "f")
+                if tier.min_purchase is not None
+                else None,
+                "max_purchase": format(tier.max_purchase, "f")
+                if tier.max_purchase is not None
+                else None,
+                "per_transaction_cap": format(tier.per_transaction_cap, "f")
+                if tier.per_transaction_cap is not None
+                else None,
+                "starts_on": tier.starts_on.isoformat() if tier.starts_on else None,
+                "ends_on": tier.ends_on.isoformat() if tier.ends_on else None,
+            }
+            for tier in offer.tiers
+        ],
     }
 
 
@@ -848,6 +886,49 @@ def test_exact_offer_retirement_allows_replacement_and_replays_noop(tmp_path):
     assert len(partners.list_offers(brand_id)) == 1
 
 
+def test_exact_offer_retirement_holds_when_offer_has_active_linked_exclusion(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    legacy = _offer(
+        "legacy:linked-retirement", brand_id, value="1", card_id="linked-retirement-card"
+    )
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="linked-retirement-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("1")),),
+        ),
+        actor_id=1,
+        source_key="legacy:linked-retirement",
+    )
+    partners.create_exclusion(
+        PartnerExclusionInput(
+            brand_id=brand_id,
+            card_id="linked-retirement-card",
+            reward_kind="cash",
+            channel="offline",
+            mcc="5411",
+            suppress_base=True,
+        ),
+        actor_id=1,
+        offer_id=offer.id,
+    )
+
+    snapshot = _snapshot()
+    snapshot["offer_retirements"] = [legacy]
+    report = preview_partner_batch(stores, snapshot)
+    retirement = next(item for item in report["operations"] if item["kind"] == "offer_retirement")
+    assert (retirement["status"], retirement["action"]) == ("linked_exclusions", "none")
+    assert report["counts"]["approved_archives"] == 0
+    assert any(
+        item["kind"] == "retirement_conflict"
+        and item["reason"] == "guarded offer has active linked exclusions"
+        for item in report["conflicts"]
+    )
+
+
 def test_safe_retirement_is_removed_from_duplicate_signature_checks(tmp_path):
     stores, partners, brand_id = _database(tmp_path)
     legacy = _offer("legacy:signature", brand_id, value="1", card_id="signature-card")
@@ -1283,3 +1364,821 @@ def test_invalid_backup_is_removed_after_integrity_validation(tmp_path):
     with pytest.raises(PartnerBatchError, match="foreign_key_check"):
         _backup_database(stores, InvalidSource(), "invalid", backup)
     assert not backup.exists()
+
+
+def test_manual_source_less_retirement_replaces_exactly_and_replays_noop(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    manual = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="manual-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+            starts_on=date(2026, 1, 1),
+            ends_on=date(2026, 12, 31),
+            conditions="manual terms",
+            source_url="https://manual.example/offer",
+        ),
+        actor_id=1,
+    )
+    replacement = _offer("official:replacement", brand_id, value="3", card_id="manual-card")
+    replacement.update(
+        {
+            "starts_on": "2026-01-01",
+            "ends_on": "2026-12-31",
+            "conditions": "official terms",
+            "source_url": "https://official.example/offer",
+        }
+    )
+    snapshot = _snapshot(replacement)
+    snapshot["manual_offer_retirements"] = [
+        {"offer_id": manual.id, "expected_offer": _offer_guard(manual)}
+    ]
+
+    report = preview_partner_batch(stores, snapshot)
+    retirement = next(
+        item for item in report["operations"] if item["kind"] == "manual_offer_retirement"
+    )
+    assert (retirement["status"], retirement["action"]) == ("retire", "archive")
+    assert report["counts"]["approved_archives"] == 1
+    assert report["counts"]["approved_inserts"] == 1
+    assert report["counts"]["approved_operations"] == 2
+
+    result = apply_partner_batch(
+        stores,
+        snapshot,
+        actor_id=1,
+        expected_plan_sha256=report["plan_sha256"],
+        backup_path=tmp_path / "manual-before.sqlite3",
+    )
+    assert result["archived"] == {"offers": 1}
+    assert result["inserted"] == {"offers": 1, "exclusions": 0}
+    with stores.connection() as connection:
+        rows = connection.execute(
+            "SELECT source_key,archived FROM partner_offers ORDER BY id"
+        ).fetchall()
+    assert [(row["source_key"], row["archived"]) for row in rows] == [
+        (None, 1),
+        ("official:replacement", 0),
+    ]
+
+    replay = preview_partner_batch(stores, snapshot)
+    replay_retirement = next(
+        item for item in replay["operations"] if item["kind"] == "manual_offer_retirement"
+    )
+    assert (replay_retirement["status"], replay_retirement["action"]) == (
+        "already_archived",
+        "none",
+    )
+    assert replay["counts"]["approved_operations"] == 0
+    replay_result = apply_partner_batch(
+        stores,
+        snapshot,
+        actor_id=1,
+        expected_plan_sha256=replay["plan_sha256"],
+        backup_path=tmp_path / "manual-replay.sqlite3",
+    )
+    assert replay_result["archived"] == {"offers": 0}
+    assert replay_result["inserted"] == {"offers": 0, "exclusions": 0}
+
+
+def test_manual_source_less_retirement_fails_closed_and_rolls_back_on_insert_failure(
+    tmp_path, monkeypatch
+):
+    stores, partners, brand_id = _database(tmp_path)
+    manual = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="manual-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+    )
+    replacement = _offer("official:replacement", brand_id, card_id="manual-card")
+    snapshot = _snapshot(replacement)
+    snapshot["manual_offer_retirements"] = [
+        {"offer_id": manual.id, "expected_offer": _offer_guard(manual)}
+    ]
+    changed = copy.deepcopy(snapshot)
+    changed["manual_offer_retirements"][0]["expected_offer"]["conditions"] = "changed"
+    changed_report = preview_partner_batch(stores, changed)
+    assert changed_report["counts"]["approved_operations"] == 0
+    assert any(
+        item["kind"] == "manual_offer_retirement_conflict" for item in changed_report["conflicts"]
+    )
+
+    report = preview_partner_batch(stores, snapshot)
+    original = PartnerRepository.create_offer
+
+    def fail_insert(self, payload, **kwargs):
+        raise RuntimeError("simulated official replacement failure")
+
+    monkeypatch.setattr(PartnerRepository, "create_offer", fail_insert)
+    with pytest.raises(RuntimeError, match="official replacement failure"):
+        apply_partner_batch(
+            stores,
+            snapshot,
+            actor_id=1,
+            expected_plan_sha256=report["plan_sha256"],
+            backup_path=tmp_path / "manual-atomic.sqlite3",
+        )
+    monkeypatch.setattr(PartnerRepository, "create_offer", original)
+    with stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT archived FROM partner_offers WHERE id=?", (manual.id,)
+            ).fetchone()["archived"]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM partner_offers WHERE source_key=?", ("official:replacement",)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_manual_retirement_holds_when_guarded_offer_has_active_linked_exclusion(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    manual = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="manual-linked-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+    )
+    partners.create_exclusion(
+        PartnerExclusionInput(
+            brand_id=brand_id,
+            card_id="manual-linked-card",
+            reward_kind="cash",
+            channel="offline",
+            mcc="5411",
+            suppress_base=True,
+        ),
+        actor_id=1,
+        offer_id=manual.id,
+    )
+    snapshot = _snapshot()
+    snapshot["manual_offer_retirements"] = [
+        {"offer_id": manual.id, "expected_offer": _offer_guard(manual)}
+    ]
+
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "manual_offer_retirement"
+    )
+    assert (operation["status"], operation["action"]) == ("linked_exclusions", "none")
+    assert report["counts"]["approved_operations"] == 0
+    assert any(
+        item["reason"] == "guarded offer has active linked exclusions"
+        for item in report["conflicts"]
+    )
+
+
+def test_tombstone_guard_holds_linked_offer_and_missing_guarded_source(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    active = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="tombstone-linked-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+        source_key="cashalot:linked",
+    )
+    partners.create_exclusion(
+        PartnerExclusionInput(
+            brand_id=brand_id,
+            card_id="tombstone-linked-card",
+            reward_kind="cash",
+            channel="offline",
+            mcc="5411",
+            suppress_base=True,
+        ),
+        actor_id=1,
+        offer_id=active.id,
+    )
+    linked_snapshot = _snapshot()
+    linked_snapshot["partner_seed_tombstones"] = [
+        {
+            "source_key": "cashalot:linked",
+            "reason": "removed",
+            "offer_id": active.id,
+            "expected_offer": _offer_guard(active),
+        }
+    ]
+    linked_report = preview_partner_batch(stores, linked_snapshot)
+    linked_operation = next(
+        item for item in linked_report["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (linked_operation["status"], linked_operation["action"]) == (
+        "linked_exclusions",
+        "none",
+    )
+
+    missing_snapshot = _snapshot()
+    missing_snapshot["partner_seed_tombstones"] = [
+        {
+            "source_key": "cashalot:missing",
+            "reason": "removed",
+            "offer_id": active.id,
+            "expected_offer": _offer_guard(active),
+        }
+    ]
+    missing_report = preview_partner_batch(stores, missing_snapshot)
+    missing_operation = next(
+        item for item in missing_report["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (missing_operation["status"], missing_operation["action"]) == (
+        "missing_guarded_offer",
+        "none",
+    )
+    assert any(
+        item["reason"] == "guarded partner offer does not exist for the source key"
+        for item in missing_report["conflicts"]
+    )
+
+    same_reason_snapshot = _snapshot()
+    same_reason_snapshot["partner_seed_tombstones"] = [
+        {
+            "source_key": "cashalot:missing",
+            "reason": "removed",
+            "offer_id": active.id,
+            "expected_offer": _offer_guard(active),
+        }
+    ]
+    with stores.transaction() as connection:
+        connection.execute(
+            "INSERT INTO partner_seed_tombstones(source_key,reason) VALUES(?,?)",
+            ("cashalot:missing", "removed"),
+        )
+    same_reason_report = preview_partner_batch(stores, same_reason_snapshot)
+    same_reason_operation = next(
+        item
+        for item in same_reason_report["operations"]
+        if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (same_reason_operation["status"], same_reason_operation["action"]) == (
+        "missing_guarded_offer",
+        "none",
+    )
+    assert any(
+        item["reason"] == "guarded partner offer does not exist for the source key"
+        for item in same_reason_report["conflicts"]
+    )
+
+    unguarded_snapshot = _snapshot()
+    unguarded_snapshot["partner_seed_tombstones"] = [
+        {"source_key": "cashalot:missing", "reason": "removed"}
+    ]
+    unguarded_report = preview_partner_batch(stores, unguarded_snapshot)
+    unguarded_operation = next(
+        item for item in unguarded_report["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (unguarded_operation["status"], unguarded_operation["action"]) == (
+        "already_tombstoned",
+        "none",
+    )
+
+
+def test_partner_seed_tombstone_requires_guard_for_active_offer_and_replays_noop(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    active = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="tombstone-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+        source_key="cashalot:active",
+    )
+    unguarded = _snapshot()
+    unguarded["partner_seed_tombstones"] = [{"source_key": "cashalot:active", "reason": "removed"}]
+    blocked = preview_partner_batch(stores, unguarded)
+    assert blocked["counts"]["approved_operations"] == 0
+    assert any(item["kind"] == "tombstone_conflict" for item in blocked["conflicts"])
+
+    snapshot = _snapshot()
+    snapshot["partner_seed_tombstones"] = [
+        {
+            "source_key": "cashalot:active",
+            "reason": "removed",
+            "offer_id": active.id,
+            "expected_offer": _offer_guard(active),
+        }
+    ]
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (operation["status"], operation["action"]) == ("retire", "archive_and_tombstone")
+    result = apply_partner_batch(
+        stores,
+        snapshot,
+        actor_id=1,
+        expected_plan_sha256=report["plan_sha256"],
+        backup_path=tmp_path / "tombstone-before.sqlite3",
+    )
+    assert result["archived"] == {"offers": 1}
+    assert result["tombstoned"] == 1
+    assert stores.is_partner_seed_tombstoned("cashalot:active")
+
+    replay = preview_partner_batch(stores, snapshot)
+    replay_operation = next(
+        item for item in replay["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (replay_operation["status"], replay_operation["action"]) == (
+        "already_tombstoned",
+        "none",
+    )
+    assert replay["counts"]["approved_operations"] == 0
+
+
+def test_partner_seed_tombstone_archived_offer_is_tombstone_only(tmp_path):
+    stores, partners, brand_id = _database(tmp_path)
+    archived = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=brand_id,
+            card_id="tombstone-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+        source_key="cashalot:archived",
+    )
+    assert partners.delete_offer(archived.id, actor_id=1)
+    snapshot = _snapshot()
+    snapshot["partner_seed_tombstones"] = [{"source_key": "cashalot:archived", "reason": "removed"}]
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "partner_seed_tombstone"
+    )
+    assert (operation["status"], operation["action"]) == ("already_archived", "tombstone")
+    apply_partner_batch(
+        stores,
+        snapshot,
+        actor_id=1,
+        expected_plan_sha256=report["plan_sha256"],
+        backup_path=tmp_path / "archived-tombstone.sqlite3",
+    )
+    assert stores.is_partner_seed_tombstoned("cashalot:archived")
+
+
+def test_partner_mapping_repair_rebinds_exact_offer_and_replays_noop(tmp_path):
+    stores, partners, _brand_id = _database(tmp_path)
+    source = stores.apply_change(
+        "add_merchant", {"name": "Archived Helix", "channel": "offline"}, actor_id=1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Active Helix", "channel": "offline"}, actor_id=1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    stores.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, actor_id=1
+    )
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=source.brand_id,
+            card_id="helix-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+            conditions="unchanged terms",
+            source_url="https://helix.example/offer",
+        ),
+        actor_id=1,
+        source_key="helix:offer",
+    )
+    with stores.transaction() as connection:
+        cursor = connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)",
+            ("helix:brand", source.brand_id),
+        )
+        mapping_id = cursor.lastrowid
+    snapshot = _snapshot()
+    snapshot["partner_mapping_repairs"] = [
+        {
+            "source_key": "helix:brand",
+            "mapping_id": mapping_id,
+            "expected_brand_id": source.brand_id,
+            "target_brand_id": target.brand_id,
+            "offer_id": offer.id,
+            "offer_source_key": "helix:offer",
+            "expected_offer": _offer_guard(offer),
+        }
+    ]
+
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "partner_mapping_repair"
+    )
+    assert (operation["status"], operation["action"]) == ("repair", "repair")
+    assert report["counts"]["approved_repairs"] == 1
+    assert report["counts"]["approved_operations"] == 1
+    result = apply_partner_batch(
+        stores,
+        snapshot,
+        actor_id=1,
+        expected_plan_sha256=report["plan_sha256"],
+        backup_path=tmp_path / "mapping-before.sqlite3",
+    )
+    assert result["repaired"] == {"mappings": 1, "offers": 1}
+    with stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_seed_brands WHERE id=?", (mapping_id,)
+            ).fetchone()["brand_id"]
+            == target.brand_id
+        )
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_offers WHERE id=?", (offer.id,)
+            ).fetchone()["brand_id"]
+            == target.brand_id
+        )
+        assert (
+            connection.execute(
+                "SELECT action FROM partner_audit WHERE entity_type='offer' AND entity_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (offer.id,),
+            ).fetchone()["action"]
+            == "rebind"
+        )
+        assert (
+            connection.execute(
+                "SELECT action FROM partner_audit WHERE entity_type='brand_mapping' "
+                "AND entity_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (mapping_id,),
+            ).fetchone()["action"]
+            == "rebind"
+        )
+
+    replay = preview_partner_batch(stores, snapshot)
+    replay_operation = next(
+        item for item in replay["operations"] if item["kind"] == "partner_mapping_repair"
+    )
+    assert (replay_operation["status"], replay_operation["action"]) == (
+        "already_repaired",
+        "none",
+    )
+    assert replay["counts"]["approved_operations"] == 0
+
+
+def test_partner_mapping_repair_stale_offer_is_rejected_without_backup(tmp_path):
+    stores, partners, _brand_id = _database(tmp_path)
+    source = stores.apply_change(
+        "add_merchant", {"name": "Archived Helix", "channel": "offline"}, actor_id=1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Active Helix", "channel": "offline"}, actor_id=1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    stores.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, actor_id=1
+    )
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=source.brand_id,
+            card_id="helix-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+        source_key="helix:offer",
+    )
+    with stores.transaction() as connection:
+        mapping_id = connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?) RETURNING id",
+            ("helix:brand", source.brand_id),
+        ).fetchone()[0]
+    snapshot = _snapshot()
+    snapshot["partner_mapping_repairs"] = [
+        {
+            "source_key": "helix:brand",
+            "mapping_id": mapping_id,
+            "expected_brand_id": source.brand_id,
+            "target_brand_id": target.brand_id,
+            "offer_id": offer.id,
+            "offer_source_key": "helix:offer",
+            "expected_offer": _offer_guard(offer),
+        }
+    ]
+    report = preview_partner_batch(stores, snapshot)
+    with stores.transaction() as connection:
+        connection.execute(
+            "UPDATE partner_offers SET conditions='moderator edit' WHERE id=?", (offer.id,)
+        )
+    backup = tmp_path / "must-not-exist.sqlite3"
+    with pytest.raises(StalePartnerPlanError):
+        apply_partner_batch(
+            stores,
+            snapshot,
+            actor_id=1,
+            expected_plan_sha256=report["plan_sha256"],
+            backup_path=backup,
+        )
+    assert not backup.exists()
+    with stores.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_seed_brands WHERE id=?", (mapping_id,)
+            ).fetchone()["brand_id"]
+            == source.brand_id
+        )
+
+
+def _mapping_repair_fixture(tmp_path, *, target_offer=False, planned_offer=False):
+    stores, partners, _brand_id = _database(tmp_path)
+    source = stores.apply_change(
+        "add_merchant", {"name": "Repair Source", "channel": "offline"}, actor_id=1
+    )
+    target = stores.apply_change(
+        "add_merchant", {"name": "Repair Target", "channel": "offline"}, actor_id=1
+    )
+    assert source.brand_id is not None and target.brand_id is not None
+    stores.apply_change(
+        "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, actor_id=1
+    )
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand_id=source.brand_id,
+            card_id="repair-card",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+        ),
+        actor_id=1,
+        source_key="repair:source-offer",
+    )
+    if target_offer:
+        partners.create_offer(
+            PartnerOfferInput(
+                brand_id=target.brand_id,
+                card_id="repair-card",
+                channel="offline",
+                mode="total",
+                reward_kind="cash",
+                tiers=(PartnerTierInput(Decimal("2")),),
+            ),
+            actor_id=1,
+            source_key="repair:target-offer",
+        )
+    with stores.transaction() as connection:
+        mapping_id = connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?) RETURNING id",
+            ("repair:brand", source.brand_id),
+        ).fetchone()[0]
+    repair = {
+        "source_key": "repair:brand",
+        "mapping_id": mapping_id,
+        "expected_brand_id": source.brand_id,
+        "target_brand_id": target.brand_id,
+        "offer_id": offer.id,
+        "offer_source_key": "repair:source-offer",
+        "expected_offer": _offer_guard(offer),
+    }
+    snapshot = _snapshot()
+    if planned_offer:
+        snapshot["offers"] = [
+            _offer("repair:planned-offer", target.brand_id, card_id="repair-card")
+        ]
+    snapshot["partner_mapping_repairs"] = [repair]
+    return stores, snapshot
+
+
+def test_mapping_repair_holds_against_active_target_offer(tmp_path):
+    stores, snapshot = _mapping_repair_fixture(tmp_path, target_offer=True)
+
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "partner_mapping_repair"
+    )
+    assert (operation["status"], operation["action"]) == ("logical_overlap", "none")
+    assert report["counts"]["approved_repairs"] == 0
+    assert any(item["kind"] == "mapping_repair_conflict" for item in report["conflicts"])
+
+
+def test_mapping_repair_holds_when_guarded_offer_has_active_linked_exclusion(tmp_path):
+    stores, snapshot = _mapping_repair_fixture(tmp_path)
+    partners = PartnerRepository(stores)
+    repair = snapshot["partner_mapping_repairs"][0]
+    partners.create_exclusion(
+        PartnerExclusionInput(
+            brand_id=repair["expected_brand_id"],
+            card_id="repair-card",
+            reward_kind="cash",
+            channel="offline",
+            mcc="5411",
+            suppress_base=True,
+        ),
+        actor_id=1,
+        offer_id=repair["offer_id"],
+    )
+
+    report = preview_partner_batch(stores, snapshot)
+    operation = next(
+        item for item in report["operations"] if item["kind"] == "partner_mapping_repair"
+    )
+    assert (operation["status"], operation["action"]) == ("linked_exclusions", "none")
+    assert report["counts"]["approved_repairs"] == 0
+    assert any(
+        item["kind"] == "mapping_repair_conflict"
+        and item["reason"] == "guarded offer has active linked exclusions"
+        for item in report["conflicts"]
+    )
+
+
+def test_mapping_repair_holds_involved_planned_offer(tmp_path):
+    stores, snapshot = _mapping_repair_fixture(tmp_path, planned_offer=True)
+
+    report = preview_partner_batch(stores, snapshot)
+    repair = next(item for item in report["operations"] if item["kind"] == "partner_mapping_repair")
+    planned = next(
+        item for item in report["operations"] if item["source_key"] == "repair:planned-offer"
+    )
+    assert (repair["status"], repair["action"]) == ("logical_overlap", "none")
+    assert (planned["status"], planned["action"]) == ("mapping_repair_overlap", "none")
+    assert report["counts"]["approved_operations"] == 0
+
+
+def test_mapping_repairs_hold_against_each_other_after_rebinding(tmp_path):
+    stores, partners, _brand_id = _database(tmp_path)
+    target = stores.apply_change(
+        "add_merchant", {"name": "Shared Repair Target", "channel": "offline"}, actor_id=1
+    )
+    source_ids = []
+    offers = []
+    mapping_ids = []
+    for index in (1, 2):
+        source = stores.apply_change(
+            "add_merchant",
+            {"name": f"Shared Repair Source {index}", "channel": "offline"},
+            actor_id=1,
+        )
+        assert source.brand_id is not None and target.brand_id is not None
+        stores.apply_change(
+            "merge_brand", {"brand_id": source.brand_id, "target_id": target.brand_id}, actor_id=1
+        )
+        offer = partners.create_offer(
+            PartnerOfferInput(
+                brand_id=source.brand_id,
+                card_id="shared-repair-card",
+                channel="offline",
+                mode="total",
+                reward_kind="cash",
+                tiers=(PartnerTierInput(Decimal("2")),),
+            ),
+            actor_id=1,
+            source_key=f"repair:{index}:offer",
+        )
+        with stores.transaction() as connection:
+            mapping_id = connection.execute(
+                "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?) RETURNING id",
+                (f"repair:{index}:brand", source.brand_id),
+            ).fetchone()[0]
+        source_ids.append(source.brand_id)
+        offers.append(offer)
+        mapping_ids.append(mapping_id)
+
+    snapshot = _snapshot()
+    snapshot["partner_mapping_repairs"] = [
+        {
+            "source_key": f"repair:{index}:brand",
+            "mapping_id": mapping_id,
+            "expected_brand_id": source_id,
+            "target_brand_id": target.brand_id,
+            "offer_id": offer.id,
+            "offer_source_key": f"repair:{index}:offer",
+            "expected_offer": _offer_guard(offer),
+        }
+        for index, mapping_id, source_id, offer in zip(
+            (1, 2), mapping_ids, source_ids, offers, strict=True
+        )
+    ]
+    report = preview_partner_batch(stores, snapshot)
+    repairs = [item for item in report["operations"] if item["kind"] == "partner_mapping_repair"]
+    assert len(repairs) == 2
+    assert {(item["status"], item["action"]) for item in repairs} == {("logical_overlap", "none")}
+    assert report["counts"]["approved_repairs"] == 0
+
+
+def test_mapping_repair_on_legacy_mapping_schema_is_deterministic_conflict(tmp_path):
+    stores, snapshot = _mapping_repair_fixture(tmp_path)
+    with stores.transaction() as connection:
+        connection.execute("ALTER TABLE partner_seed_brands RENAME TO partner_seed_brands_legacy")
+        connection.execute(
+            """CREATE TABLE partner_seed_brands (
+            source_key TEXT PRIMARY KEY,
+            brand_id INTEGER NOT NULL REFERENCES store_brands(id))"""
+        )
+        connection.execute(
+            """INSERT INTO partner_seed_brands(source_key,brand_id)
+            SELECT source_key,brand_id FROM partner_seed_brands_legacy"""
+        )
+        connection.execute("DROP TABLE partner_seed_brands_legacy")
+        connection.execute(
+            "UPDATE partner_seed_brands SET brand_id=? WHERE source_key=?",
+            (snapshot["partner_mapping_repairs"][0]["target_brand_id"], "repair:brand"),
+        )
+
+    first = preview_partner_batch(stores, snapshot)
+    second = preview_partner_batch(stores, snapshot)
+    assert first == second
+    operation = next(
+        item for item in first["operations"] if item["kind"] == "partner_mapping_repair"
+    )
+    assert (operation["status"], operation["action"]) == ("schema_conflict", "none")
+    assert first["counts"]["approved_repairs"] == 0
+
+    ordinary = _snapshot(
+        _offer("legacy:ordinary", snapshot["partner_mapping_repairs"][0]["target_brand_id"])
+    )
+    ordinary_report = preview_partner_batch(stores, ordinary)
+    assert ordinary_report["counts"]["offers_new"] == 1
+    assert ordinary_report["counts"]["approved_inserts"] == 1
+
+    mapped_ordinary = _snapshot(
+        {
+            "source_key": "legacy:mapped",
+            "brand_key": "repair:brand",
+            "brand": "Repair Target",
+            "aliases": [],
+            "card_id": "legacy-mapped-card",
+            "channel": "offline",
+            "mode": "total",
+            "reward_kind": "cash",
+            "tiers": [{"value": "1"}],
+        }
+    )
+    mapped_report = preview_partner_batch(stores, mapped_ordinary)
+    assert mapped_report["counts"]["offers_new"] == 1
+    assert mapped_report["counts"]["approved_inserts"] == 1
+
+
+def test_bundled_partner_migration_20260911_keeps_reviewed_decisions():
+    snapshot = load_snapshot(
+        Path(__file__).parents[1] / "src" / "mcc_bot" / "data" / "partner_migration_20260911.json"
+    )
+
+    assert snapshot["reviewed"] is True
+    assert len(snapshot["offers"]) == 659
+    assert len(snapshot["exclusions"]) == 7
+    assert len(snapshot["offer_retirements"]) == 165
+    assert [item["offer_id"] for item in snapshot["manual_offer_retirements"]] == [209, 213]
+    assert len(snapshot["partner_mapping_repairs"]) == 1
+    repair = snapshot["partner_mapping_repairs"][0]
+    assert {key: repair[key] for key in repair if key != "expected_offer"} == {
+        "source_key": "brand:plushki:62ac1687",
+        "mapping_id": 178,
+        "expected_brand_id": 263,
+        "target_brand_id": 375,
+        "offer_id": 179,
+        "offer_source_key": "plushki:promo:03",
+    }
+    assert repair["expected_offer"]["brand_id"] == 263
+    assert repair["expected_offer"]["card_id"] == "vitamin_d"
+    assert snapshot["partner_seed_tombstones"][0]["source_key"] == "cashalot:21vek-by"
+    assert snapshot["partner_seed_tombstones"][0]["offer_id"] == 115
+    assert snapshot["problems"] == [
+        {
+            "action": "hold",
+            "brand": "ORO",
+            "kind": "ambiguous_reward",
+            "observed_combo_rate": "8",
+            "reason": "Плитка ORO и видимый popup содержат разные ставки; offer не создаётся.",
+            "source_id": 104700,
+            "source_key": "paritet:104700:paritet_combo:offline",
+        }
+    ]
+
+    offer_keys = {item["source_key"] for item in snapshot["offers"]}
+    assert "cashalot:21vek-by" not in offer_keys
+    assert "plushki:promo:03" not in offer_keys
+    assert {
+        "bnb:199999:online",
+        "paritet:111407:paritet_combo:online",
+        "plushki:promo:01",
+    } <= offer_keys

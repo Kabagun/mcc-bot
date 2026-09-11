@@ -3,8 +3,9 @@
 The command operates only on the explicitly selected SQLite database. Preview
 opens it in query-only mode and computes a deterministic plan; apply recomputes
 that plan, requires its SHA-256 token, takes a backup, and adds only rows which
-are still safe to insert. Existing partner rows are never updated; explicitly
-approved exact retirement rows may be archived atomically.
+are still safe to insert. Existing partner rows are never silently overwritten;
+explicitly guarded retirements, source tombstones, and mapping repairs may be
+applied atomically.
 """
 
 from __future__ import annotations
@@ -135,14 +136,21 @@ def _normalize_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
     """Copy snapshot rows while canonicalizing their stable lookup keys."""
 
     normalized = dict(raw)
-    for field in ("offers", "exclusions", "offer_retirements"):
+    for field in (
+        "offers",
+        "exclusions",
+        "offer_retirements",
+        "manual_offer_retirements",
+        "partner_mapping_repairs",
+        "partner_seed_tombstones",
+    ):
         rows = []
         for item in raw.get(field, []):
             if not isinstance(item, dict):
                 rows.append(item)
                 continue
             row = dict(item)
-            for key in ("source_key", "brand_key"):
+            for key in ("source_key", "brand_key", "offer_source_key"):
                 value = row.get(key)
                 if isinstance(value, str):
                     row[key] = value.strip()
@@ -162,11 +170,22 @@ def _snapshot_source_key_index(
         ("offers", "offer"),
         ("exclusions", "exclusion"),
         ("offer_retirements", "offer_retirement"),
+        ("partner_seed_tombstones", "partner_seed_tombstone"),
     ):
         for position, item in enumerate(raw.get(field, [])):
             if not isinstance(item, dict):
                 continue
             source_key = item.get("source_key")
+            if isinstance(source_key, str) and source_key:
+                index[source_key].append((kind, position))
+    for position, item in enumerate(raw.get("partner_mapping_repairs", [])):
+        if not isinstance(item, dict):
+            continue
+        for key, kind in (
+            ("source_key", "partner_mapping_repair"),
+            ("offer_source_key", "offer_rebind"),
+        ):
+            source_key = item.get(key)
             if isinstance(source_key, str) and source_key:
                 index[source_key].append((kind, position))
     return index
@@ -211,6 +230,13 @@ def load_snapshot(source: Path | str | dict[str, Any]) -> dict[str, Any]:
         raise PartnerBatchError("Snapshot must contain offers and exclusions lists")
     if "offer_retirements" in raw and not isinstance(raw["offer_retirements"], list):
         raise PartnerBatchError("Snapshot offer_retirements must be a list")
+    for field in (
+        "manual_offer_retirements",
+        "partner_mapping_repairs",
+        "partner_seed_tombstones",
+    ):
+        if field in raw and not isinstance(raw[field], list):
+            raise PartnerBatchError(f"Snapshot {field} must be a list")
     if "problems" in raw and not isinstance(raw["problems"], list):
         raise PartnerBatchError("Snapshot problems must be a list")
     return _normalize_snapshot(raw)
@@ -606,6 +632,81 @@ def _db_exclusion_record(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    """Return one table's columns without assuming the current schema revision."""
+
+    return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _active_linked_exclusion_ids(connection: sqlite3.Connection) -> set[int]:
+    """Return active exclusions which are explicitly owned by an offer.
+
+    The first partner-exclusion schema did not have ``offer_id``.  Such a
+    database cannot contain an explicitly linked exclusion, so keep the old
+    schema usable for ordinary (non-repair) batches.
+    """
+
+    if "offer_id" not in _table_columns(connection, "partner_exclusions"):
+        return set()
+    return {
+        row["offer_id"]
+        for row in connection.execute(
+            "SELECT offer_id FROM partner_exclusions WHERE offer_id IS NOT NULL AND archived=0"
+        )
+    }
+
+
+_OFFER_RECORD_FIELDS = frozenset(
+    {
+        "brand_id",
+        "card_id",
+        "channel",
+        "mode",
+        "reward_kind",
+        "starts_on",
+        "ends_on",
+        "conditions",
+        "source_url",
+        "tiers",
+    }
+)
+_TIER_RECORD_FIELDS = frozenset(
+    {
+        "value",
+        "min_purchase",
+        "max_purchase",
+        "per_transaction_cap",
+        "starts_on",
+        "ends_on",
+    }
+)
+
+
+def _offer_guard_record(value: Any, field: str) -> dict[str, Any]:
+    """Validate and canonicalize a complete persisted offer semantic guard."""
+
+    if not isinstance(value, dict):
+        raise PartnerBatchError(f"{field} must be an object")
+    missing = sorted(_OFFER_RECORD_FIELDS - value.keys())
+    if missing:
+        raise PartnerBatchError(f"{field} is missing: {', '.join(missing)}")
+    if not isinstance(value.get("tiers"), list) or not value["tiers"]:
+        raise PartnerBatchError(f"{field}.tiers must be a non-empty list")
+    for index, tier in enumerate(value["tiers"]):
+        if not isinstance(tier, dict):
+            raise PartnerBatchError(f"{field}.tiers[{index}] must be an object")
+        missing_tier = sorted(_TIER_RECORD_FIELDS - tier.keys())
+        if missing_tier:
+            raise PartnerBatchError(f"{field}.tiers[{index}] is missing: {', '.join(missing_tier)}")
+    brand_id = value.get("brand_id")
+    if isinstance(brand_id, bool) or not isinstance(brand_id, int) or brand_id < 1:
+        raise PartnerBatchError(f"{field}.brand_id must be a positive integer")
+    raw = dict(value)
+    raw["brand_id"] = brand_id
+    _payload, record = _offer_input(raw, brand_id)
+    return record
+
+
 def _conflict(kind: str, source_key: str | None, reason: str, **extra: Any) -> dict[str, Any]:
     result: dict[str, Any] = {"kind": kind, "source_key": source_key, "reason": reason}
     result.update(extra)
@@ -641,6 +742,8 @@ def _base_counts() -> dict[str, int]:
         "snapshot_problems": 0,
         "brands_new": 0,
         "brand_mappings_new": 0,
+        "partner_seed_tombstones_new": 0,
+        "approved_repairs": 0,
         "approved_archives": 0,
         "approved_inserts": 0,
         "approved_operations": 0,
@@ -697,6 +800,7 @@ def _analyse_retirements(
     existing_records: dict[int, dict[str, Any]],
     new_offer_keys: set[str],
     blocked_source_keys: set[str],
+    active_linked_exclusion_ids: set[int],
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -823,8 +927,20 @@ def _analyse_retirements(
         elif existing["archived"]:
             status, action = "already_archived", "none"
         elif existing_record == expected_record:
-            status, action = "retire", "archive"
-            safe_offer_ids.add(existing["id"])
+            if existing["id"] in active_linked_exclusion_ids:
+                status, action = "linked_exclusions", "none"
+                counts["conflict"] = counts.get("conflict", 0) + 1
+                conflicts.append(
+                    _conflict(
+                        "retirement_conflict",
+                        source_key,
+                        "guarded offer has active linked exclusions",
+                        offer_id=existing["id"],
+                    )
+                )
+            else:
+                status, action = "retire", "archive"
+                safe_offer_ids.add(existing["id"])
         else:
             status, action = "changed", "none"
             counts["conflict"] = counts.get("conflict", 0) + 1
@@ -851,6 +967,636 @@ def _analyse_retirements(
         )
 
     return operations, conflicts, counts, safe_offer_ids, collision_keys
+
+
+def _manual_offer_retirement_operation(
+    offer_id: int | None,
+    status: str,
+    action: str,
+    *,
+    expected_record: dict[str, Any] | None = None,
+    existing: sqlite3.Row | None = None,
+    existing_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    operation: dict[str, Any] = {
+        "kind": "manual_offer_retirement",
+        "source_key": None,
+        "status": status,
+        "action": action,
+        "offer_id": offer_id,
+        "brand_id": existing["brand_id"] if existing is not None else None,
+        "record": expected_record,
+    }
+    if existing is not None:
+        operation["existing_source_key"] = existing["source_key"]
+        operation["existing_record"] = existing_record
+    return operation
+
+
+def _analyse_manual_offer_retirements(
+    raw_items: list[Any],
+    *,
+    existing_by_id: dict[int, sqlite3.Row],
+    existing_records: dict[int, dict[str, Any]],
+    active_linked_exclusion_ids: set[int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int], set[int]]:
+    """Classify explicit source-less offer archives using immutable row guards."""
+
+    operations: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    safe_offer_ids: set[int] = set()
+    parsed: list[tuple[int, int, dict[str, Any]]] = []
+    duplicate_ids: set[int] = set()
+    seen_ids: set[int] = set()
+
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            reason = f"manual_offer_retirements[{index}] must be an object"
+            conflicts.append(_conflict("snapshot_problem", None, reason))
+            operations.append(_manual_offer_retirement_operation(None, "snapshot_problem", "none"))
+            continue
+        try:
+            offer_id = raw.get("offer_id")
+            if isinstance(offer_id, bool) or not isinstance(offer_id, int) or offer_id < 1:
+                raise PartnerBatchError(
+                    f"manual_offer_retirements[{index}].offer_id must be a positive integer"
+                )
+            expected_record = _offer_guard_record(
+                raw.get("expected_offer"), f"manual_offer_retirements[{index}].expected_offer"
+            )
+        except (PartnerBatchError, PartnerRewardError, TypeError, ValueError) as exc:
+            conflicts.append(_conflict("snapshot_problem", None, str(exc)))
+            operations.append(_manual_offer_retirement_operation(None, "snapshot_problem", "none"))
+            continue
+        if offer_id in seen_ids:
+            duplicate_ids.add(offer_id)
+        seen_ids.add(offer_id)
+        parsed.append((index, offer_id, expected_record))
+
+    for _index, offer_id, expected_record in parsed:
+        if offer_id in duplicate_ids:
+            reason = "offer_id appears more than once in manual_offer_retirements"
+            conflicts.append(
+                _conflict("manual_offer_retirement_conflict", None, reason, offer_id=offer_id)
+            )
+            operations.append(
+                _manual_offer_retirement_operation(
+                    offer_id, "duplicate", "none", expected_record=expected_record
+                )
+            )
+            continue
+        existing = existing_by_id.get(offer_id)
+        existing_record = existing_records.get(offer_id) if existing is not None else None
+        if existing is None:
+            status, action = "missing", "none"
+            conflicts.append(
+                _conflict(
+                    "manual_offer_retirement_conflict",
+                    None,
+                    "guarded manual offer does not exist",
+                    offer_id=offer_id,
+                )
+            )
+        elif existing["source_key"] is not None:
+            status, action = "source_backed", "none"
+            conflicts.append(
+                _conflict(
+                    "manual_offer_retirement_conflict",
+                    existing["source_key"],
+                    "guarded offer is source-backed, not source-less",
+                    offer_id=offer_id,
+                )
+            )
+        elif existing_record != expected_record:
+            status, action = "changed", "none"
+            conflicts.append(
+                _conflict(
+                    "manual_offer_retirement_conflict",
+                    None,
+                    "source-less offer differs from the immutable guard",
+                    offer_id=offer_id,
+                    expected_record=expected_record,
+                    existing_record=existing_record,
+                )
+            )
+        elif offer_id in active_linked_exclusion_ids:
+            status, action = "linked_exclusions", "none"
+            conflicts.append(
+                _conflict(
+                    "manual_offer_retirement_conflict",
+                    None,
+                    "guarded offer has active linked exclusions",
+                    offer_id=offer_id,
+                )
+            )
+        elif existing["archived"]:
+            status, action = "already_archived", "none"
+        else:
+            status, action = "retire", "archive"
+            safe_offer_ids.add(offer_id)
+        counts[status] = counts.get(status, 0) + 1
+        operations.append(
+            _manual_offer_retirement_operation(
+                offer_id,
+                status,
+                action,
+                expected_record=expected_record,
+                existing=existing,
+                existing_record=existing_record,
+            )
+        )
+    return operations, conflicts, counts, safe_offer_ids
+
+
+def _seed_tombstone_operation(
+    source_key: str | None,
+    status: str,
+    action: str,
+    *,
+    reason: str | None = None,
+    offer_id: int | None = None,
+    expected_record: dict[str, Any] | None = None,
+    existing: sqlite3.Row | None = None,
+    existing_tombstone_reason: str | None = None,
+) -> dict[str, Any]:
+    operation: dict[str, Any] = {
+        "kind": "partner_seed_tombstone",
+        "source_key": source_key,
+        "status": status,
+        "action": action,
+        "reason": reason,
+        "offer_id": offer_id,
+        "record": expected_record,
+        "existing_tombstone_reason": existing_tombstone_reason,
+    }
+    if existing is not None:
+        operation["existing_offer_archived"] = bool(existing["archived"])
+        operation["existing_offer_id"] = existing["id"]
+    return operation
+
+
+def _analyse_seed_tombstones(
+    raw_items: list[Any],
+    *,
+    tombstone_rows: dict[str, sqlite3.Row] | None,
+    existing_rows: dict[str, sqlite3.Row],
+    existing_records: dict[int, dict[str, Any]],
+    blocked_source_keys: set[str],
+    active_linked_exclusion_ids: set[int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int], set[int]]:
+    """Classify explicit partner source tombstones and optional guarded archives."""
+
+    operations: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    safe_offer_ids: set[int] = set()
+    seen_keys: set[str] = set()
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            reason = f"partner_seed_tombstones[{index}] must be an object"
+            conflicts.append(_conflict("snapshot_problem", None, reason))
+            operations.append(_seed_tombstone_operation(None, "snapshot_problem", "none"))
+            continue
+        source_key: str | None = None
+        try:
+            source_key = _text(
+                raw.get("source_key"),
+                f"partner_seed_tombstones[{index}].source_key",
+                required=True,
+            )
+            reason = _text(
+                raw.get("reason"), f"partner_seed_tombstones[{index}].reason", required=True
+            )
+            has_offer_guard = "offer_id" in raw or "expected_offer" in raw
+            offer_id: int | None = None
+            expected_record: dict[str, Any] | None = None
+            if has_offer_guard:
+                if "offer_id" not in raw or "expected_offer" not in raw:
+                    raise PartnerBatchError(
+                        "partner_seed_tombstones guarded archives require "
+                        "offer_id and expected_offer"
+                    )
+                value = raw["offer_id"]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise PartnerBatchError(
+                        f"partner_seed_tombstones[{index}].offer_id must be a positive integer"
+                    )
+                offer_id = value
+                expected_record = _offer_guard_record(
+                    raw["expected_offer"], f"partner_seed_tombstones[{index}].expected_offer"
+                )
+        except (PartnerBatchError, PartnerRewardError, TypeError, ValueError) as exc:
+            conflicts.append(_conflict("snapshot_problem", source_key, str(exc)))
+            operations.append(_seed_tombstone_operation(source_key, "snapshot_problem", "none"))
+            continue
+        assert source_key is not None
+        if source_key in seen_keys or source_key in blocked_source_keys:
+            reason_text = (
+                "source key appears more than once in partner_seed_tombstones"
+                if source_key in seen_keys
+                else "source key is used by multiple snapshot rows"
+            )
+            conflicts.append(_conflict("source_key_conflict", source_key, reason_text))
+            operations.append(
+                _seed_tombstone_operation(
+                    source_key,
+                    "source_key_conflict",
+                    "none",
+                    reason=reason,
+                    offer_id=offer_id,
+                    expected_record=expected_record,
+                )
+            )
+            seen_keys.add(source_key)
+            continue
+        seen_keys.add(source_key)
+        if tombstone_rows is None:
+            reason_text = "partner_seed_tombstones table is missing"
+            conflicts.append(_conflict("snapshot_problem", source_key, reason_text))
+            operations.append(
+                _seed_tombstone_operation(
+                    source_key,
+                    "snapshot_problem",
+                    "none",
+                    reason=reason,
+                    offer_id=offer_id,
+                    expected_record=expected_record,
+                )
+            )
+            continue
+        tombstone = tombstone_rows.get(source_key)
+        existing = existing_rows.get(source_key)
+        existing_record = existing_records.get(existing["id"]) if existing is not None else None
+        if tombstone is not None and tombstone["reason"] != reason:
+            status, action = "tombstone_changed", "none"
+            conflicts.append(
+                _conflict(
+                    "tombstone_conflict",
+                    source_key,
+                    "existing partner source tombstone has a different reason",
+                    existing_reason=tombstone["reason"],
+                    expected_reason=reason,
+                )
+            )
+        elif existing is not None and not existing["archived"]:
+            guard_matches = (
+                offer_id is not None
+                and expected_record is not None
+                and offer_id == existing["id"]
+                and existing_record == expected_record
+            )
+            if not guard_matches:
+                status, action = "active_offer_guard_conflict", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "active partner offer requires an exact archive guard",
+                        offer_id=existing["id"],
+                        expected_record=expected_record,
+                        existing_record=existing_record,
+                    )
+                )
+            elif existing["id"] in active_linked_exclusion_ids:
+                status, action = "linked_exclusions", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "guarded offer has active linked exclusions",
+                        offer_id=existing["id"],
+                    )
+                )
+            else:
+                status, action = "retire", "archive_and_tombstone"
+                safe_offer_ids.add(existing["id"])
+        elif existing is not None:
+            guard_matches = offer_id is None or (
+                offer_id == existing["id"]
+                and expected_record is not None
+                and existing_record == expected_record
+            )
+            if not guard_matches:
+                status, action = "changed", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "archived partner offer differs from the optional guard",
+                        offer_id=existing["id"],
+                        expected_record=expected_record,
+                        existing_record=existing_record,
+                    )
+                )
+            elif offer_id is not None and existing["id"] in active_linked_exclusion_ids:
+                status, action = "linked_exclusions", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "guarded offer has active linked exclusions",
+                        offer_id=existing["id"],
+                    )
+                )
+            elif tombstone is None:
+                status, action = "already_archived", "tombstone"
+            else:
+                status, action = "already_tombstoned", "none"
+        elif tombstone is None:
+            if offer_id is not None:
+                status, action = "missing_guarded_offer", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "guarded partner offer does not exist for the source key",
+                        offer_id=offer_id,
+                    )
+                )
+            else:
+                status, action = "missing", "tombstone"
+        else:
+            if offer_id is not None:
+                status, action = "missing_guarded_offer", "none"
+                conflicts.append(
+                    _conflict(
+                        "tombstone_conflict",
+                        source_key,
+                        "guarded partner offer does not exist for the source key",
+                        offer_id=offer_id,
+                    )
+                )
+            else:
+                status, action = "already_tombstoned", "none"
+        counts[status] = counts.get(status, 0) + 1
+        operations.append(
+            _seed_tombstone_operation(
+                source_key,
+                status,
+                action,
+                reason=reason,
+                offer_id=offer_id,
+                expected_record=expected_record,
+                existing=existing,
+                existing_tombstone_reason=tombstone["reason"] if tombstone is not None else None,
+            )
+        )
+    return operations, conflicts, counts, safe_offer_ids
+
+
+def _mapping_repair_operation(
+    source_key: str | None,
+    status: str,
+    action: str,
+    *,
+    offer_source_key: str | None = None,
+    mapping_id: int | None = None,
+    offer_id: int | None = None,
+    expected_brand_id: int | None = None,
+    target_brand_id: int | None = None,
+    expected_record: dict[str, Any] | None = None,
+    existing_record: dict[str, Any] | None = None,
+    existing_mapping_brand_id: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "kind": "partner_mapping_repair",
+        "source_key": source_key,
+        "offer_source_key": offer_source_key,
+        "status": status,
+        "action": action,
+        "mapping_id": mapping_id,
+        "offer_id": offer_id,
+        "expected_brand_id": expected_brand_id,
+        "target_brand_id": target_brand_id,
+        "record": expected_record,
+        "existing_record": existing_record,
+        "existing_mapping_brand_id": existing_mapping_brand_id,
+    }
+
+
+def _analyse_mapping_repairs(
+    raw_items: list[Any],
+    *,
+    connection: sqlite3.Connection,
+    mapping_rows: dict[str, sqlite3.Row],
+    mapping_id_supported: bool,
+    existing_by_id: dict[int, sqlite3.Row],
+    existing_records: dict[int, dict[str, Any]],
+    brands_by_id: dict[int, sqlite3.Row],
+    blocked_source_keys: set[str],
+    active_linked_exclusion_ids: set[int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    """Plan one explicit archived-brand mapping and offer rebind at a time."""
+
+    del connection  # Kept in the signature to make the read-only contract explicit.
+    operations: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    seen_keys: set[str] = set()
+    for index, raw in enumerate(raw_items):
+        source_key: str | None = None
+        offer_source_key: str | None = None
+        expected_record: dict[str, Any] | None = None
+        mapping_id: int | None = None
+        offer_id: int | None = None
+        expected_brand_id: int | None = None
+        target_brand_id: int | None = None
+        try:
+            if not isinstance(raw, dict):
+                raise PartnerBatchError(f"partner_mapping_repairs[{index}] must be an object")
+            source_key = _text(
+                raw.get("source_key"),
+                f"partner_mapping_repairs[{index}].source_key",
+                required=True,
+            )
+            offer_source_key = _text(
+                raw.get("offer_source_key"),
+                f"partner_mapping_repairs[{index}].offer_source_key",
+                required=True,
+            )
+            for field in ("expected_brand_id", "target_brand_id", "offer_id"):
+                value = raw.get(field)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise PartnerBatchError(
+                        f"partner_mapping_repairs[{index}].{field} must be a positive integer"
+                    )
+                if field == "expected_brand_id":
+                    expected_brand_id = value
+                elif field == "target_brand_id":
+                    target_brand_id = value
+                else:
+                    offer_id = value
+            expected_record = _offer_guard_record(
+                raw.get("expected_offer"), f"partner_mapping_repairs[{index}].expected_offer"
+            )
+            if expected_record["brand_id"] != expected_brand_id:
+                raise PartnerBatchError(
+                    "partner_mapping_repairs.expected_offer.brand_id must equal expected_brand_id"
+                )
+            mapping_id = raw.get("mapping_id")
+            if mapping_id is not None and (
+                isinstance(mapping_id, bool) or not isinstance(mapping_id, int) or mapping_id < 1
+            ):
+                raise PartnerBatchError(
+                    f"partner_mapping_repairs[{index}].mapping_id must be a positive integer"
+                )
+        except (PartnerBatchError, PartnerRewardError, TypeError, ValueError) as exc:
+            conflicts.append(_conflict("snapshot_problem", source_key, str(exc)))
+            operations.append(
+                _mapping_repair_operation(
+                    source_key,
+                    "snapshot_problem",
+                    "none",
+                    offer_source_key=offer_source_key,
+                    mapping_id=mapping_id,
+                    offer_id=offer_id,
+                    expected_brand_id=expected_brand_id,
+                    target_brand_id=target_brand_id,
+                    expected_record=expected_record,
+                )
+            )
+            continue
+        assert source_key is not None
+        assert offer_source_key is not None
+        assert offer_id is not None
+        assert expected_brand_id is not None
+        assert target_brand_id is not None
+        if (
+            source_key in seen_keys
+            or source_key in blocked_source_keys
+            or offer_source_key in blocked_source_keys
+        ):
+            reason = (
+                "source key appears more than once in partner_mapping_repairs"
+                if source_key in seen_keys
+                else "source key is used by multiple snapshot rows"
+            )
+            conflicts.append(_conflict("source_key_conflict", source_key, reason))
+            operations.append(
+                _mapping_repair_operation(
+                    source_key,
+                    "source_key_conflict",
+                    "none",
+                    offer_source_key=offer_source_key,
+                    mapping_id=mapping_id,
+                    offer_id=offer_id,
+                    expected_brand_id=expected_brand_id,
+                    target_brand_id=target_brand_id,
+                    expected_record=expected_record,
+                )
+            )
+            seen_keys.add(source_key)
+            continue
+        seen_keys.add(source_key)
+        if not mapping_id_supported:
+            status = "schema_conflict"
+            conflicts.append(
+                _conflict(
+                    "mapping_repair_conflict",
+                    source_key,
+                    "partner_seed_brands table has no stable id column for mapping repair",
+                )
+            )
+            counts[status] = counts.get(status, 0) + 1
+            operations.append(
+                _mapping_repair_operation(
+                    source_key,
+                    status,
+                    "none",
+                    offer_source_key=offer_source_key,
+                    mapping_id=mapping_id,
+                    offer_id=offer_id,
+                    expected_brand_id=expected_brand_id,
+                    target_brand_id=target_brand_id,
+                    expected_record=expected_record,
+                )
+            )
+            continue
+        mapping = mapping_rows.get(source_key)
+        offer = existing_by_id.get(offer_id)
+        source_brand = brands_by_id.get(expected_brand_id)
+        target_brand = brands_by_id.get(target_brand_id)
+        current_record = existing_records.get(offer_id) if offer is not None else None
+        status, action = "missing", "none"
+        reason: str | None = None
+        if mapping is None:
+            reason = "partner source mapping does not exist"
+        elif mapping_id is not None and mapping["id"] != mapping_id:
+            reason = "partner source mapping id changed"
+        elif mapping["brand_id"] not in {expected_brand_id, target_brand_id}:
+            reason = "partner source mapping points to an unexpected brand"
+        elif source_brand is None or not source_brand["archived"]:
+            reason = "source brand is not archived"
+        elif source_brand["merged_into"] != target_brand_id:
+            reason = "source brand does not directly merge into the target"
+        elif (
+            target_brand is None
+            or target_brand["archived"]
+            or target_brand["merged_into"] is not None
+        ):
+            reason = "target brand is not a direct active merge target"
+        elif offer is None:
+            reason = "guarded partner offer does not exist"
+        elif offer["source_key"] != offer_source_key:
+            reason = "guarded partner offer source key changed"
+        elif offer["archived"]:
+            reason = "guarded partner offer is archived"
+        elif mapping["brand_id"] == expected_brand_id:
+            if offer["brand_id"] != expected_brand_id:
+                reason = "partner offer is not bound to the archived source brand"
+            elif current_record != expected_record:
+                reason = "partner offer differs from the immutable guard"
+            elif offer_id in active_linked_exclusion_ids:
+                status, action = "linked_exclusions", "none"
+                conflicts.append(
+                    _conflict(
+                        "mapping_repair_conflict",
+                        source_key,
+                        "guarded offer has active linked exclusions",
+                        offer_id=offer_id,
+                    )
+                )
+            else:
+                status, action = "repair", "repair"
+        else:
+            replay_record = dict(expected_record)
+            replay_record["brand_id"] = target_brand_id
+            if offer["brand_id"] == target_brand_id and current_record == replay_record:
+                status, action = "already_repaired", "none"
+            else:
+                reason = "mapping and offer are in a partial or unexpected repair state"
+        if reason is not None:
+            status = "conflict"
+            conflicts.append(
+                _conflict(
+                    "mapping_repair_conflict",
+                    source_key,
+                    reason,
+                    offer_id=offer_id,
+                    expected_record=expected_record,
+                    existing_record=current_record,
+                    expected_brand_id=expected_brand_id,
+                    target_brand_id=target_brand_id,
+                )
+            )
+        counts[status] = counts.get(status, 0) + 1
+        operations.append(
+            _mapping_repair_operation(
+                source_key,
+                status,
+                action,
+                offer_source_key=offer_source_key,
+                mapping_id=mapping["id"] if mapping is not None else mapping_id,
+                offer_id=offer_id,
+                expected_brand_id=expected_brand_id,
+                target_brand_id=target_brand_id,
+                expected_record=expected_record,
+                existing_record=current_record,
+                existing_mapping_brand_id=mapping["brand_id"] if mapping is not None else None,
+            )
+        )
+    return operations, conflicts, counts
 
 
 def _operation_sort_key(item: dict[str, Any]) -> tuple[str, str, int]:
@@ -1215,21 +1961,174 @@ def _offer_overlap_conflicts(
     return conflicts, overlapping
 
 
+def _post_repair_overlap_conflicts(
+    mapping_operations: list[dict[str, Any]],
+    offer_operations: list[dict[str, Any]],
+    existing_rows: list[sqlite3.Row],
+    existing_records: dict[int, dict[str, Any]],
+    safe_offer_ids: set[int],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Hold repairs which would collide after rebinding to their target brand.
+
+    A mapping repair changes the offer's effective brand without changing its
+    source identity or other runtime dimensions.  Compare that hypothetical
+    post-repair record against persisted target-brand offers, planned inserts,
+    and sibling repairs before approving either side of a collision.
+    """
+
+    repairs = [operation for operation in mapping_operations if operation["action"] == "repair"]
+    planned = [operation for operation in offer_operations if operation["action"] == "insert"]
+    conflicts: list[dict[str, Any]] = []
+    affected_repairs: set[int] = set()
+    affected_planned: set[str] = set()
+    seen_pairs: set[tuple[str, str, str]] = set()
+
+    def candidate(operation: dict[str, Any]) -> dict[str, Any]:
+        record = dict(operation["record"])
+        if operation["kind"] == "partner_mapping_repair":
+            record["brand_id"] = operation["target_brand_id"]
+        return record
+
+    def report_pair(
+        repair: dict[str, Any],
+        other: dict[str, Any] | sqlite3.Row,
+        other_record: dict[str, Any],
+        *,
+        other_kind: str,
+    ) -> None:
+        repair_key = str(repair.get("source_key") or "")
+        if isinstance(other, sqlite3.Row):
+            other_key = str(other["source_key"] or "")
+            other_id = other["id"]
+        else:
+            other_key = str(other.get("source_key") or "")
+            other_id = other.get("offer_id")
+        pair_key = (repair_key, other_kind, other_key or str(other_id or ""))
+        if pair_key in seen_pairs:
+            return
+        seen_pairs.add(pair_key)
+        dimensions = _offer_overlap_dimensions(
+            candidate(repair),
+            other_record,
+            source_key=repair_key,
+            existing_source_key=other_key or None,
+        )
+        affected_repairs.add(id(repair))
+        if other_kind == "planned_offer":
+            affected_planned.add(other_key)
+        details = {
+            "offer_id": repair.get("offer_id"),
+            "target_brand_id": repair.get("target_brand_id"),
+            "conflict_with_kind": other_kind,
+            "conflict_with_source_key": other_key or None,
+            "conflict_with_offer_id": other_id,
+            "dimensions": list(dimensions),
+        }
+        conflicts.append(
+            _conflict(
+                "mapping_repair_conflict",
+                repair.get("source_key"),
+                "mapping repair would duplicate or overlap an offer after rebinding",
+                **details,
+            )
+        )
+        if other_kind == "planned_offer":
+            conflicts.append(
+                _conflict(
+                    "mapping_repair_conflict",
+                    other.get("source_key"),  # type: ignore[union-attr]
+                    "planned offer would duplicate or overlap a mapping repair",
+                    **{
+                        "offer_id": other.get("offer_id"),  # type: ignore[union-attr]
+                        "target_brand_id": repair.get("target_brand_id"),
+                        "conflict_with_kind": "partner_mapping_repair",
+                        "conflict_with_source_key": repair.get("source_key"),
+                        "conflict_with_offer_id": repair.get("offer_id"),
+                        "dimensions": list(dimensions),
+                    },
+                )
+            )
+
+    for repair in repairs:
+        target_brand_id = repair["target_brand_id"]
+        repair_record = candidate(repair)
+        for row in existing_rows:
+            if (
+                row["archived"]
+                or row["id"] in safe_offer_ids
+                or row["id"] == repair.get("offer_id")
+                or row["brand_id"] != target_brand_id
+                or row["card_id"] != repair_record["card_id"]
+            ):
+                continue
+            other_record = existing_records.get(row["id"])
+            if other_record is None:
+                continue
+            if not _channels_overlap(repair_record["channel"], other_record["channel"]):
+                continue
+            if not _date_windows_overlap(repair_record, other_record):
+                continue
+            report_pair(repair, row, other_record, other_kind="active_target_offer")
+
+        for other in planned:
+            if (
+                other["source_key"] == repair.get("offer_source_key")
+                or other.get("brand_id") != target_brand_id
+            ):
+                continue
+            other_record = other["record"]
+            if other_record["card_id"] != repair_record["card_id"]:
+                continue
+            if not _channels_overlap(repair_record["channel"], other_record["channel"]):
+                continue
+            if not _date_windows_overlap(repair_record, other_record):
+                continue
+            report_pair(repair, other, other_record, other_kind="planned_offer")
+
+    for index, left in enumerate(repairs):
+        left_record = candidate(left)
+        for right in repairs[index + 1 :]:
+            if left["target_brand_id"] != right["target_brand_id"]:
+                continue
+            right_record = candidate(right)
+            if right_record["card_id"] != left_record["card_id"]:
+                continue
+            if not _channels_overlap(left_record["channel"], right_record["channel"]):
+                continue
+            if not _date_windows_overlap(left_record, right_record):
+                continue
+            report_pair(left, right, right_record, other_kind="mapping_repair")
+            report_pair(right, left, left_record, other_kind="mapping_repair")
+
+    for operation in mapping_operations:
+        if id(operation) in affected_repairs:
+            operation["status"] = "logical_overlap"
+            operation["action"] = "none"
+    for operation in offer_operations:
+        if operation["source_key"] in affected_planned:
+            operation["status"] = "mapping_repair_overlap"
+            operation["action"] = "none"
+    return conflicts, len(affected_repairs), len(affected_planned)
+
+
 def _plan_payload(
     raw: dict[str, Any], connection: sqlite3.Connection, stores: StoreRepository
 ) -> dict[str, Any]:
     _require_schema(connection)
-    tombstones = (
+    tombstone_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='partner_seed_tombstones'"
+    ).fetchone()
+    tombstone_rows = (
         {
-            row["source_key"]
-            for row in connection.execute("SELECT source_key FROM partner_seed_tombstones")
+            row["source_key"]: row
+            for row in connection.execute("SELECT * FROM partner_seed_tombstones")
         }
-        if connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='partner_seed_tombstones'"
-        ).fetchone()
-        else set()
+        if tombstone_table
+        else None
     )
+    tombstones = set(tombstone_rows) if tombstone_rows is not None else set()
     all_offer_rows = list(connection.execute("SELECT * FROM partner_offers"))
+    existing_offers_by_id = {row["id"]: row for row in all_offer_rows}
     offer_rows = {row["source_key"]: row for row in all_offer_rows if row["source_key"] is not None}
     exclusion_rows = {
         row["source_key"]: row
@@ -1245,6 +2144,7 @@ def _plan_payload(
         key: entries for key, entries in source_key_index.items() if len(entries) > 1
     }
     source_key_collision_keys = set(source_key_conflict_entries)
+    active_linked_exclusion_ids = _active_linked_exclusion_ids(connection)
     source_key_conflicts = [
         _conflict(
             "source_key_conflict",
@@ -1266,7 +2166,50 @@ def _plan_payload(
         existing_records=offer_records_by_id,
         new_offer_keys=_snapshot_source_keys(raw["offers"]),
         blocked_source_keys=source_key_collision_keys,
+        active_linked_exclusion_ids=active_linked_exclusion_ids,
     )
+    (
+        manual_retirement_ops,
+        manual_retirement_conflicts,
+        manual_retirement_counts,
+        safe_manual_offer_ids,
+    ) = _analyse_manual_offer_retirements(
+        raw.get("manual_offer_retirements", []),
+        existing_by_id=existing_offers_by_id,
+        existing_records=offer_records_by_id,
+        active_linked_exclusion_ids=active_linked_exclusion_ids,
+    )
+    (
+        tombstone_ops,
+        tombstone_conflicts,
+        tombstone_counts,
+        safe_tombstone_offer_ids,
+    ) = _analyse_seed_tombstones(
+        raw.get("partner_seed_tombstones", []),
+        tombstone_rows=tombstone_rows,
+        existing_rows=offer_rows,
+        existing_records=offer_records_by_id,
+        blocked_source_keys=source_key_collision_keys,
+        active_linked_exclusion_ids=active_linked_exclusion_ids,
+    )
+    mapping_columns = _table_columns(connection, "partner_seed_brands")
+    mapping_rows = {
+        row["source_key"]: row for row in connection.execute("SELECT * FROM partner_seed_brands")
+    }
+    brand_rows = {row["id"]: row for row in connection.execute("SELECT * FROM store_brands")}
+    mapping_repair_ops, mapping_repair_conflicts, mapping_repair_counts = _analyse_mapping_repairs(
+        raw.get("partner_mapping_repairs", []),
+        connection=connection,
+        mapping_rows=mapping_rows,
+        mapping_id_supported="id" in mapping_columns,
+        existing_by_id=existing_offers_by_id,
+        existing_records=offer_records_by_id,
+        brands_by_id=brand_rows,
+        blocked_source_keys=source_key_collision_keys,
+        active_linked_exclusion_ids=active_linked_exclusion_ids,
+    )
+    safe_retired_offer_ids.update(safe_manual_offer_ids)
+    safe_retired_offer_ids.update(safe_tombstone_offer_ids)
     offer_existing_signatures: dict[str, set[str]] = defaultdict(set)
     for key, row in offer_rows.items():
         if not row["archived"] and row["id"] not in safe_retired_offer_ids:
@@ -1317,13 +2260,37 @@ def _plan_payload(
             operation["status"] = "logical_overlap"
             operation["action"] = "none"
     offer_counts["logical_overlaps"] = overlap_count
+    (
+        mapping_overlap_conflicts,
+        mapping_overlap_repairs,
+        mapping_overlap_planned,
+    ) = _post_repair_overlap_conflicts(
+        mapping_repair_ops,
+        offer_ops,
+        all_offer_rows,
+        offer_records_by_id,
+        safe_retired_offer_ids,
+    )
+    if mapping_overlap_repairs:
+        mapping_repair_counts["repair"] = max(
+            0, mapping_repair_counts.get("repair", 0) - mapping_overlap_repairs
+        )
+        mapping_repair_counts["logical_overlap"] = (
+            mapping_repair_counts.get("logical_overlap", 0) + mapping_overlap_repairs
+        )
+    if mapping_overlap_planned:
+        offer_counts["mapping_repair_overlaps"] = mapping_overlap_planned
     conflicts = (
         source_key_conflicts
         + retirement_conflicts
+        + manual_retirement_conflicts
+        + tombstone_conflicts
+        + mapping_repair_conflicts
         + offer_conflicts
         + exclusion_conflicts
         + snapshot_overlap_conflicts
         + overlap_conflicts
+        + mapping_overlap_conflicts
     )
     for problem in raw.get("problems", []):
         if isinstance(problem, dict):
@@ -1340,13 +2307,26 @@ def _plan_payload(
         counts[f"{prefix}_mapping_conflicts"] = counts[f"{prefix}_mapping_conflict"]
     for key, value in retirement_counts.items():
         counts[f"offer_retirements_{key}"] = value
-    partner_operations = retirement_ops + offer_ops + exclusion_ops
+    for key, value in manual_retirement_counts.items():
+        counts[f"manual_offer_retirements_{key}"] = value
+    for key, value in tombstone_counts.items():
+        counts[f"partner_seed_tombstones_{key}"] = value
+    for key, value in mapping_repair_counts.items():
+        counts[f"partner_mapping_repairs_{key}"] = value
+    partner_operations = (
+        retirement_ops
+        + manual_retirement_ops
+        + tombstone_ops
+        + mapping_repair_ops
+        + offer_ops
+        + exclusion_ops
+    )
     mapped_keys = {
         row["source_key"]
         for row in connection.execute("SELECT source_key FROM partner_seed_brands")
     }
     approved_partner_operations = [
-        operation for operation in partner_operations if operation["action"] == "insert"
+        operation for operation in (offer_ops + exclusion_ops) if operation["action"] == "insert"
     ]
     planned_keys = {
         operation["brand_key"]
@@ -1393,15 +2373,30 @@ def _plan_payload(
         }
         for brand_key, target in sorted(mapping_targets.items())
     ]
+    approved_tombstone_operations = [
+        operation
+        for operation in tombstone_ops
+        if operation["action"] in {"tombstone", "archive_and_tombstone"}
+        and operation.get("existing_tombstone_reason") is None
+    ]
+    approved_repair_operations = [
+        operation for operation in mapping_repair_ops if operation["action"] == "repair"
+    ]
     counts["brands_new"] = len(brand_operations)
     counts["brand_mappings_new"] = len(mapping_operations)
     approved = approved_partner_operations + brand_operations + mapping_operations
     approved_archives = [
-        operation for operation in retirement_ops if operation["action"] == "archive"
+        operation
+        for operation in (retirement_ops + manual_retirement_ops + tombstone_ops)
+        if operation["action"] in {"archive", "archive_and_tombstone"}
     ]
     counts["approved_archives"] = len(approved_archives)
-    counts["approved_inserts"] = len(approved)
-    counts["approved_operations"] = counts["approved_inserts"] + counts["approved_archives"]
+    counts["partner_seed_tombstones_new"] = len(approved_tombstone_operations)
+    counts["approved_repairs"] = len(approved_repair_operations)
+    counts["approved_inserts"] = len(approved) + len(approved_tombstone_operations)
+    counts["approved_operations"] = (
+        counts["approved_inserts"] + counts["approved_archives"] + counts["approved_repairs"]
+    )
     counts["approved_partner_rows"] = len(approved_partner_operations)
     counts["source_key_conflicts"] = len(source_key_conflicts)
     counts["snapshot_problems"] = len(raw.get("problems", []))
@@ -1426,6 +2421,9 @@ def _plan_payload(
             "offers": len(raw["offers"]),
             "exclusions": len(raw["exclusions"]),
             "offer_retirements": len(raw.get("offer_retirements", [])),
+            "manual_offer_retirements": len(raw.get("manual_offer_retirements", [])),
+            "partner_mapping_repairs": len(raw.get("partner_mapping_repairs", [])),
+            "partner_seed_tombstones": len(raw.get("partner_seed_tombstones", [])),
             "problems": len(raw.get("problems", [])),
         },
     }
@@ -1447,6 +2445,100 @@ def preview_partner_batch(
         payload = _plan_payload(raw, connection, stores)
     plan_sha = _sha256(_canonical(payload))
     return {**payload, "plan_sha256": plan_sha}
+
+
+def _apply_mapping_repair(
+    partners: PartnerRepository,
+    connection: sqlite3.Connection,
+    operation: dict[str, Any],
+    *,
+    actor_id: int,
+) -> None:
+    """Apply one exact mapping/offer rebind inside the caller transaction."""
+
+    source_key = operation.get("source_key")
+    offer_source_key = operation.get("offer_source_key")
+    mapping_id = operation.get("mapping_id")
+    offer_id = operation.get("offer_id")
+    expected_brand_id = operation.get("expected_brand_id")
+    target_brand_id = operation.get("target_brand_id")
+    expected_record = operation.get("record")
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0
+        for value in (mapping_id, offer_id, expected_brand_id, target_brand_id)
+    ):
+        raise StalePartnerPlanError("Mapping repair guard is incomplete")
+    if not isinstance(source_key, str) or not isinstance(offer_source_key, str):
+        raise StalePartnerPlanError("Mapping repair source guard is incomplete")
+    if "id" not in _table_columns(connection, "partner_seed_brands"):
+        raise StalePartnerPlanError("Partner source mapping has no stable id column")
+    mapping = connection.execute(
+        "SELECT * FROM partner_seed_brands WHERE id=? AND source_key=?",
+        (mapping_id, source_key),
+    ).fetchone()
+    if mapping is None or mapping["brand_id"] != expected_brand_id:
+        raise StalePartnerPlanError("Partner source mapping changed before repair")
+    source_brand = connection.execute(
+        "SELECT archived,merged_into FROM store_brands WHERE id=?", (expected_brand_id,)
+    ).fetchone()
+    target_brand = connection.execute(
+        "SELECT archived,merged_into FROM store_brands WHERE id=?", (target_brand_id,)
+    ).fetchone()
+    if (
+        source_brand is None
+        or not source_brand["archived"]
+        or source_brand["merged_into"] != target_brand_id
+        or target_brand is None
+        or target_brand["archived"]
+        or target_brand["merged_into"] is not None
+    ):
+        raise StalePartnerPlanError("Brand merge guard changed before repair")
+    offer = connection.execute(
+        "SELECT * FROM partner_offers WHERE id=? AND source_key=?",
+        (offer_id, offer_source_key),
+    ).fetchone()
+    if offer is None or offer["archived"] or offer["brand_id"] != expected_brand_id:
+        raise StalePartnerPlanError("Partner offer guard changed before repair")
+    if offer_id in _active_linked_exclusion_ids(connection):
+        raise StalePartnerPlanError("Partner offer has active linked exclusions")
+    current_record = _db_offer_record(connection, offer)
+    if current_record != expected_record:
+        raise StalePartnerPlanError("Partner offer content changed before repair")
+    mapping_update = connection.execute(
+        "UPDATE partner_seed_brands SET brand_id=? WHERE id=? AND source_key=? AND brand_id=?",
+        (target_brand_id, mapping_id, source_key, expected_brand_id),
+    )
+    if mapping_update.rowcount != 1:
+        raise StalePartnerPlanError("Partner source mapping changed before repair")
+    partners._audit(
+        connection,
+        "brand_mapping",
+        mapping_id,
+        "rebind",
+        actor_id,
+        {
+            "source_key": source_key,
+            "before": {"brand_id": expected_brand_id},
+            "after": {"brand_id": target_brand_id},
+        },
+    )
+    connection.execute(
+        "UPDATE partner_offers SET brand_id=?,updated_by=?,updated_at=CURRENT_TIMESTAMP "
+        "WHERE id=? AND source_key=? AND brand_id=? AND archived=0",
+        (target_brand_id, actor_id, offer_id, offer_source_key, expected_brand_id),
+    )
+    updated = connection.execute("SELECT * FROM partner_offers WHERE id=?", (offer_id,)).fetchone()
+    if updated is None or updated["brand_id"] != target_brand_id:
+        raise StalePartnerPlanError("Partner offer changed before repair")
+    after_record = _db_offer_record(connection, updated)
+    partners._audit(
+        connection,
+        "offer",
+        offer_id,
+        "rebind",
+        actor_id,
+        {"before": current_record, "after": after_record},
+    )
 
 
 def _backup_database(
@@ -1534,6 +2626,8 @@ def apply_partner_batch(
         backup = _backup_database(stores, source, fresh["plan_sha256"], backup_path)
     inserted = {"offers": 0, "exclusions": 0}
     archived = {"offers": 0}
+    repaired = {"mappings": 0, "offers": 0}
+    tombstoned = 0
     created_brands: dict[str, int] = {}
     operation_rows = _snapshot_operation_rows(raw)
     with stores.transaction() as connection:
@@ -1549,9 +2643,17 @@ def apply_partner_batch(
         # the surrounding transaction rolls the archive back if a later write
         # fails.
         for operation in ordered_operations:
-            if operation["kind"] != "offer_retirement" or operation["action"] != "archive":
+            if operation["action"] not in {"archive", "archive_and_tombstone"}:
+                continue
+            if operation["kind"] not in {
+                "offer_retirement",
+                "manual_offer_retirement",
+                "partner_seed_tombstone",
+            }:
                 continue
             offer_id = operation.get("offer_id")
+            if offer_id in _active_linked_exclusion_ids(connection):
+                raise StalePartnerPlanError("Offer has active linked exclusions")
             if offer_id is None or not partners.delete_offer(
                 offer_id,
                 actor_id=actor_id,
@@ -1560,11 +2662,37 @@ def apply_partner_batch(
                 raise StalePartnerPlanError("Offer changed before retirement")
             archived["offers"] += 1
         for operation in ordered_operations:
-            if operation["kind"] == "offer_retirement":
+            if operation["kind"] != "partner_mapping_repair" or operation["action"] != "repair":
                 continue
-            if operation["action"] != "insert":
+            _apply_mapping_repair(partners, connection, operation, actor_id=actor_id)
+            repaired["mappings"] += 1
+            repaired["offers"] += 1
+        for operation in ordered_operations:
+            if operation["kind"] in {
+                "offer_retirement",
+                "manual_offer_retirement",
+                "partner_mapping_repair",
+            }:
+                continue
+            if operation["action"] != "insert" and not (
+                operation["kind"] == "partner_seed_tombstone"
+                and operation["action"] in {"tombstone", "archive_and_tombstone"}
+            ):
                 continue
             source_key = operation["source_key"]
+            if operation["kind"] == "partner_seed_tombstone":
+                existing_tombstone = connection.execute(
+                    "SELECT reason FROM partner_seed_tombstones WHERE source_key=?", (source_key,)
+                ).fetchone()
+                if existing_tombstone is None:
+                    connection.execute(
+                        "INSERT INTO partner_seed_tombstones(source_key,reason) VALUES(?,?)",
+                        (source_key, operation.get("reason")),
+                    )
+                    tombstoned += 1
+                elif existing_tombstone["reason"] != operation.get("reason"):
+                    raise StalePartnerPlanError("Partner source tombstone changed before apply")
+                continue
             if operation["kind"] == "brand":
                 record = operation["record"]
                 result = stores.apply_change(
@@ -1631,6 +2759,8 @@ def apply_partner_batch(
         "backup_path": str(backup),
         "inserted": inserted,
         "archived": archived,
+        "repaired": repaired,
+        "tombstoned": tombstoned,
         "counts": fresh["counts"],
         "database_fingerprint": fresh["database_fingerprint"],
     }
