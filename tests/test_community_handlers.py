@@ -1222,6 +1222,10 @@ def test_superadmin_role_ui_promotion_and_notification(flow):
     assert service.role(10) == "superadmin"
     assert "повышены до суперадминистратора" in flow.bot.send_message.await_args.kwargs["text"]
     assert "Пользователь уведомлён" in promoted.effective_message.reply_text.await_args.args[0]
+    managed = click(flow, f"role_view:10:{service.role_epoch(10)}", 2)
+    managed_labels = [button.text for button in all_buttons(managed)]
+    assert "Понизить до помощника" in managed_labels
+    assert "Отозвать доступ" in managed_labels
     roles = click(flow, "roles", 1)
     assert any("Суперадмин · @future_super" in button.text for button in all_buttons(roles))
     own_roles = click(flow, "roles", 10)
@@ -1241,6 +1245,43 @@ def test_superadmin_role_ui_promotion_and_notification(flow):
     assert "доступ помощника или суперадминистратора отозван" in (
         flow.bot.send_message.await_args.kwargs["text"].lower()
     )
+
+
+def test_superadmin_role_ui_hides_foreign_actions_and_rejects_stale_buttons(flow):
+    service = flow.application.bot_data["community"]
+    service.set_role(1, 2, True, role="superadmin")
+    service.set_role(1, 3, True)
+    service.set_role(1, 3, True, role="superadmin")
+
+    foreign = click(flow, f"role_view:3:{service.role_epoch(3)}", 2)
+    foreign_labels = [button.text for button in all_buttons(foreign)]
+    assert "Понизить до помощника" not in foreign_labels
+    assert "Отозвать доступ" not in foreign_labels
+    forged = click(flow, f"role:3:{service.role_epoch(3)}:admin", 2)
+    assert service.role(3) == "superadmin"
+    assert "кого он сам повысил последним" in forged.effective_message.reply_text.await_args.args[0]
+
+    service.request_role(10, "managed_super", "Managed")
+    service.set_role(2, 10, True, require_pending=True)
+    service.set_role(2, 10, True, role="superadmin")
+    old_epoch = service.role_epoch(10)
+    managed = click(flow, f"role_view:10:{old_epoch}", 2)
+    assert "Понизить до помощника" in [button.text for button in all_buttons(managed)]
+
+    service.set_role(1, 10, True, role="admin")
+    service.set_role(1, 10, True, role="superadmin")
+    stale = click(flow, f"role:10:{old_epoch}:none", 2)
+    assert service.role(10) == "superadmin"
+    assert "изменилась" in stale.effective_message.reply_text.await_args.args[0]
+    current = click(flow, f"role_view:10:{service.role_epoch(10)}", 2)
+    current_labels = [button.text for button in all_buttons(current)]
+    assert "Понизить до помощника" not in current_labels
+    assert "Отозвать доступ" not in current_labels
+
+    owner = click(flow, f"role_view:10:{service.role_epoch(10)}", 1)
+    owner_labels = [button.text for button in all_buttons(owner)]
+    assert "Понизить до помощника" in owner_labels
+    assert "Отозвать доступ" in owner_labels
 
 
 def test_superadmin_promotion_delivery_failure_keeps_role(flow):

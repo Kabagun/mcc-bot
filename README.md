@@ -167,11 +167,13 @@ a reviewer needs clarification. Users request subadmin access directly from
 role management. Only an existing helper can then be promoted to superadmin.
 
 The explicitly configured owner is permanent. The owner and superadmins can
-approve or decline helper requests, promote helpers, demote superadmins and
-revoke stored roles, but cannot change the owner. A superadmin cannot see or
-change their own role; another superadmin or the owner can change it. Ordinary
-helpers cannot manage roles. Role management shows the applicant's `@username`,
-Telegram display name and stable user ID before approval. Permissions use
+approve or decline helper requests, promote helpers and revoke ordinary helper
+roles, but cannot change the owner. The owner can demote or revoke any
+superadmin. A superadmin can demote or revoke only the superadmin whom they most
+recently promoted; unavailable actions are not shown. A superadmin cannot see or
+change their own role. Ordinary helpers cannot manage roles. Role management
+shows the applicant's `@username`, Telegram display name and stable user ID
+before approval. Permissions use
 Telegram user IDs—not mutable usernames—and are checked at each sensitive
 action; screenshots and editing are private-chat only. Subadmins can manage a
 store's primary name and aliases from one names screen, including adding,

@@ -572,6 +572,39 @@ def test_superadmin_role_management_authority_and_invariants(community):
     ]
 
 
+def test_superadmin_can_change_only_the_superadmin_they_last_promoted(community):
+    community.set_role(1, 2, True, role="superadmin")
+    community.set_role(1, 3, True, role="superadmin")
+
+    foreign = next(item for item in community.role_candidates(2) if item["user_id"] == 3)
+    assert not foreign["can_manage"]
+    assert next(item for item in community.role_candidates(1) if item["user_id"] == 3)["can_manage"]
+    with pytest.raises(AccessDenied, match="кого он сам повысил последним"):
+        community.set_role(2, 3, True, role="admin")
+    with pytest.raises(AccessDenied, match="кого он сам повысил последним"):
+        community.set_role(2, 3, False)
+    assert community.role(3) == "superadmin"
+
+    community.request_role(10, "managed_super", "Managed")
+    community.set_role(2, 10, True, require_pending=True)
+    community.set_role(2, 10, True, role="superadmin")
+    assert next(item for item in community.role_candidates(2) if item["user_id"] == 10)[
+        "can_manage"
+    ]
+    community.set_role(2, 10, True, role="admin")
+    community.set_role(2, 10, True, role="superadmin")
+
+    community.set_role(1, 10, True, role="admin")
+    community.set_role(1, 10, True, role="superadmin")
+    assert not next(item for item in community.role_candidates(2) if item["user_id"] == 10)[
+        "can_manage"
+    ]
+    with pytest.raises(AccessDenied, match="кого он сам повысил последним"):
+        community.set_role(2, 10, False, expected_epoch=community.role_epoch(10))
+    community.set_role(1, 10, False)
+    assert community.role(10) == "user"
+
+
 def test_audit_actor_uses_stored_identity_and_stable_id(community):
     community.request_role(10, "helper_name", "Alice", "Smith")
     community.set_role(1, 10, True, require_pending=True)

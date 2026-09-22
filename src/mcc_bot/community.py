@@ -371,6 +371,34 @@ class CommunityService:
         if self._role(conn, user_id)[0] not in {"admin", "superadmin", "owner"}:
             raise AccessDenied("Это действие доступно только действующим помощникам.")
 
+    def _superadmin_promoter(self, conn: sqlite3.Connection, user_id: int) -> int | None:
+        """Return the actor from the current superadmin promotion audit event."""
+
+        event = conn.execute(
+            """SELECT actor_id,active,role FROM community_role_events
+               WHERE user_id=? ORDER BY id DESC LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+        if event is None or not event["active"] or event["role"] != "superadmin":
+            return None
+        return int(event["actor_id"])
+
+    def _can_manage_role(
+        self,
+        conn: sqlite3.Connection,
+        actor_id: int,
+        actor_role: str,
+        user_id: int,
+        current_role: str,
+    ) -> bool:
+        """Return whether an authorized actor may change this target role."""
+
+        return (
+            current_role != "superadmin"
+            or actor_role == "owner"
+            or self._superadmin_promoter(conn, user_id) == actor_id
+        )
+
     def set_role(
         self,
         actor_id: int,
@@ -396,6 +424,15 @@ class CommunityService:
                 raise CommunityError("Нельзя изменить собственную роль.")
             if expected_epoch is not None and epoch != expected_epoch:
                 raise StaleAction("Роль уже изменилась. Откройте управление заново.")
+            if (
+                current_role == "superadmin"
+                and (not active or role == "admin")
+                and not self._can_manage_role(conn, actor_id, actor_role, user_id, current_role)
+            ):
+                raise AccessDenied(
+                    "Суперадминистратор может изменить роль только того, "
+                    "кого он сам повысил последним."
+                )
             if active and role == "superadmin" and current_role != "admin":
                 raise CommunityError(
                     "Суперадминистратором можно сделать только действующего помощника."
@@ -515,14 +552,14 @@ class CommunityService:
         """Return manageable requests and roles, excluding the current actor."""
 
         with self.stores.transaction() as conn:
-            if self._role(conn, actor_id)[0] not in {"owner", "superadmin"}:
+            actor_role = self._role(conn, actor_id)[0]
+            if actor_role not in {"owner", "superadmin"}:
                 raise AccessDenied(
                     "Только владелец или суперадминистратор может просматривать роли."
                 )
-            return tuple(
-                dict(row)
-                for row in conn.execute(
-                    """SELECT ids.user_id,COALESCE(r.active,0) AS active,
+            candidates = []
+            for row in conn.execute(
+                """SELECT ids.user_id,COALESCE(r.active,0) AS active,
                    COALESCE(r.epoch,0) AS epoch,COALESCE(r.role,'admin') AS role,
                    q.status AS request_status,
                    q.created_at,p.username,p.first_name,p.last_name FROM (
@@ -532,9 +569,16 @@ class CommunityService:
                    LEFT JOIN community_role_requests q ON q.user_id=ids.user_id
                    LEFT JOIN community_role_profiles p ON p.user_id=ids.user_id
                    ORDER BY COALESCE(r.active,0),COALESCE(q.created_at,0),ids.user_id"""
+            ):
+                if row["user_id"] in {self.owner_id, actor_id}:
+                    continue
+                candidate = dict(row)
+                current_role = str(row["role"]) if row["active"] else "user"
+                candidate["can_manage"] = self._can_manage_role(
+                    conn, actor_id, actor_role, int(row["user_id"]), current_role
                 )
-                if row["user_id"] not in {self.owner_id, actor_id}
-            )
+                candidates.append(candidate)
+            return tuple(candidates)
 
     def audit_actor(self, viewer_id: int, actor_id: int) -> dict[str, Any]:
         """Return a stored audit identity to an authorized helper or owner."""

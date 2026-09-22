@@ -3419,10 +3419,14 @@ async def _dispatch_callback(
             rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
         elif candidate["role"] == "superadmin":
             state = "Действующий суперадминистратор"
-            rows = [
-                [("Понизить до помощника", f"role:{target_id}:{epoch}:admin")],
-                [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
-            ]
+            rows = (
+                [
+                    [("Понизить до помощника", f"role:{target_id}:{epoch}:admin")],
+                    [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
+                ]
+                if candidate["can_manage"]
+                else []
+            )
         else:
             state = "Действующий помощник"
             rows = [
