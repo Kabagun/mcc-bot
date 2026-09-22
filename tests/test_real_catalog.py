@@ -905,6 +905,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
         ("vitamin_d", "points"): ("0", "200", "points"),
         ("kufar", "points"): ("0", "200", "points"),
         ("reshenie_r_karta", "cash"): ("0", "100", "currency"),
+        ("reshenie_visa_pay", "cash"): ("0", "30", "currency"),
         ("dabrabyt_spraunaya", "cash"): ("0", "100", "currency"),
         ("paritet_combo", "cash"): ("5", "130", "currency"),
         ("belarusbank_izi", "cash"): ("0", "20", "currency"),
@@ -925,7 +926,9 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     visa_pay = cards["reshenie_visa_pay"].reward_programs[0]
     assert visa_pay.minimum_payment is not None
     assert visa_pay.minimum_payment.amount == Decimal("0")
-    assert visa_pay.maximum_reward is None
+    assert visa_pay.maximum_reward is not None
+    assert visa_pay.maximum_reward.amount == Decimal("30")
+    assert visa_pay.maximum_reward.unit == "currency"
     yarkaya = cards["yarkaya_karta"].reward_programs[0]
     assert yarkaya.minimum_payment is not None
     assert yarkaya.minimum_payment.amount == Decimal("10")
@@ -938,6 +941,9 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     rendered = format_limits(tuple(cards.values()))
     assert "💳 1-2-3 — 💵 мин. платёж 10 BYN · макс. в месяц 123 BYN" in rendered
     assert "💳 Социальная — 💵 мин. платёж 0 BYN · макс. в месяц 100 BYN" in rendered
+    assert (
+        "💳 Visa Решение · оплата Apple Pay и др. — 💵 мин. платёж 0 BYN · макс. в месяц 30 BYN"
+    ) in rendered
     assert (
         "💳 Витамин Д — 💵 мин. платёж 10 BYN · макс. в месяц 50 BYN · "
         "⭐ мин. платёж 0 BYN · макс. в месяц 200 баллов"

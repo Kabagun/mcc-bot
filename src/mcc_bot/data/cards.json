@@ -12163,6 +12163,11 @@
             "amount": 0,
             "currency": "BYN"
           },
+          "maximum_reward": {
+            "amount": 30,
+            "unit": "currency",
+            "currency": "BYN"
+          },
           "default": {
             "value": 10
           },

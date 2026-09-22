@@ -502,8 +502,8 @@ The bundled Bank Reshenie Visa entry is shown as
 `Visa Решение · оплата Apple Pay и др.`; the other reviewed mobile-wallet methods are
 Samsung Pay, Rbank (digital wallet) and Swoo Pay. At the owner's direction it
 has an undated tax-exempt 10% default and only the 19 MCC exclusions listed in
-the reviewed Visa Extra rules. The lookup applies no date, payment threshold or
-voucher cap to this simplified entry.
+the reviewed Visa Extra rules. The lookup applies no date or payment threshold;
+the monthly moneyback maximum is 30 BYN.
 
 MCC descriptions are loaded from `MCC_DESCRIPTIONS_PATH`, defaulting to the
 bundled `mcc_bot/data/mcc_descriptions.json`. Lookup and contribution accept only
