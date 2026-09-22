@@ -211,7 +211,9 @@ class CommunityService:
             for statement in (
                 """CREATE TABLE IF NOT EXISTS community_roles (
                     user_id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0,
-                    epoch INTEGER NOT NULL DEFAULT 0, digest INTEGER NOT NULL DEFAULT 0)""",
+                    epoch INTEGER NOT NULL DEFAULT 0, digest INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL DEFAULT 'admin'
+                        CHECK(role IN ('admin','superadmin')))""",
                 """CREATE TABLE IF NOT EXISTS community_role_requests (
                     user_id INTEGER PRIMARY KEY, status TEXT NOT NULL,
                     created_at REAL NOT NULL)""",
@@ -221,7 +223,9 @@ class CommunityService:
                 """CREATE TABLE IF NOT EXISTS community_role_events (
                     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
                     actor_id INTEGER NOT NULL, active INTEGER NOT NULL,
-                    created_at REAL NOT NULL)""",
+                    created_at REAL NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'admin'
+                        CHECK(role IN ('admin','superadmin')))""",
                 """CREATE TABLE IF NOT EXISTS community_drafts (
                     user_id INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE,
                     version INTEGER NOT NULL, stage TEXT NOT NULL, data TEXT NOT NULL,
@@ -254,6 +258,22 @@ class CommunityService:
                     ON community_proposals(status,created_at)""",
             ):
                 conn.execute(statement)
+            role_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(community_roles)")
+            }
+            if "role" not in role_columns:
+                conn.execute(
+                    """ALTER TABLE community_roles ADD COLUMN role TEXT NOT NULL
+                    DEFAULT 'admin' CHECK(role IN ('admin','superadmin'))"""
+                )
+            role_event_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(community_role_events)")
+            }
+            if "role" not in role_event_columns:
+                conn.execute(
+                    """ALTER TABLE community_role_events ADD COLUMN role TEXT NOT NULL
+                    DEFAULT 'admin' CHECK(role IN ('admin','superadmin'))"""
+                )
             proposal_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(community_proposals)")
             }
@@ -281,11 +301,11 @@ class CommunityService:
         ):
             raise AccessDenied("Используйте личный чат с ботом.")
         row = conn.execute(
-            "SELECT active,epoch FROM community_roles WHERE user_id=?", (user_id,)
+            "SELECT active,epoch,role FROM community_roles WHERE user_id=?", (user_id,)
         ).fetchone()
         if user_id == self.owner_id:
             return "owner", row["epoch"] if row else 0
-        return ("admin" if row and row["active"] else "user", row["epoch"] if row else 0)
+        return (str(row["role"]) if row and row["active"] else "user", row["epoch"] if row else 0)
 
     def role(self, user_id: int) -> str:
         """Return the role from current authority, never from chat or username."""
@@ -296,21 +316,21 @@ class CommunityService:
     def is_admin(self, user_id: int) -> bool:
         """Check whether the user is a currently active reviewer or owner."""
 
-        return self.role(user_id) in {"admin", "owner"}
+        return self.role(user_id) in {"admin", "superadmin", "owner"}
 
     def can_edit_brand(self, user_id: int, brand_id: int) -> bool:
         """Return ordinary helper/owner edit access for a brand."""
 
         del brand_id
         with self.stores.connection() as conn:
-            return self._role(conn, user_id)[0] in {"admin", "owner"}
+            return self._role(conn, user_id)[0] in {"admin", "superadmin", "owner"}
 
     def can_edit_mcc(self, user_id: int, brand_id: int, channel: str, mcc: str) -> bool:
         """Return ordinary helper/owner edit access for a public MCC fact."""
 
         del brand_id, channel, mcc
         with self.stores.connection() as conn:
-            return self._role(conn, user_id)[0] in {"admin", "owner"}
+            return self._role(conn, user_id)[0] in {"admin", "superadmin", "owner"}
 
     def brand_has_confirmed_mcc(self, brand_id: int) -> bool:
         """Return whether a store currently has at least one confirmed active MCC."""
@@ -348,7 +368,7 @@ class CommunityService:
         return int(row[0])
 
     def _require_admin(self, conn: sqlite3.Connection, user_id: int) -> None:
-        if self._role(conn, user_id)[0] not in {"admin", "owner"}:
+        if self._role(conn, user_id)[0] not in {"admin", "superadmin", "owner"}:
             raise AccessDenied("Это действие доступно только действующим помощникам.")
 
     def set_role(
@@ -357,37 +377,50 @@ class CommunityService:
         user_id: int,
         active: bool,
         *,
+        role: str = "admin",
         expected_epoch: int | None = None,
         require_pending: bool = False,
     ) -> None:
-        """Grant/revoke a helper as owner; optionally require a pending application."""
+        """Set a stored role as owner/superadmin, optionally requiring an application."""
 
         with self.stores.transaction() as conn:
-            if self._role(conn, actor_id)[0] != "owner":
-                raise AccessDenied("Только владелец может менять роли.")
-            role, epoch = self._role(conn, user_id)
-            if role == "owner":
+            actor_role = self._role(conn, actor_id)[0]
+            if actor_role not in {"owner", "superadmin"}:
+                raise AccessDenied("Только владелец или суперадминистратор может менять роли.")
+            if role not in {"admin", "superadmin"}:
+                raise CommunityError("Неизвестная роль.")
+            current_role, epoch = self._role(conn, user_id)
+            if current_role == "owner":
                 raise CommunityError("Роль владельца задаётся настройкой бота.")
+            if actor_id == user_id:
+                raise CommunityError("Нельзя изменить собственную роль.")
             if expected_epoch is not None and epoch != expected_epoch:
                 raise StaleAction("Роль уже изменилась. Откройте управление заново.")
+            if active and role == "superadmin" and current_role != "admin":
+                raise CommunityError(
+                    "Суперадминистратором можно сделать только действующего помощника."
+                )
             if active and require_pending:
                 request = conn.execute(
                     "SELECT status FROM community_role_requests WHERE user_id=?", (user_id,)
                 ).fetchone()
                 if request is None or request["status"] != "pending":
                     raise StaleAction("Заявка уже рассмотрена или не существует.")
-            if (role == "admin") == active:
+            target_role = role if active else "user"
+            if current_role == target_role:
                 return
+            event_role = role if active else current_role
             conn.execute(
-                """INSERT INTO community_roles(user_id,active,epoch,digest) VALUES(?,?,?,0)
+                """INSERT INTO community_roles(user_id,active,epoch,digest,role)
+                   VALUES(?,?,?,0,?)
                    ON CONFLICT(user_id) DO UPDATE SET active=excluded.active,
-                   epoch=excluded.epoch,digest=0""",
-                (user_id, int(active), epoch + 1),
+                   epoch=excluded.epoch,digest=0,role=excluded.role""",
+                (user_id, int(active), epoch + 1, role),
             )
             conn.execute(
-                "INSERT INTO community_role_events(user_id,actor_id,active,created_at) "
-                "VALUES(?,?,?,?)",
-                (user_id, actor_id, int(active), time.time()),
+                """INSERT INTO community_role_events(
+                   user_id,actor_id,active,created_at,role) VALUES(?,?,?,?,?)""",
+                (user_id, actor_id, int(active), time.time(), event_role),
             )
             self._discard_draft(conn, user_id)
             conn.execute(
@@ -479,16 +512,19 @@ class CommunityService:
             }
 
     def role_candidates(self, actor_id: int) -> tuple[dict[str, Any], ...]:
-        """Return pending requests and active helper roles to the owner only."""
+        """Return manageable requests and roles, excluding the current actor."""
 
-        with self.stores.connection() as conn:
-            if self._role(conn, actor_id)[0] != "owner":
-                raise AccessDenied("Только владелец может просматривать роли.")
+        with self.stores.transaction() as conn:
+            if self._role(conn, actor_id)[0] not in {"owner", "superadmin"}:
+                raise AccessDenied(
+                    "Только владелец или суперадминистратор может просматривать роли."
+                )
             return tuple(
                 dict(row)
                 for row in conn.execute(
                     """SELECT ids.user_id,COALESCE(r.active,0) AS active,
-                   COALESCE(r.epoch,0) AS epoch,q.status AS request_status,
+                   COALESCE(r.epoch,0) AS epoch,COALESCE(r.role,'admin') AS role,
+                   q.status AS request_status,
                    q.created_at,p.username,p.first_name,p.last_name FROM (
                    SELECT user_id FROM community_role_requests WHERE status='pending'
                    UNION SELECT user_id FROM community_roles WHERE active=1) ids
@@ -497,7 +533,7 @@ class CommunityService:
                    LEFT JOIN community_role_profiles p ON p.user_id=ids.user_id
                    ORDER BY COALESCE(r.active,0),COALESCE(q.created_at,0),ids.user_id"""
                 )
-                if row["user_id"] != self.owner_id
+                if row["user_id"] not in {self.owner_id, actor_id}
             )
 
     def audit_actor(self, viewer_id: int, actor_id: int) -> dict[str, Any]:
@@ -530,8 +566,10 @@ class CommunityService:
         """Decline a still-pending helper request without changing any active role."""
 
         with self.stores.transaction() as conn:
-            if self._role(conn, actor_id)[0] != "owner":
-                raise AccessDenied("Только владелец может менять роли.")
+            if self._role(conn, actor_id)[0] not in {"owner", "superadmin"}:
+                raise AccessDenied("Только владелец или суперадминистратор может менять роли.")
+            if actor_id == user_id:
+                raise CommunityError("Нельзя изменить собственную роль.")
             role, epoch = self._role(conn, user_id)
             if role != "user" or epoch != expected_epoch:
                 raise StaleAction("Роль уже изменилась.")
@@ -543,7 +581,8 @@ class CommunityService:
             if not changed:
                 raise StaleAction("Заявка уже рассмотрена.")
             conn.execute(
-                "INSERT INTO community_roles(user_id,active,epoch,digest) VALUES(?,0,?,0) "
+                """INSERT INTO community_roles(user_id,active,epoch,digest,role)
+                VALUES(?,0,?,0,'admin') """
                 "ON CONFLICT(user_id) DO UPDATE SET epoch=excluded.epoch",
                 (user_id, epoch + 1),
             )

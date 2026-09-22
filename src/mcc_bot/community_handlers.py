@@ -271,7 +271,7 @@ def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKe
             )
         ]
     )
-    if service.role(user_id) == "owner":
+    if service.role(user_id) in {"owner", "superadmin"}:
         rows.append([(MANAGE_ROLES, "roles:0")])
     return _keyboard(rows)
 
@@ -439,7 +439,8 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
             "После ответа на уточнение она снова появится в очереди.\n\n"
             "Управление\n"
             "• «⚙️ Управление» открывает inline-действия: историю изменений и отмену доступных "
-            "записей, вечернюю сводку, а у владельца — помощников и заявки.\n"
+            "записей, вечернюю сводку, а у владельца и суперадминистраторов — помощников, "
+            "суперадминистраторов и заявки.\n"
             "• История, списки и страницы переключаются кнопками под текущим сообщением."
         )
     return (
@@ -1483,12 +1484,18 @@ async def _add_menu(update: Update, service: CommunityService, user_id: int) -> 
 async def _role_list(
     update: Update, service: CommunityService, user_id: int, offset: int = 0
 ) -> None:
-    """Show the owner-only helper list from either keyboard or legacy callback."""
+    """Show the role-management list to an owner or superadmin."""
 
     candidates = service.role_candidates(user_id)
     rows = []
     for item in candidates[offset : offset + 10]:
-        state = "Помощник" if item["active"] else "Заявка"
+        state = (
+            "Суперадмин"
+            if item["active"] and item["role"] == "superadmin"
+            else "Помощник"
+            if item["active"]
+            else "Заявка"
+        )
         rows.append(
             [
                 (
@@ -2238,7 +2245,8 @@ async def _request_helper_role(update: Update, service: CommunityService, user_i
     if service.role_request_status(user_id) == "pending":
         await _say(
             update,
-            "Заявка уже отправлена. Доступ появится после подтверждения владельцем.",
+            "Заявка уже отправлена. Доступ появится после подтверждения владельцем или "
+            "суперадминистратором.",
             keyboard_for(service, user_id),
         )
         return
@@ -2253,7 +2261,8 @@ async def _request_helper_role(update: Update, service: CommunityService, user_i
     identity = f"@{username}" if username else "вашим именем в Telegram"
     await _say(
         update,
-        f"Заявка от {identity} отправлена владельцу. Доступ появится только после подтверждения.",
+        f"Заявка от {identity} отправлена на рассмотрение. Доступ появится только после "
+        "подтверждения владельцем или суперадминистратором.",
         keyboard_for(service, user_id),
     )
 
@@ -2324,8 +2333,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             service.set_digest(user_id, text == MANAGE_DIGEST_ON)
             await _management(update, service, user_id)
         elif text == MANAGE_ROLES:
-            if service.role(user_id) != "owner":
-                raise CommunityError("Помощниками может управлять только владелец.")
             await _role_list(update, service, user_id)
         elif text == MAIN_MENU:
             await show_menu(update, context)
@@ -3406,37 +3413,65 @@ async def _dispatch_callback(
         )
         if candidate is None:
             raise StaleAction("Заявка или роль уже изменилась.")
-        state = "Действующий помощник" if candidate["active"] else "Заявка в помощники"
-        rows = [
-            [
-                (
-                    "Отозвать доступ" if candidate["active"] else "Назначить помощником",
-                    f"role:{target_id}:{epoch}:{int(not candidate['active'])}",
-                )
-            ]
-        ]
         if not candidate["active"]:
+            state = "Заявка в помощники"
+            rows = [[("Назначить помощником", f"role:{target_id}:{epoch}:admin")]]
             rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
+        elif candidate["role"] == "superadmin":
+            state = "Действующий суперадминистратор"
+            rows = [
+                [("Понизить до помощника", f"role:{target_id}:{epoch}:admin")],
+                [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
+            ]
+        else:
+            state = "Действующий помощник"
+            rows = [
+                [("Повысить до суперадмина", f"role:{target_id}:{epoch}:superadmin")],
+                [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
+            ]
         rows.append([("⬅️ К списку", "roles:0")])
         await _say_inline(update, f"{state}\n\n{_role_identity(candidate)}", _keyboard(rows))
     elif action == "role":
-        if parts[3] not in {"0", "1"}:
+        if len(parts) != 4 or parts[3] not in {"0", "1", "none", "admin", "superadmin"}:
             raise CommunityError("Некорректная роль.")
+        target_id = int(parts[1])
+        previous_role = service.role(target_id)
+        requested_role = {"0": "none", "1": "admin"}.get(parts[3], parts[3])
+        active = requested_role != "none"
         service.set_role(
             user_id,
-            int(parts[1]),
-            parts[3] == "1",
+            target_id,
+            active,
+            role=requested_role if active else "admin",
             expected_epoch=int(parts[2]),
-            require_pending=parts[3] == "1",
+            require_pending=active and previous_role == "user",
         )
+        if requested_role == "superadmin":
+            notification = (
+                "✅ Вы назначены суперадминистратором. Вам доступны очередь предложений, "
+                "управление данными, помощниками и другими суперадминистраторами.\n"
+                "Если меню не обновилось, вызовите /start."
+                if previous_role == "user"
+                else "✅ Вы повышены до суперадминистратора. Теперь вы можете управлять "
+                "помощниками и другими суперадминистраторами."
+            )
+        elif requested_role == "admin" and previous_role == "superadmin":
+            notification = (
+                "Вы переведены в помощники. Доступ к очереди предложений и управлению "
+                "данными сохранён, управление ролями больше недоступно."
+            )
+        elif requested_role == "admin":
+            notification = (
+                "✅ Вы назначены помощником. Теперь вам доступны очередь предложений "
+                "и управление данными.\nЕсли меню не обновилось, вызовите /start."
+            )
+        else:
+            notification = "Ваш доступ помощника или суперадминистратора отозван."
         delivered = await _notify_role(
             context,
             service,
-            int(parts[1]),
-            "✅ Вы назначены помощником. Теперь вам доступны очередь предложений "
-            "и управление данными.\nЕсли меню не обновилось, вызовите /start."
-            if parts[3] == "1"
-            else "Доступ помощника отозван. Предложения доступны как обычно.",
+            target_id,
+            notification,
         )
         await _say_inline(
             update,

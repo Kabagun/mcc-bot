@@ -137,7 +137,8 @@ role and explain stacked partner rewards and online/offline differences:
 
 - Everyone: `ℹ️ Информация по картам`.
 - Users: `➕ Предложить данные`, `🙋 Хочу помогать`.
-- Subadmins/owner: `➕ Добавить данные`, `📋 Разобрать очередь`, `⚙️ Управление`.
+- Helpers, superadmins and owner: `➕ Добавить данные`, `📋 Разобрать очередь`,
+  `⚙️ Управление`.
 
 The single add button opens an inline choice for a new store, a store MCC, or a
 card partnership. The ordinary keyboard stays short and stable while navigation,
@@ -162,14 +163,19 @@ Forms support back/cancel and
 persist across restarts. After submission, the bot contacts the author only if
 a reviewer needs clarification. Users request subadmin access directly from
 `/start` → `🙋 Хочу помогать`. A pending request is shown as
-`⏳ Заявка отправлена`; the owner approves it from role management.
+`⏳ Заявка отправлена`; the owner or a superadmin can approve it as a helper from
+role management. Only an existing helper can then be promoted to superadmin.
 
-Only the explicitly configured owner can approve pending requests or revoke
-roles. The owner sees the applicant's `@username`, Telegram display name and
-stable user ID before approval. Permissions use Telegram user IDs—not mutable
-usernames—and are checked at each sensitive action; screenshots and editing are
-private-chat only. Subadmins can manage a store's primary name and aliases from
-one names screen, including adding, editing, deleting and promoting an alias.
+The explicitly configured owner is permanent. The owner and superadmins can
+approve or decline helper requests, promote helpers, demote superadmins and
+revoke stored roles, but cannot change the owner. A superadmin cannot see or
+change their own role; another superadmin or the owner can change it. Ordinary
+helpers cannot manage roles. Role management shows the applicant's `@username`,
+Telegram display name and stable user ID before approval. Permissions use
+Telegram user IDs—not mutable usernames—and are checked at each sensitive
+action; screenshots and editing are private-chat only. Subadmins can manage a
+store's primary name and aliases from one names screen, including adding,
+editing, deleting and promoting an alias.
 They can edit, replace, remove and restore public MCC facts, manage names and
 merge stores regardless of whether tannei.by contributed source data, but cannot
 change card reward rules. Empty payment-channel sections and channel/archive

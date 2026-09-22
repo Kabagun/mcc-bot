@@ -495,6 +495,83 @@ def test_role_profile_schema_is_additive_and_survives_restart(community):
     assert candidate["first_name"] == "Helper"
 
 
+def test_role_schema_migration_preserves_existing_helper_state(tmp_path):
+    stores = StoreRepository(tmp_path / "old-roles.sqlite3")
+    stores.initialize()
+    with stores.transaction() as connection:
+        connection.execute(
+            """CREATE TABLE community_roles (
+            user_id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0,
+            epoch INTEGER NOT NULL DEFAULT 0, digest INTEGER NOT NULL DEFAULT 0)"""
+        )
+        connection.execute("INSERT INTO community_roles VALUES(2,1,7,1)")
+        connection.execute(
+            """CREATE TABLE community_role_events (
+            id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
+            actor_id INTEGER NOT NULL, active INTEGER NOT NULL, created_at REAL NOT NULL)"""
+        )
+        connection.execute("INSERT INTO community_role_events VALUES(5,2,1,1,100)")
+
+    service = CommunityService(stores, owner_id=1)
+    service.initialize()
+
+    assert service.role(2) == "admin"
+    assert service.role_epoch(2) == 7
+    assert service.digest_enabled(2)
+    with stores.connection() as connection:
+        role_row = connection.execute(
+            "SELECT active,epoch,digest,role FROM community_roles WHERE user_id=2"
+        ).fetchone()
+        event_row = connection.execute(
+            "SELECT id,user_id,actor_id,active,created_at,role "
+            "FROM community_role_events WHERE id=5"
+        ).fetchone()
+    assert tuple(role_row) == (1, 7, 1, "admin")
+    assert tuple(event_row) == (5, 2, 1, 1, 100.0, "admin")
+
+
+def test_superadmin_role_management_authority_and_invariants(community):
+    community.set_role(1, 2, True, role="superadmin")
+    assert community.role(2) == "superadmin"
+    assert community.is_admin(2)
+
+    community.request_role(10, "candidate", "Candidate")
+    with pytest.raises(CommunityError, match="только действующего помощника"):
+        community.set_role(2, 10, True, role="superadmin", require_pending=True)
+    community.set_role(2, 10, True, require_pending=True)
+    community.set_role(2, 10, True, role="superadmin")
+    assert community.role(10) == "superadmin"
+    community.set_role(2, 10, True, role="admin")
+    assert community.role(10) == "admin"
+    community.set_role(2, 10, False)
+    assert community.role(10) == "user"
+
+    community.request_role(11, "declined", "Declined")
+    community.decline_role(2, 11, 0)
+    assert community.role_request_status(11) == "declined"
+
+    with pytest.raises(AccessDenied):
+        community.set_role(3, 10, True)
+    with pytest.raises(AccessDenied):
+        community.role_candidates(3)
+    with pytest.raises(CommunityError, match="настройкой бота"):
+        community.set_role(2, 1, False)
+    with pytest.raises(CommunityError, match="собственную роль"):
+        community.set_role(2, 2, True, role="admin")
+    assert all(item["user_id"] != 2 for item in community.role_candidates(2))
+
+    with community.stores.connection() as connection:
+        events = connection.execute(
+            "SELECT active,role FROM community_role_events WHERE user_id=10 ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in events] == [
+        (1, "admin"),
+        (1, "superadmin"),
+        (1, "admin"),
+        (0, "admin"),
+    ]
+
+
 def test_audit_actor_uses_stored_identity_and_stable_id(community):
     community.request_role(10, "helper_name", "Alice", "Smith")
     community.set_role(1, 10, True, require_pending=True)

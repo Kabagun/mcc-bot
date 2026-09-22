@@ -1198,6 +1198,65 @@ def test_role_grant_delivery_failure_does_not_undo_role(flow):
     assert "изменилась" in repeated.effective_message.reply_text.await_args.args[0]
 
 
+def test_superadmin_role_ui_promotion_and_notification(flow):
+    service = flow.application.bot_data["community"]
+    service.set_role(1, 2, True, role="superadmin")
+    management = management_keyboard_for(service, 2)
+    assert any(button.text == MANAGE_ROLES for row in management.inline_keyboard for button in row)
+
+    click(flow, "volunteer", username="future_super", first_name="Future", last_name="Super")
+    pending = click(flow, "role_view:10:0", 2)
+    pending_labels = [button.text for button in all_buttons(pending)]
+    assert "Назначить помощником" in pending_labels
+    assert "Назначить суперадмином" not in pending_labels
+    forged = click(flow, "role:10:0:superadmin", 2)
+    assert service.role(10) == "user"
+    assert "только действующего помощника" in forged.effective_message.reply_text.await_args.args[0]
+
+    click(flow, "role:10:0:1", 2)
+    helper_epoch = service.role_epoch(10)
+    helper = click(flow, f"role_view:10:{helper_epoch}", 2)
+    assert "Повысить до суперадмина" in [button.text for button in all_buttons(helper)]
+    promoted = click(flow, f"role:10:{helper_epoch}:superadmin", 2)
+
+    assert service.role(10) == "superadmin"
+    assert "повышены до суперадминистратора" in flow.bot.send_message.await_args.kwargs["text"]
+    assert "Пользователь уведомлён" in promoted.effective_message.reply_text.await_args.args[0]
+    roles = click(flow, "roles", 1)
+    assert any("Суперадмин · @future_super" in button.text for button in all_buttons(roles))
+    own_roles = click(flow, "roles", 10)
+    assert all("@future_super" not in button.text for button in all_buttons(own_roles))
+
+    superadmin = click(flow, f"role_view:10:{service.role_epoch(10)}", 1)
+    labels = [button.text for button in all_buttons(superadmin)]
+    assert "Понизить до помощника" in labels
+    assert "Отозвать доступ" in labels
+
+    click(flow, f"role:10:{service.role_epoch(10)}:admin", 1)
+    assert service.role(10) == "admin"
+    assert "переведены в помощники" in flow.bot.send_message.await_args.kwargs["text"]
+    click(flow, f"role:10:{service.role_epoch(10)}:superadmin", 1)
+    click(flow, f"role:10:{service.role_epoch(10)}:none", 1)
+    assert service.role(10) == "user"
+    assert "доступ помощника или суперадминистратора отозван" in (
+        flow.bot.send_message.await_args.kwargs["text"].lower()
+    )
+
+
+def test_superadmin_promotion_delivery_failure_keeps_role(flow):
+    service = flow.application.bot_data["community"]
+    service.request_role(12, "helper_12", "Helper", "Twelve")
+    service.set_role(1, 12, True, require_pending=True)
+    epoch = service.role_epoch(12)
+    flow.bot.send_message.side_effect = Forbidden("blocked")
+
+    event = click(flow, f"role:12:{epoch}:superadmin", 1)
+
+    assert service.role(12) == "superadmin"
+    assert flow.bot.send_message.await_count == 1
+    assert "не доставлено" in event.effective_message.reply_text.await_args.args[0]
+
+
 def test_media_bounds_document_rejection_privacy_and_unavailable_photo(flow):
     start_data(flow)
     send(flow, "Shop")
