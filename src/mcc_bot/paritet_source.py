@@ -188,7 +188,9 @@ class ParitetRecord:
             "reward_kind": "cash",
             "starts_on": None,
             "ends_on": None,
-            "conditions": self.conditions,
+            "conditions": (
+                "" if self.source_id == 122633 and self.name == "Коммунарка" else self.conditions
+            ),
             "source_url": self.source_url,
             "require_existing_mcc": False,
             "tiers": [{"value": self.rate}],

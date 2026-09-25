@@ -935,9 +935,28 @@ def test_clarification_response_is_versioned_and_reuses_original_evidence(commun
     assert result.id == proposal.id
     assert result.status == "pending"
     assert result.comment == "Town centre"
+    assert result.reviewer_id == 2
+    assert result.lease_until is not None
+    assert community.queue(3, now=result.lease_until - 1) == ()
+    assert [item.id for item in community.queue(3, now=result.lease_until)] == [proposal.id]
     assert community.media_for(10, result.id)
     with pytest.raises(StaleAction):
         community.respond(10, proposal.id, asked.version)
+
+
+def test_answered_clarification_requeues_if_original_reviewer_loses_role(community):
+    proposal = make_proposal(community)
+    claimed = community.claim(2, proposal.id, proposal.version)
+    asked = community.review(2, proposal.id, claimed.version, "clarification", reason="Which shop?")
+    community.set_role(1, 2, False)
+    draft = community.respond(10, proposal.id, asked.version)
+    draft = community.advance(10, draft.id, draft.version, "preview", draft.data)
+
+    result = community.submit(10, draft.id, draft.version)
+
+    assert result.reviewer_id is None
+    assert result.lease_until is None
+    assert [item.id for item in community.queue(3)] == [proposal.id]
 
 
 def test_cancelled_clarification_response_returns_the_original_proposal(community):

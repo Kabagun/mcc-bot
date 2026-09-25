@@ -170,6 +170,17 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     shown = facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
     text = _header(brand)
+    location_getter = getattr(repository, "brand_location_summary", None)
+    location = (
+        location_getter(brand.id)
+        if location_getter is not None
+        else getattr(brand, "location", None)
+    )
+    if location:
+        compact = " ".join(location.split())
+        if len(compact) > 160:
+            compact = compact[:159].rstrip() + "…"
+        text += f"\n📍 {escape(compact)}"
     rows: list[list[InlineKeyboardButton]] = []
     for scope in ("both", "offline", "online"):
         scoped_facts = [fact for fact in shown if fact.channel == scope]
@@ -492,7 +503,7 @@ def _search_view(repository, query, page, token, *, private=True, admin=False):
     else:
         text = f"Магазин <b>{escape(query)}</b> не найден."
         if private:
-            text += " Можно предложить его вместе с MCC."
+            text += " Хотите добавить его? Укажите MCC и способ оплаты."
     name_counts: dict[str, int] = {}
     for entity in entities:
         key = normalize_store_name(entity.name)

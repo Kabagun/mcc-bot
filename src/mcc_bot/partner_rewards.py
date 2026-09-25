@@ -30,6 +30,17 @@ CHANNELS = frozenset({"offline", "online", "any"})
 MODES = frozenset({"additional", "total"})
 REWARD_KINDS = frozenset({"cash", "points"})
 MCC_RE = re.compile(r"[0-9]{4}")
+_NETWORK_WIDE_KOMMUNARKA_COMBO_KEY = "paritet:122633:paritet_combo:offline"
+
+
+def _offer_conditions(source_key: str | None, card_id: str, conditions: str) -> str:
+    """Drop the obsolete outlet list for the confirmed network-wide COMBO offer."""
+
+    return (
+        ""
+        if source_key == _NETWORK_WIDE_KOMMUNARKA_COMBO_KEY and card_id == "paritet_combo"
+        else conditions.strip()
+    )
 
 
 class PartnerRewardError(ValueError):
@@ -333,6 +344,11 @@ class PartnerRepository:
             )
             for statement in statements:
                 connection.execute(statement)
+            connection.execute(
+                """UPDATE partner_offers SET conditions='',updated_at=CURRENT_TIMESTAMP
+                   WHERE source_key=? AND card_id='paritet_combo' AND conditions<>''""",
+                (_NETWORK_WIDE_KOMMUNARKA_COMBO_KEY,),
+            )
 
             seed_tables = {
                 row["name"]
@@ -525,7 +541,7 @@ class PartnerRepository:
                         payload.reward_kind,
                         _date_text(payload.starts_on),
                         _date_text(payload.ends_on),
-                        payload.conditions.strip(),
+                        _offer_conditions(source_key, payload.card_id, payload.conditions),
                         payload.source_url.strip(),
                         actor_id,
                         actor_id,
@@ -575,7 +591,7 @@ class PartnerRepository:
                     payload.reward_kind,
                     _date_text(payload.starts_on),
                     _date_text(payload.ends_on),
-                    payload.conditions.strip(),
+                    _offer_conditions(before.source_key, payload.card_id, payload.conditions),
                     payload.source_url.strip(),
                     actor_id,
                     offer_id,
@@ -1121,8 +1137,7 @@ def format_partner_offer_condition(offer: PartnerOffer) -> str:
     # The owner confirmed this 2% COMBO offer applies across the full network;
     # its imported source address list is metadata, not a location restriction.
     network_wide_combo = (
-        offer.card_id == "paritet_combo"
-        and offer.source_key == "paritet:122633:paritet_combo:offline"
+        offer.card_id == "paritet_combo" and offer.source_key == _NETWORK_WIDE_KOMMUNARKA_COMBO_KEY
     )
     return format_cashback_context_line(
         offer.conditions, omit_location_annotation=network_wide_combo

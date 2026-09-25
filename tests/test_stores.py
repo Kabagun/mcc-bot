@@ -42,6 +42,15 @@ def source_evidence(mcc="5411"):
     ]
 
 
+def test_manual_location_rejects_address_wall(repository):
+    with pytest.raises(StoreError, match="180 символов"):
+        repository.apply_change(
+            "add_merchant",
+            {"name": "Адресный магазин", "location": "Минск, улица Первая; " * 12},
+            123,
+        )
+
+
 @pytest.mark.parametrize("name", ["Евроопт", " EURO OPT ", "Evro-opt", "евро.опт", "EUROOPT"])
 def test_transliterated_aliases_search_without_merging(repository, name):
     first = add(repository)

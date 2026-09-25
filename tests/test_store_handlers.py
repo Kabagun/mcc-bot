@@ -269,7 +269,9 @@ def test_search_and_stale_result_use_store_wording(setup):
 
     asyncio.run(search_stores(update, context, "missing"))
     call = update.effective_message.reply_text.await_args
-    assert call.args[0] == ("Магазин <b>missing</b> не найден. Можно предложить его вместе с MCC.")
+    assert call.args[0] == (
+        "Магазин <b>missing</b> не найден. Хотите добавить его? Укажите MCC и способ оплаты."
+    )
     assert buttons(call.kwargs["reply_markup"])[-1].text == "➕ Предложить новый магазин"
 
     update.callback_query.data = "store:show:999999:0"
@@ -353,7 +355,27 @@ def test_addresses_only_distinguish_same_named_search_results(setup):
     ]
     brand = repository.get_brand(first.brand_id)
     text, _markup = _brand_view(repository, brand, 0, context, 10)
-    assert "улица Первая" not in text
+    assert "📍 Минск, улица Первая" in text
+
+
+def test_store_card_limits_a_long_manual_location(setup):
+    repository, _, _, context = setup
+    long_location = "Минск, улица Первая, дом 1; " * 14
+    result = repository.apply_change(
+        "add_merchant", {"name": "Адресный магазин", "location": "Минск, улица Первая"}, 1
+    )
+    with repository.transaction() as connection:
+        connection.execute(
+            "UPDATE store_brands SET location=? WHERE id=?", (long_location, result.brand_id)
+        )
+    brand = repository.get_brand(result.brand_id)
+
+    text, _markup = _brand_view(repository, brand, 0, context, 10)
+
+    location_line = next(line for line in text.splitlines() if line.startswith("📍 "))
+    assert len(location_line) <= 163
+    assert location_line.endswith("…")
+    assert long_location not in text
 
 
 def test_public_brand_groups_channels_and_note_overrides_description(setup):

@@ -464,7 +464,14 @@ def test_approved_network_wide_komunarka_combo_hides_address_annotation(tmp_path
     assert rendered_condition == ""
     assert rendered == "🧾 MCC 1234 — Покупка\n\n1. 💳 КОМБОкарта — 2% деньгами"
     assert offer.tiers[0].value == Decimal("2")
-    assert partners.list_offers(brand_id)[0].conditions == conditions
+    assert partners.list_offers(brand_id)[0].conditions == ""
+
+    with stores.transaction() as connection:
+        connection.execute(
+            "UPDATE partner_offers SET conditions=? WHERE id=?", (conditions, offer.id)
+        )
+    partners.initialize()
+    assert partners.list_offers(brand_id)[0].conditions == ""
 
 
 def test_additional_points_are_composed_displayed_once_and_ranked(tmp_path) -> None:

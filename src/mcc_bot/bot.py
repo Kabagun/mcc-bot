@@ -1,5 +1,8 @@
 """Telegram application entry point and handlers."""
 
+# Russian UI copy and ordinary Unicode buttons are intentional.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import logging
@@ -10,10 +13,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -35,13 +39,13 @@ from .notifications import install_jobs
 from .partner_rewards import PartnerRepository
 from .store_handlers import handle_store_callback, search_stores
 from .stores import Brand, StoreRepository
-from .users import UserRegistry
+from .users import BlockedChat, UserRegistry
 
 LOGGER = logging.getLogger(__name__)
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
 RESULT_TOO_LONG = (
-    "Не удалось показать результат: данные одной карты или описание MCC слишком длинные. "  # noqa: RUF001
+    "Не удалось показать результат: данные одной карты или описание MCC слишком длинные. "
     f"Откройте /start и нажмите «{INFO}»."
 )
 
@@ -324,7 +328,7 @@ async def report_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
     if isinstance(update, Update) and update.effective_message is not None:
         try:
             await update.effective_message.reply_text(
-                "Не удалось завершить действие. Проверьте его результат в меню /start "  # noqa: RUF001
+                "Не удалось завершить действие. Проверьте его результат в меню /start "
                 "и при необходимости повторите."
             )
         except TelegramError:
@@ -354,6 +358,148 @@ async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             getattr(user, "first_name", None),
             getattr(user, "last_name", None),
         )
+
+
+def _blocked_label(chat: BlockedChat) -> str:
+    """Format a private moderation label without exposing a Telegram ID."""
+
+    return (chat.first_name or chat.username or "Пользователь")[:32]
+
+
+async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Limit a blocked private chat to the unblock request conversation."""
+
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None:
+        return
+    registry: UserRegistry = context.application.bot_data["user_registry"]
+    blocked = registry.blocked_chat(user.id)
+    if blocked is None:
+        return
+    if chat.type != "private" or chat.id != user.id:
+        if update.callback_query is not None:
+            await update.callback_query.answer(
+                "Доступ ограничен. Напишите боту лично.", show_alert=True
+            )
+        raise ApplicationHandlerStop
+    query = update.callback_query
+    if query is not None:
+        await query.answer()
+        if query.data == "unblock:request":
+            registry.begin_appeal(chat.id)
+            await query.edit_message_text(
+                "Расскажите, почему вы заблокировали бота и хотите снова им пользоваться. "
+                "Ответьте одним сообщением (5-500 символов)."
+            )
+        else:
+            await query.edit_message_text("Доступ ограничен. Откройте /start для запроса.")
+        raise ApplicationHandlerStop
+    message = update.effective_message
+    if message is None:
+        raise ApplicationHandlerStop
+    if (
+        blocked.appeal_state == "awaiting_reason"
+        and message.text
+        and not message.text.startswith("/")
+    ):
+        try:
+            registry.submit_appeal(chat.id, message.text)
+        except ValueError as error:
+            await message.reply_text(str(error))
+        else:
+            await message.reply_text("Запрос отправлен на рассмотрение. О решении сообщим здесь.")
+        raise ApplicationHandlerStop
+    if blocked.appeal_state == "pending":
+        await message.reply_text("Ваш запрос на разблокировку рассматривается.")
+    else:
+        await message.reply_text(
+            "Ранее Telegram отклонил сообщения бота для вашего аккаунта. "
+            "Для восстановления доступа расскажите, почему вы блокировали бота.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "📝 Запросить разблокировку", callback_data="unblock:request"
+                        )
+                    ]
+                ]
+            ),
+        )
+    raise ApplicationHandlerStop
+
+
+async def unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show and resolve unblock requests for owners and superadmins."""
+
+    query = update.callback_query
+    user = update.effective_user
+    community: CommunityService = context.application.bot_data["community"]
+    if query is None or user is None or community.role(user.id) not in {"owner", "superadmin"}:
+        if query is not None:
+            await query.answer("Недоступно", show_alert=True)
+        return
+    await query.answer()
+    registry: UserRegistry = context.application.bot_data["user_registry"]
+    parts = (query.data or "").split(":")
+    if len(parts) == 3 and parts[1] in {"approve", "reject"} and parts[2].isdigit():
+        target = int(parts[2])
+        approve = parts[1] == "approve"
+        if registry.resolve_appeal(target, approve=approve, reviewer_id=user.id):
+            try:
+                await context.bot.send_message(
+                    target,
+                    "Доступ восстановлен. Откройте /start."
+                    if approve
+                    else "Запрос на разблокировку отклонён. Вы можете подать новый запрос.",
+                )
+            except Forbidden:
+                registry.mark_forbidden(target)
+            except TelegramError:
+                LOGGER.info("Could not deliver an unblock decision")
+        parts = ["unblock", "list", "0"]
+    pending = registry.pending_appeals()
+    if len(parts) == 3 and parts[1] == "view" and parts[2].isdigit():
+        item = next((entry for entry in pending if entry.chat_id == int(parts[2])), None)
+        if item is None:
+            await query.edit_message_text("Заявка уже обработана.")
+            return
+        await query.edit_message_text(
+            f"Запрос: {_blocked_label(item)}\n\nПричина: {item.appeal_text}",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ Разблокировать", callback_data=f"unblock:approve:{item.chat_id}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "❌ Отклонить", callback_data=f"unblock:reject:{item.chat_id}"
+                        )
+                    ],
+                    [InlineKeyboardButton("⬅️ К заявкам", callback_data="unblock:list:0")],
+                ]
+            ),
+        )
+        return
+    offset = int(parts[2]) if len(parts) == 3 and parts[1] == "list" and parts[2].isdigit() else 0
+    rows = [
+        [InlineKeyboardButton(_blocked_label(item), callback_data=f"unblock:view:{item.chat_id}")]
+        for item in pending[offset : offset + 10]
+    ]
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"unblock:list:{max(0, offset - 10)}"))
+    if offset + 10 < len(pending):
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"unblock:list:{offset + 10}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ К управлению", callback_data="community:manage")])
+    await query.edit_message_text(
+        f"Заявки на разблокировку: {len(pending)}" if pending else "Заявок на разблокировку нет.",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 def build_application(settings: BotSettings) -> Application:
@@ -387,13 +533,15 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["stores"] = stores
     application.bot_data["partners"] = partners
     application.bot_data["community"] = community
-    application.add_handler(TypeHandler(Update, remember_chat), group=-1)
+    application.add_handler(TypeHandler(Update, remember_chat), group=-2)
+    application.add_handler(TypeHandler(Update, enforce_blocked_access), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
     application.add_handler(CallbackQueryHandler(lookup_mcc_callback, pattern=r"^mcc_lookup:"))
     application.add_handler(CallbackQueryHandler(handle_store_callback, pattern=r"^store:"))
     application.add_handler(CallbackQueryHandler(community_callback, pattern=r"^community:"))
+    application.add_handler(CallbackQueryHandler(unblock_callback, pattern=r"^unblock:"))
     application.add_handler(CallbackQueryHandler(expired_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, lookup_media))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_text))

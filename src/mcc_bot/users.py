@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 
 LOGGER = logging.getLogger(__name__)
 _MISSING = object()
@@ -80,6 +80,18 @@ class BroadcastRun:
     status: str
     message_sha256: str
     failures: tuple[BroadcastFailure, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedChat:
+    """A private chat blocked after Telegram rejected delivery."""
+
+    chat_id: int
+    username: str | None
+    first_name: str | None
+    last_name: str | None
+    appeal_state: str
+    appeal_text: str | None
 
 
 def _identity_text(value: Any, *, maximum: int) -> str | None:
@@ -198,6 +210,27 @@ class UserRegistry:
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS broadcast_failures_run
                    ON broadcast_failures(run_id, id)"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS blocked_chats (
+                   chat_id INTEGER PRIMARY KEY REFERENCES telegram_chats(chat_id),
+                   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+                   blocked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   appeal_state TEXT NOT NULL DEFAULT 'none',
+                   appeal_text TEXT,
+                   appeal_at TEXT,
+                   resolved_at TEXT,
+                   resolved_by INTEGER
+                )"""
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO blocked_chats(chat_id)
+                   SELECT DISTINCT f.chat_id FROM broadcast_failures f
+                   JOIN broadcast_runs r ON r.id=f.run_id
+                   WHERE r.status='completed' AND r.id=(
+                       SELECT MAX(id) FROM broadcast_runs WHERE status='completed'
+                   ) AND f.error_type='Forbidden'
+                   AND f.chat_id > 0"""
             )
         os.chmod(self.path, 0o600)
 
@@ -324,12 +357,13 @@ class UserRegistry:
         return changed
 
     def recipients(self) -> tuple[ChatRecipient, ...]:
-        """Return every remembered recipient and profile in stable order."""
+        """Return eligible recipients and profiles in stable order."""
 
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                """SELECT chat_id,username,first_name,last_name
-                   FROM telegram_chats ORDER BY chat_id"""
+                """SELECT c.chat_id,c.username,c.first_name,c.last_name
+                   FROM telegram_chats c LEFT JOIN blocked_chats b ON b.chat_id=c.chat_id
+                   WHERE COALESCE(b.active,0)=0 ORDER BY c.chat_id"""
             ).fetchall()
         return tuple(ChatRecipient(**dict(row)) for row in rows)
 
@@ -339,11 +373,13 @@ class UserRegistry:
         return tuple(recipient.chat_id for recipient in self.recipients())
 
     def private_chat_count(self) -> int:
-        """Return the number of remembered private Telegram chats."""
+        """Return the number of eligible private Telegram chats."""
 
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT COUNT(*) FROM telegram_chats WHERE chat_id > 0"
+                """SELECT COUNT(*) FROM telegram_chats c
+                   LEFT JOIN blocked_chats b ON b.chat_id=c.chat_id
+                   WHERE c.chat_id > 0 AND COALESCE(b.active,0)=0"""
             ).fetchone()
         return int(row[0])
 
@@ -369,6 +405,88 @@ class UserRegistry:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
+
+    def mark_forbidden(self, chat_id: int) -> None:
+        """Block a private chat after a confirmed Telegram Forbidden response."""
+
+        if chat_id <= 0:
+            return
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)""", (chat_id,)
+            )
+            connection.execute(
+                """INSERT INTO blocked_chats(chat_id) VALUES(?)
+                   ON CONFLICT(chat_id) DO UPDATE SET active=1,
+                   blocked_at=CURRENT_TIMESTAMP, appeal_state='none',
+                   appeal_text=NULL, appeal_at=NULL, resolved_at=NULL, resolved_by=NULL""",
+                (chat_id,),
+            )
+
+    def blocked_chat(self, chat_id: int) -> BlockedChat | None:
+        """Return an active blocked chat, if one exists."""
+
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """SELECT b.chat_id,c.username,c.first_name,c.last_name,
+                   b.appeal_state,b.appeal_text FROM blocked_chats b
+                   JOIN telegram_chats c ON c.chat_id=b.chat_id
+                   WHERE b.chat_id=? AND b.active=1""",
+                (chat_id,),
+            ).fetchone()
+        return BlockedChat(**dict(row)) if row is not None else None
+
+    def pending_appeals(self) -> tuple[BlockedChat, ...]:
+        """Return pending unblock requests for authorized reviewers."""
+
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """SELECT b.chat_id,c.username,c.first_name,c.last_name,
+                   b.appeal_state,b.appeal_text FROM blocked_chats b
+                   JOIN telegram_chats c ON c.chat_id=b.chat_id
+                   WHERE b.active=1 AND b.appeal_state='pending'
+                   ORDER BY b.appeal_at,b.chat_id"""
+            ).fetchall()
+        return tuple(BlockedChat(**dict(row)) for row in rows)
+
+    def begin_appeal(self, chat_id: int) -> bool:
+        """Start or restart an appeal for an active blocked private chat."""
+
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """UPDATE blocked_chats SET appeal_state='awaiting_reason',
+                   appeal_text=NULL, appeal_at=NULL
+                   WHERE chat_id=? AND active=1""",
+                (chat_id,),
+            )
+            return cursor.rowcount == 1
+
+    def submit_appeal(self, chat_id: int, reason: str) -> bool:
+        """Persist a short explanation from a blocked user."""
+
+        reason = reason.strip()
+        if not 5 <= len(reason) <= 500 or any(ord(char) < 32 and char != "\n" for char in reason):
+            raise ValueError("Расскажите причину в 5-500 символах.")
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """UPDATE blocked_chats SET appeal_state='pending',
+                   appeal_text=?, appeal_at=CURRENT_TIMESTAMP
+                   WHERE chat_id=? AND active=1 AND appeal_state='awaiting_reason'""",
+                (reason, chat_id),
+            )
+            return cursor.rowcount == 1
+
+    def resolve_appeal(self, chat_id: int, *, approve: bool, reviewer_id: int) -> bool:
+        """Approve or decline one still-pending unblock request."""
+
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """UPDATE blocked_chats SET active=?, appeal_state=?,
+                   resolved_at=CURRENT_TIMESTAMP,resolved_by=?
+                   WHERE chat_id=? AND active=1 AND appeal_state='pending'""",
+                (0 if approve else 1, "approved" if approve else "rejected", reviewer_id, chat_id),
+            )
+            return cursor.rowcount == 1
 
     def record_broadcast_failure(
         self,
@@ -401,6 +519,14 @@ class UserRegistry:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
+            if isinstance(error, Forbidden) and recipient.chat_id > 0:
+                connection.execute(
+                    """INSERT INTO blocked_chats(chat_id) VALUES(?)
+                       ON CONFLICT(chat_id) DO UPDATE SET active=1,
+                       blocked_at=CURRENT_TIMESTAMP,appeal_state='none',
+                       appeal_text=NULL,appeal_at=NULL,resolved_at=NULL,resolved_by=NULL""",
+                    (recipient.chat_id,),
+                )
 
     def complete_broadcast_run(self, run_id: int) -> None:
         """Mark a fully iterated broadcast complete without hiding partial failures."""

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from mcc_bot.paritet_source import (
+    ParitetRecord,
     ParitetSourceError,
     collect_paritet,
     parse_paritet_html,
@@ -17,6 +18,20 @@ FIXTURE = Path(__file__).parent / "fixtures" / "paritet_partners.html"
 
 def _html() -> str:
     return FIXTURE.read_text(encoding="utf-8")
+
+
+def test_confirmed_network_wide_komunarka_offer_does_not_export_address_wall() -> None:
+    record = ParitetRecord(
+        source_id=122633,
+        name="Коммунарка",
+        rate="2",
+        channel="offline",
+        conditions="* при оплате по адресам: г. Минск, ул. Аранская, 18",  # noqa: RUF001
+        source_url="https://www.paritetbank.by/private/partners/",
+        fingerprint="source-fingerprint",
+    )
+
+    assert record.as_offer()["conditions"] == ""
 
 
 def test_collects_only_unique_all_records_and_holds_unsafe_rows() -> None:

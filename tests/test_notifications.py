@@ -6,12 +6,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram.error import NetworkError
+from telegram.error import Forbidden, NetworkError
 from telegram.ext import ApplicationBuilder
 
 from mcc_bot.community import CommunityService
 from mcc_bot.notifications import MINSK, install_jobs, send_daily_digest
 from mcc_bot.stores import StoreRepository
+from mcc_bot.users import UserRegistry
 
 
 @pytest.fixture
@@ -81,6 +82,31 @@ def test_uncertain_send_is_not_retried_after_restart(service):
     reopened.initialize()
     assert run(reopened, bot)["uncertain"] == 0
     bot.send_message.assert_awaited_once()
+
+
+def test_forbidden_digest_blocks_and_skips_future_notifications(service, tmp_path):
+    pending(service)
+    service.set_digest(2, True)
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(2)
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=Forbidden("blocked")))
+
+    first = asyncio.run(
+        send_daily_digest(
+            service, bot, registry=registry, now=datetime(2026, 8, 26, 20, tzinfo=MINSK)
+        )
+    )
+    second = asyncio.run(
+        send_daily_digest(
+            service, bot, registry=registry, now=datetime(2026, 8, 27, 20, tzinfo=MINSK)
+        )
+    )
+
+    assert first["uncertain"] == 1
+    assert second["skipped"] == 1
+    assert bot.send_message.await_count == 1
+    assert registry.blocked_chat(2) is not None
 
 
 def test_intent_is_durable_before_call(service):

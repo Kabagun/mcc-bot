@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from telegram.error import NetworkError
+from telegram.error import Forbidden, NetworkError
 
 from mcc_bot.users import UserRegistry, broadcast_message, redact_telegram_ids
 
@@ -161,6 +161,66 @@ def test_broadcast_message_reports_successes_and_failures(tmp_path) -> None:
             for value in row
         )
     assert "Бот обновлён" not in stored_values
+
+
+def test_forbidden_blocks_private_recipient_and_appeal_can_restore_access(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "blocked", "Blocked")
+    registry.remember(20)
+    bot = AsyncMock()
+    bot.send_message.side_effect = [Forbidden("bot was blocked by the user"), object()]
+
+    result = asyncio.run(broadcast_message(bot, registry, "News"))
+
+    assert (result.sent, result.failed) == (1, 1)
+    assert registry.chat_ids() == (20,)
+    assert registry.private_chat_count() == 1
+    assert registry.blocked_chat(10).appeal_state == "none"
+    registry.remember(10, "back", "Back")
+    assert registry.chat_ids() == (20,)
+    assert registry.begin_appeal(10)
+    with pytest.raises(ValueError, match="5-500"):
+        registry.submit_appeal(10, "no")
+    assert registry.submit_appeal(10, "Я хочу снова пользоваться ботом")
+    assert registry.pending_appeals()[0].appeal_text == "Я хочу снова пользоваться ботом"
+    assert registry.resolve_appeal(10, approve=True, reviewer_id=1)
+    assert registry.blocked_chat(10) is None
+    assert registry.chat_ids() == (10, 20)
+    registry.initialize()
+    assert registry.chat_ids() == (10, 20)
+
+
+def test_migration_blocks_only_latest_completed_forbidden_failures(tmp_path) -> None:
+    path = tmp_path / "users.sqlite3"
+    registry = UserRegistry(path)
+    registry.initialize()
+    registry.remember(10)
+    registry.remember(20)
+    registry.remember(30)
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            """INSERT INTO broadcast_runs(id,recipient_count,status,message_sha256)
+               VALUES(?,3,'completed','hash')""",
+            [(1,), (2,)],
+        )
+        connection.executemany(
+            """INSERT INTO broadcast_failures(run_id,chat_id,error_type,error_text)
+               VALUES(?,?,?,?)""",
+            [
+                (1, 10, "Forbidden", "blocked"),
+                (2, 20, "Forbidden", "blocked"),
+                (2, 30, "NetworkError", "offline"),
+            ],
+        )
+    registry.initialize()
+    assert registry.chat_ids() == (10, 30)
+    assert registry.blocked_chat(20) is not None
+    registry.begin_appeal(20)
+    registry.submit_appeal(20, "Снова хочу пользоваться")
+    assert registry.resolve_appeal(20, approve=True, reviewer_id=1)
+    registry.initialize()
+    assert registry.chat_ids() == (10, 20, 30)
 
 
 def test_broadcast_enriches_legacy_identity_and_snapshots_failure(tmp_path) -> None:

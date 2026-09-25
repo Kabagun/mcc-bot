@@ -758,7 +758,7 @@ def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
     ]
     assert [
         button.text for row in management_keyboard_for(service, 1).inline_keyboard for button in row
-    ] == [MANAGE_HISTORY, MANAGE_DIGEST_ON, MANAGE_ROLES]
+    ] == [MANAGE_HISTORY, MANAGE_DIGEST_ON, MANAGE_ROLES, "🚫 Заявки на разблокировку"]
 
     toggled = click(flow, f"digest:1:{service.role_epoch(2)}", 2)
     assert service.digest_enabled(2)
@@ -1115,12 +1115,35 @@ def test_clarification_answer_and_legacy_cancel_is_inert(flow):
     click(flow, f"respond:{proposal.id}:{asked.version}")
     assert service.draft(10) == response_draft
     draft_click(flow, "skip")
+    flow.bot.send_message.reset_mock()
     draft_click(flow, "submit")
     pending = service.proposal(10, proposal.id)
     assert pending.status == "pending"
+    assert pending.reviewer_id == 2
+    flow.bot.send_message.assert_awaited_once()
+    assert flow.bot.send_message.await_args.kwargs["chat_id"] == 2
+    assert "Автор ответил на уточнение" in flow.bot.send_message.await_args.kwargs["text"]
     stale = click(flow, f"cancel:{proposal.id}:{pending.version}")
     assert service.proposal(10, proposal.id).status == "pending"
     assert "/start" in stale.effective_message.reply_text.await_args.args[0]
+
+
+def test_undeliverable_returned_review_goes_back_to_common_queue(flow):
+    proposal = proposal_flow(flow)
+    service = flow.application.bot_data["community"]
+    claimed = service.claim(2, proposal.id, proposal.version)
+    asked = service.review(2, proposal.id, claimed.version, "clarification", reason="Где магазин?")
+    click(flow, f"respond:{proposal.id}:{asked.version}")
+    send(flow, "Уточнение автора")
+    draft_click(flow, "skip")
+    flow.bot.send_message.side_effect = Forbidden("blocked")
+
+    draft_click(flow, "submit")
+
+    pending = service.proposal(10, proposal.id)
+    assert pending.reviewer_id is None
+    assert pending.lease_until is None
+    assert [item.id for item in service.queue(1)] == [proposal.id]
 
 
 def test_cancel_clarification_answer_returns_the_proposal_to_queue(flow):

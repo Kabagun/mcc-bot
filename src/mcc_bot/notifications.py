@@ -10,17 +10,22 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application, ContextTypes
 
 from .community import CommunityService
+from .users import UserRegistry
 
 LOGGER = logging.getLogger(__name__)
 MINSK = ZoneInfo("Europe/Minsk")
 
 
 async def send_daily_digest(
-    service: CommunityService, bot, *, now: datetime | None = None
+    service: CommunityService,
+    bot,
+    *,
+    now: datetime | None = None,
+    registry: UserRegistry | None = None,
 ) -> dict[str, int]:
     """Send today's count once per subscribed reviewer, never replaying missed dates.
 
@@ -35,6 +40,9 @@ async def send_daily_digest(
     day = local.date().isoformat()
     service.expire_media()
     for user_id in service.digest_candidates():
+        if registry is not None and registry.blocked_chat(user_id) is not None:
+            result["skipped"] += 1
+            continue
         count = service.reserve_digest(user_id, day)
         if count is None:
             continue
@@ -59,7 +67,9 @@ async def send_daily_digest(
                     ]
                 ),
             )
-        except TelegramError:
+        except TelegramError as error:
+            if isinstance(error, Forbidden) and registry is not None:
+                registry.mark_forbidden(user_id)
             service.finish_digest(user_id, day, "uncertain")
             result["uncertain"] += 1
             LOGGER.info("Daily digest delivery uncertain; no automatic retry")
@@ -70,7 +80,11 @@ async def send_daily_digest(
 
 
 async def _digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_daily_digest(context.application.bot_data["community"], context.bot)
+    await send_daily_digest(
+        context.application.bot_data["community"],
+        context.bot,
+        registry=context.application.bot_data["user_registry"],
+    )
 
 
 async def _cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:

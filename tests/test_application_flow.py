@@ -88,6 +88,52 @@ def rendered(calls):
     return [data for action, data in calls if action in {"sendMessage", "editMessageText"}]
 
 
+def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app):
+    app, calls = telegram_app
+    registry = app.bot_data["user_registry"]
+    registry.mark_forbidden(101)
+
+    async def scenario():
+        async with app:
+            await app.process_update(incoming(app, "5411"))
+            assert "Beta Card" not in rendered(calls)[-1]["text"]
+            assert "почему вы блокировали" in rendered(calls)[-1]["text"]
+            calls.clear()
+            await app.process_update(incoming(app, "5411", group=True, sequence=10))
+            assert not rendered(calls)
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:request"))
+            assert "Ответьте одним сообщением" in rendered(calls)[-1]["text"]
+            calls.clear()
+            await app.process_update(incoming(app, "Хочу снова пользоваться", sequence=2))
+            assert "Запрос отправлен" in rendered(calls)[-1]["text"]
+            assert registry.pending_appeals()[0].chat_id == 101
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:approve:101", sequence=104))
+            assert registry.blocked_chat(101) is not None
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:approve:101", user_id=102, sequence=105))
+            assert registry.blocked_chat(101) is not None
+            calls.clear()
+            await app.process_update(incoming(app, "5411", sequence=3))
+            assert "рассматривается" in rendered(calls)[-1]["text"]
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:list:0", user_id=42, sequence=101))
+            assert "Заявки на разблокировку: 1" in rendered(calls)[-1]["text"]
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:view:101", user_id=42, sequence=102))
+            assert "Хочу снова пользоваться" in rendered(calls)[-1]["text"]
+            calls.clear()
+            await app.process_update(tapped(app, "unblock:approve:101", user_id=42, sequence=103))
+            assert registry.blocked_chat(101) is None
+            assert any("Доступ восстановлен" in data["text"] for data in rendered(calls))
+            calls.clear()
+            await app.process_update(incoming(app, "5411", sequence=4))
+            assert "Beta Card" in rendered(calls)[-1]["text"]
+
+    asyncio.run(scenario())
+
+
 def test_registered_dispatcher_routes_numbers_text_and_removed_commands(telegram_app):
     app, calls = telegram_app
 

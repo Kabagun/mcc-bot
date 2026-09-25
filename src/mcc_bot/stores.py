@@ -251,8 +251,8 @@ def _location(value: Any) -> str | None:
     value = value.strip()
     if not value:
         return None
-    if len(value) > 500:
-        raise StoreError("Где находится должно содержать не более 500 символов")
+    if len(value) > 180:
+        raise StoreError("Где находится должно содержать не более 180 символов")
     if any(unicodedata.category(char).startswith("C") for char in value):
         raise StoreError("Где находится содержит недопустимые символы")
     return value

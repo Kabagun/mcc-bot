@@ -2030,10 +2030,19 @@ class CommunityService:
             now = time.time()
             if original:
                 proposal_id = original.id
+                reviewer_id = original.reviewer_id
+                if reviewer_id is not None and self._role(conn, reviewer_id)[0] == "user":
+                    reviewer_id = None
                 conn.execute(
                     """UPDATE community_proposals SET status='pending',version=version+1,
-                       comment=?,updated_at=?,reviewer_id=NULL,lease_until=NULL WHERE id=?""",
-                    (comment, now, proposal_id),
+                       comment=?,updated_at=?,reviewer_id=?,lease_until=? WHERE id=?""",
+                    (
+                        comment,
+                        now,
+                        reviewer_id,
+                        now + LEASE_SECONDS if reviewer_id is not None else None,
+                        proposal_id,
+                    ),
                 )
                 if media:
                     conn.execute("DELETE FROM community_media WHERE proposal_id=?", (proposal_id,))
@@ -2204,6 +2213,18 @@ class CommunityService:
             if proposal is None:
                 raise StaleAction("Разбор уже изменился. Откройте очередь.")
             return proposal
+
+    def release_returned_review(self, proposal_id: int, version: int, reviewer_id: int) -> bool:
+        """Requeue a returned clarification if its private delivery cannot complete."""
+
+        with self.stores.transaction() as conn:
+            changed = conn.execute(
+                """UPDATE community_proposals SET reviewer_id=NULL,lease_until=NULL,
+                   version=version+1,updated_at=? WHERE id=? AND version=?
+                   AND status='pending' AND reviewer_id=?""",
+                (time.time(), proposal_id, version, reviewer_id),
+            ).rowcount
+            return changed == 1
 
     def cancel_review_draft(
         self, actor_id: int, draft_id: str, draft_version: int

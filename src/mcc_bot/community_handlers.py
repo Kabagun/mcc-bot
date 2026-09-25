@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 from .community import (
@@ -273,6 +273,7 @@ def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKe
     )
     if service.role(user_id) in {"owner", "superadmin"}:
         rows.append([(MANAGE_ROLES, "roles:0")])
+        rows.append([("🚫 Заявки на разблокировку", "unblock:list:0")])
     return _keyboard(rows)
 
 
@@ -1415,7 +1416,11 @@ def _queue_proposal_label(service: CommunityService, proposal: Proposal) -> str:
 
 
 def _review_content(
-    service: CommunityService, proposal: Proposal, *, notice: str | None = None
+    service: CommunityService,
+    proposal: Proposal,
+    reviewer_id: int,
+    *,
+    notice: str | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Build the current review screen for a claimed proposal."""
 
@@ -1425,7 +1430,7 @@ def _review_content(
         + f"Разбор №{proposal.id} · резерв на 15 минут\n\n"
         + _display_payload(service, proposal.kind, proposal.payload)
     )
-    if proposal.comment:
+    if proposal.comment and proposal.reviewer_id == reviewer_id:
         text += "\nПриватный комментарий автора: " + proposal.comment
     has_media = service.proposal_has_media(proposal.reviewer_id or proposal.user_id, proposal.id)
     text += "\nСкриншот: приложен" if has_media else "\nСкриншот: Без скриншота"
@@ -1446,7 +1451,10 @@ def _review_content(
 
 
 async def _review_view(update: Update, service: CommunityService, proposal: Proposal) -> None:
-    text, markup = _review_content(service, proposal)
+    user_id = _identity(update)
+    if user_id is None or proposal.reviewer_id != user_id:
+        raise CommunityError("Разбор доступен только назначенному проверяющему.")
+    text, markup = _review_content(service, proposal, user_id)
     await _say_inline(update, text, markup)
 
 
@@ -1462,7 +1470,7 @@ async def _return_to_review(
 ) -> None:
     """Restore the main keyboard and put the current review below the editor."""
 
-    text, markup = _review_content(service, proposal, notice=notice)
+    text, markup = _review_content(service, proposal, reviewer_id, notice=notice)
     await _say_with_restored_menu(update, text, keyboard_for(service, reviewer_id), markup)
     if bound is not None:
         try:
@@ -1565,6 +1573,8 @@ async def _role_list(
 async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> None:
     if proposal.status != "clarification":
         return
+    if _blocked_by_registry(context, proposal.user_id):
+        return
     rows = [[("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")]]
     text = f"Нужно уточнить предложение №{proposal.id}."
     if proposal.reason:
@@ -1573,18 +1583,60 @@ async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> Non
         await context.bot.send_message(
             chat_id=proposal.user_id, text=text, reply_markup=_keyboard(rows)
         )
-    except TelegramError:
+    except TelegramError as error:
+        _mark_forbidden(context, proposal.user_id, error)
         LOGGER.info("Could not deliver a contribution clarification request")
+
+
+def _mark_forbidden(context: ContextTypes.DEFAULT_TYPE, user_id: int, error: TelegramError) -> None:
+    """Exclude a private chat after Telegram confirms that it blocked the bot."""
+
+    if isinstance(error, Forbidden):
+        registry = context.application.bot_data.get("user_registry")
+        if registry is not None:
+            registry.mark_forbidden(user_id)
+
+
+def _blocked_by_registry(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Check whether a known blocked chat must be left out of notifications."""
+
+    registry = context.application.bot_data.get("user_registry")
+    return registry is not None and registry.blocked_chat(user_id) is not None
+
+
+async def _notify_returned_review(
+    context: ContextTypes.DEFAULT_TYPE, service: CommunityService, proposal: Proposal
+) -> None:
+    """Send an answered clarification only to its original active reviewer."""
+
+    reviewer_id = proposal.reviewer_id
+    if proposal.status != "pending" or reviewer_id is None:
+        return
+    if not service.is_admin(reviewer_id) or _blocked_by_registry(context, reviewer_id):
+        service.release_returned_review(proposal.id, proposal.version, reviewer_id)
+        return
+    text, markup = _review_content(
+        service, proposal, reviewer_id, notice="Автор ответил на уточнение."
+    )
+    try:
+        await context.bot.send_message(chat_id=reviewer_id, text=text, reply_markup=markup)
+    except TelegramError as error:
+        _mark_forbidden(context, reviewer_id, error)
+        LOGGER.info("Could not deliver returned review to its reviewer; requeuing")
+        service.release_returned_review(proposal.id, proposal.version, reviewer_id)
 
 
 async def _notify_role(
     context: ContextTypes.DEFAULT_TYPE, service: CommunityService, user_id: int, text: str
 ) -> bool:
+    if _blocked_by_registry(context, user_id):
+        return False
     try:
         await context.bot.send_message(
             chat_id=user_id, text=text, reply_markup=keyboard_for(service, user_id)
         )
-    except TelegramError:
+    except TelegramError as error:
+        _mark_forbidden(context, user_id, error)
         LOGGER.info("Could not deliver role notification; role change remains committed")
         return False
     return True
@@ -2801,6 +2853,8 @@ async def _finish_form_submission(
 ) -> None:
     proposal = service.submit(draft.user_id, draft.id, draft.version)
     if proposal.status != "approved":
+        if draft.data.get("response_id"):
+            await _notify_returned_review(context, service, proposal)
         await _say_with_restored_menu(
             update,
             "Спасибо! Предложение отправлено на проверку.",
@@ -3618,6 +3672,8 @@ async def _draft_callback(
     if action == "submit" and stage == "preview":
         proposal = service.submit(draft.user_id, draft.id, draft.version)
         if proposal.status != "approved":
+            if data.get("response_id"):
+                await _notify_returned_review(context, service, proposal)
             await _say(
                 update,
                 "Спасибо! Отправлено на проверку. Если понадобится уточнение, бот напишет вам.",
