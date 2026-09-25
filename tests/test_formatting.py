@@ -39,6 +39,26 @@ def test_format_matches_renders_only_cards_and_rewards(catalog_path: Path, tmp_p
     assert "after tax" not in rendered
 
 
+def test_format_matches_hides_address_annotations(catalog_path: Path) -> None:
+    match = replace(
+        CardCatalog.from_file(catalog_path).lookup("5411")[0],
+        context_lines=(
+            "При оплате через терминал в магазинах по адресам: Минск, ул. Первая, 1; "
+            "Минск, ул. Вторая, 2",
+            "Точная точка Изи-карты: организация «Магазин»; адреса: Минск, ул. Первая, 1",
+            "Адреса: Минск, ул. Третья, 3",
+        ),
+    )
+
+    rendered = format_matches("5411", (match,))
+
+    assert "5% (4,61%)" in rendered
+    assert "только в точках, участвующих в предложении" in rendered
+    assert "Минск" not in rendered
+    assert "Точная точка Изи-карты" not in rendered
+    assert "Адреса:" not in rendered
+
+
 def test_format_limits_renders_all_cards_and_program_terms(catalog_path: Path) -> None:
     rendered = format_limits(CardCatalog.from_file(catalog_path).cards)
 

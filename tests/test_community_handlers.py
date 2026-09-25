@@ -185,7 +185,8 @@ def test_one_message_editor_marks_required_fields_and_saves_in_any_order(flow):
     draft_click(flow, "form_field:brand_id")
     send(flow, "Editor shop")
     created = draft_click(flow, "form_new_store")
-    assert "Название нового магазина *" in [button.text for button in all_buttons(created)]
+    assert "Магазин *" in [button.text for button in all_buttons(created)]
+    assert "Название нового магазина *" not in [button.text for button in all_buttons(created)]
     draft_click(flow, "form_field:mcc")
     send(flow, "5411")
     draft_click(flow, "form_field:channel")
@@ -603,7 +604,8 @@ def test_unified_store_selector_exact_similar_create_and_switch(flow):
     assert "➕ Создать новый «Coffee»" in labels
     created = draft_click(flow, "form_new_store")
     created_labels = [button.text for button in all_buttons(created)]
-    assert "Название нового магазина *" in created_labels
+    assert "Магазин *" in created_labels
+    assert "Название нового магазина *" not in created_labels
     assert "Другие названия" in created_labels
     assert "Где находится" in created_labels
     assert data.get("locked_brand_id") is None
@@ -675,6 +677,11 @@ def test_existing_review_editor_is_locked_and_restores_role_menu_once(flow):
     assert [button.text for row in markup.keyboard for button in row] == [CANCEL_DRAFT]
 
     closed = draft_click(flow, "form_cancel", 2)
+    assert closed.effective_message.reply_text.await_count == 1
+    assert (
+        "Редактирование отменено.\n\nРазбор №"
+        in (closed.effective_message.reply_text.await_args.args[0])
+    )
     restored = [
         call.kwargs["reply_markup"]
         for call in closed.effective_message.reply_text.await_args_list
@@ -682,6 +689,42 @@ def test_existing_review_editor_is_locked_and_restores_role_menu_once(flow):
     ]
     assert len(restored) == 1
     assert restored[0].keyboard[-1][0].text == GUIDE
+
+    reopened = service.proposal(2, proposal.id)
+    click(flow, f"q:{reopened.id}:{reopened.version}:edit", 2)
+    saved = draft_click(flow, "form_save", 2)
+    assert saved.effective_message.reply_text.await_count == 1
+    assert (
+        "Изменения в заявке сохранены.\n\nРазбор №"
+        in (saved.effective_message.reply_text.await_args.args[0])
+    )
+    assert service.draft(2) is None
+
+
+def test_review_editor_cancel_from_reply_keyboard_returns_to_review(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Review keyboard")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    draft = service.begin(
+        10,
+        stage="preview",
+        data={
+            "kind": "mcc_save",
+            "payload": {"brand_id": brand_id, "mcc": "5812", "channel": "online"},
+        },
+    )
+    proposal = service.submit(10, draft.id, draft.version)
+    claimed = service.claim(2, proposal.id, proposal.version)
+    click(flow, f"q:{claimed.id}:{claimed.version}:edit", 2)
+
+    returned = send(flow, CANCEL_DRAFT, 2)
+
+    assert service.draft(2) is None
+    assert returned.effective_message.reply_text.await_count == 1
+    assert (
+        "Редактирование отменено.\n\nРазбор №"
+        in (returned.effective_message.reply_text.await_args.args[0])
+    )
 
 
 def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):

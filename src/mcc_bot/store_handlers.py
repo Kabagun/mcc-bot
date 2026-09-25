@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass
 from html import escape
@@ -16,7 +17,7 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from .formatting import format_match_pages
-from .partner_rewards import resolve_store_matches
+from .partner_rewards import format_partner_offer_condition, resolve_store_matches
 from .stores import StoreRepository, normalize_store_name
 
 LOGGER = logging.getLogger(__name__)
@@ -169,14 +170,6 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     shown = facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
 
     text = _header(brand)
-    location_getter = getattr(repository, "brand_location_summary", None)
-    location = (
-        location_getter(brand.id)
-        if location_getter is not None
-        else getattr(brand, "location", None)
-    )
-    if location:
-        text += f"\n📍 {escape(location)}"
     rows: list[list[InlineKeyboardButton]] = []
     for scope in ("both", "offline", "online"):
         scoped_facts = [fact for fact in shown if fact.channel == scope]
@@ -255,8 +248,9 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 mode = "дополнительно" if offer.mode == "additional" else "итоговая выгода"
                 value = format(tier.value.normalize(), "f").replace(".", ",")
                 text += f"\n• {escape(card_name)} — {value}% {reward} · {mode}"
-                if offer.conditions:
-                    text += f"\n  {escape(offer.conditions)}"
+                condition = format_partner_offer_condition(offer)
+                if condition:
+                    text += f"\n  {escape(condition)}"
             text += "\n\n⚠️ MCC магазина пока не указан; перед оплатой проверьте его в банке."
     text += f"\n\n<i>{_WARNING}</i>"
     if private:
@@ -310,12 +304,26 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
 def _search_entities(repository: StoreRepository, query: str):
     result = repository.search(query, limit=100)
     matches = tuple(result.matches)
+    needle = normalize_store_name(query)
     exact = tuple(
         item
         for item in matches
-        if normalize_store_name(query)
-        in {normalize_store_name(value) for value in (item.name, *item.aliases)}
+        if needle in {normalize_store_name(value) for value in (item.name, *item.aliases)}
     )
+    if exact and len(needle) >= 4:
+        # A distinct shop can contain the exact name as a whole word, e.g.
+        # «Белка» and «Кофешоп Белка». A prefix is insufficient: «Мила»
+        # must not pull «Милавица» into the results.
+        exact_ids = {item.id for item in exact}
+        related = tuple(
+            brand
+            for brand in repository.list_brands()
+            if brand.id not in exact_ids
+            and any(
+                needle == normalize_store_name(token) for token in re.findall(r"\w+", brand.name)
+            )
+        )
+        return (exact + related[: max(0, 100 - len(exact))]), ()
     # Compatibility with repositories that used to mix exact and partial rows.
     return (exact or matches), tuple(result.suggestions)
 
@@ -471,7 +479,7 @@ def pending_new_overlay(context, proposal_id: int) -> tuple[str, tuple[int, ...]
     return "\n".join(lines), (proposal_id,)
 
 
-def _search_view(repository, query, page, token):
+def _search_view(repository, query, page, token, *, private=True, admin=False):
     matches, suggestions = _search_entities(repository, query)
     entities = matches or suggestions
     total = len(entities)
@@ -482,9 +490,27 @@ def _search_view(repository, query, page, token):
     elif suggestions:
         text = f"Точных совпадений для <b>{escape(query)}</b> нет. Возможно, вы имели в виду:"
     else:
-        text = f"Магазин <b>{escape(query)}</b> не найден. Можно добавить его вместе с MCC."
+        text = f"Магазин <b>{escape(query)}</b> не найден."
+        if private:
+            text += " Можно предложить его вместе с MCC."
+    name_counts: dict[str, int] = {}
+    for entity in entities:
+        key = normalize_store_name(entity.name)
+        name_counts[key] = name_counts.get(key, 0) + 1
+    location_getter = getattr(repository, "brand_location_summary", None)
+
+    def label(entity):
+        if name_counts[normalize_store_name(entity.name)] == 1:
+            return entity.name
+        location = (
+            location_getter(entity.id)
+            if location_getter is not None
+            else getattr(entity, "location", None)
+        )
+        return f"{entity.name} · {location or f'вариант №{entity.id}'}"[:60]
+
     rows = [
-        [InlineKeyboardButton(entity.name, callback_data=f"store:show:{entity.id}:0")]
+        [InlineKeyboardButton(label(entity), callback_data=f"store:show:{entity.id}:0")]
         for entity in shown
     ]
     navigation = []
@@ -498,20 +524,22 @@ def _search_view(repository, query, page, token):
         )
     if navigation:
         rows.append(navigation)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                "➕ Добавить новый магазин", callback_data=f"community:start:0:{token}"
-            )
-        ]
-    )
+    if private:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "➕ Добавить новый магазин" if admin else "➕ Предложить новый магазин",
+                    callback_data=f"community:start:0:{token}",
+                )
+            ]
+        )
     return text, InlineKeyboardMarkup(rows)
 
 
 async def search_stores(
     update: Update, context: ContextTypes.DEFAULT_TYPE, query: str | None = None
 ) -> None:
-    """Search a supplied brand name or start a prefilled new-brand contribution."""
+    """Search a supplied brand name and offer a prefilled contribution on demand."""
 
     message = update.effective_message
     if message is None:
@@ -525,20 +553,9 @@ async def search_stores(
         await message.reply_text("Укажите название магазина, например: Евроопт.")
         return
     repository: StoreRepository = context.application.bot_data["stores"]
-    matches, suggestions = _search_entities(repository, query)
-    pending_new = _pending_new_stores(context, query)
+    matches, _suggestions = _search_entities(repository, query)
     private = bool(update.effective_chat and update.effective_chat.type == "private")
-    if (
-        not matches
-        and not suggestions
-        and not pending_new
-        and private
-        and context.application.bot_data.get("community")
-    ):
-        from .community_handlers import begin_contribution
-
-        await begin_contribution(update, context, name=query)
-        return
+    pending_new = _pending_new_stores(context, query) if private else ()
     if len(matches) == 1 and not pending_new:
         text, keyboard = _brand_view(
             repository,
@@ -554,7 +571,14 @@ async def search_stores(
         if len(searches) >= 20:
             searches.pop(next(iter(searches)))
         searches[token] = query
-        text, keyboard = _search_view(repository, query, 0, token)
+        text, keyboard = _search_view(
+            repository,
+            query,
+            0,
+            token,
+            private=private,
+            admin=_is_admin(context, update.effective_user.id if update.effective_user else None),
+        )
         if pending_new:
             text += "\n\n⚠️ Есть неподтверждённые магазины:"
             pending_rows = [
@@ -616,7 +640,14 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
         query = context.user_data.get("store_searches", {}).get(parts[2])
         if query is None or page is None:
             return
-        text, keyboard = _search_view(repository, query, page, parts[2])
+        text, keyboard = _search_view(
+            repository,
+            query,
+            page,
+            parts[2],
+            private=bool(update.effective_chat and update.effective_chat.type == "private"),
+            admin=_is_admin(context, update.effective_user.id if update.effective_user else None),
+        )
     elif kind == "show" and len(parts) == 4:
         brand_id, page = _parse_bounded_int(parts[2], 10**12), _parse_bounded_int(parts[3])
         if brand_id is None or not brand_id or page is None:

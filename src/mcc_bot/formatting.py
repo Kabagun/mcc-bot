@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -21,6 +22,12 @@ from .descriptions import DescriptionCatalog
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3900
+
+_ADDRESS_LIST = re.compile(
+    r"\s+по\s+адрес(?:ам|а|у)\s*:?\s*",  # noqa: RUF001
+    re.IGNORECASE | re.DOTALL,
+)
+_ADDRESS_FIELD = re.compile(r"\s*\bадрес(?:а)?\s*:", re.IGNORECASE)  # noqa: RUF001
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +175,35 @@ def _match_details(match: CardMatch) -> list[str]:
     return lines
 
 
+def format_cashback_context_line(line: str, *, omit_location_annotation: bool = False) -> str:
+    """Hide source addresses while retaining concise store-eligibility context."""
+
+    line = line.strip()
+    if not line or line.casefold().startswith("точная точка изи-карты:"):
+        return ""
+
+    address_list = _ADDRESS_LIST.search(line)
+    if address_list is not None:
+        if omit_location_annotation:
+            return ""
+        prefix = line[: address_list.start()].rstrip(" .;,:-*")
+        if not prefix:
+            return ""
+        return f"{prefix} (только в точках, участвующих в предложении)"
+
+    address_field = _ADDRESS_FIELD.search(line)
+    if address_field is not None:
+        prefix = line[: address_field.start()].rstrip(" .;,:-*")
+        if prefix.casefold() in {
+            "условия партнёра статускарты",
+            "условия партнера статускарты",
+        }:
+            return ""
+        return prefix
+
+    return line
+
+
 def format_limits(cards: tuple[Card, ...]) -> str:
     """Format card payment thresholds and monthly reward caps."""
 
@@ -250,7 +286,11 @@ def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> 
     if html:
         marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
     summary = f"{index}. {marker} {name} — {reward}"
-    context_lines = list(match.context_lines)
+    context_lines = [
+        compacted
+        for line in match.context_lines
+        if (compacted := format_cashback_context_line(line))
+    ]
     if html:
         context_lines = [escape(line) for line in context_lines]
     summary_lines = [summary, *(f"   {line}" for line in context_lines)]

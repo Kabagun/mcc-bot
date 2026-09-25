@@ -23,6 +23,7 @@ from .catalog import (
     RewardComponent,
     RewardProgram,
 )
+from .formatting import format_cashback_context_line
 from .stores import StoreRepository
 
 CHANNELS = frozenset({"offline", "online", "any"})
@@ -1114,11 +1115,25 @@ def _display_decimal(value: Decimal) -> str:
     return rendered.replace(".", ",")
 
 
+def format_partner_offer_condition(offer: PartnerOffer) -> str:
+    """Return concise cashback conditions without copied outlet addresses."""
+
+    # The owner confirmed this 2% COMBO offer applies across the full network;
+    # its imported source address list is metadata, not a location restriction.
+    network_wide_combo = (
+        offer.card_id == "paritet_combo"
+        and offer.source_key == "paritet:122633:paritet_combo:offline"
+    )
+    return format_cashback_context_line(
+        offer.conditions, omit_location_annotation=network_wide_combo
+    )
+
+
 def format_partner_offer_context(offer: PartnerOffer, tier: PartnerTier) -> str:
     """Render only purchase constraints that matter for the selected store MCC."""
 
     details = []
-    condition = offer.conditions.strip().rstrip(".")
+    condition = format_partner_offer_condition(offer).rstrip(".")
     normalized_condition = condition.casefold().translate({0x451: 0x435})
     redundant_conditions = {
         "только при онлайн-оплате",

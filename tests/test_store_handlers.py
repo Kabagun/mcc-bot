@@ -269,14 +269,91 @@ def test_search_and_stale_result_use_store_wording(setup):
 
     asyncio.run(search_stores(update, context, "missing"))
     call = update.effective_message.reply_text.await_args
-    assert call.args[0] == ("Магазин <b>missing</b> не найден. Можно добавить его вместе с MCC.")
-    assert buttons(call.kwargs["reply_markup"])[-1].text == "➕ Добавить новый магазин"
+    assert call.args[0] == ("Магазин <b>missing</b> не найден. Можно предложить его вместе с MCC.")
+    assert buttons(call.kwargs["reply_markup"])[-1].text == "➕ Предложить новый магазин"
 
     update.callback_query.data = "store:show:999999:0"
     asyncio.run(handle_store_callback(update, context))
     assert update.callback_query.edit_message_text.await_args.args[0] == (
         "Магазин изменён или архивирован. Повторите поиск по названию."
     )
+
+
+def test_unknown_search_offers_creation_without_opening_a_form(setup):
+    repository, _, update, context = setup
+    service = CommunityService(repository, owner_id=1)
+    service.initialize()
+    context.application.bot_data["community"] = service
+
+    asyncio.run(search_stores(update, context, "несуществующий магазин"))
+
+    assert service.draft(10) is None
+    call = update.effective_message.reply_text.await_args
+    assert "не найден" in call.args[0]
+    assert buttons(call.kwargs["reply_markup"])[-1].text == "➕ Предложить новый магазин"
+
+
+def test_unknown_search_in_group_does_not_offer_private_form(setup):
+    _, _, update, context = setup
+    update.effective_chat.type = "group"
+
+    asyncio.run(search_stores(update, context, "несуществующий магазин"))
+
+    call = update.effective_message.reply_text.await_args
+    assert call.args[0] == "Магазин <b>несуществующий магазин</b> не найден."
+    assert not buttons(call.kwargs["reply_markup"])
+
+
+def test_short_railway_alias_opens_existing_store(setup):
+    repository, _, update, context = setup
+    result = repository.apply_change(
+        "add_merchant", {"name": "Белорусская железная дорога", "mcc": "4112"}, 1
+    )
+    repository.apply_change(
+        "brand_aliases", {"brand_id": result.brand_id, "aliases": ["БЧ", "БЖД"]}, 1
+    )
+
+    asyncio.run(search_stores(update, context, "бч"))
+
+    call = update.effective_message.reply_text.await_args
+    assert "Белорусская железная дорога" in call.args[0]
+    assert "не найден" not in call.args[0]
+
+
+def test_exact_belka_search_also_offers_distinct_coffee_shop(setup):
+    repository, _, update, context = setup
+    repository.apply_change("add_merchant", {"name": "Белка", "mcc": "5411"}, 1)
+    repository.apply_change("add_merchant", {"name": "Кофешоп «Белка»", "mcc": "5499"}, 1)
+    repository.apply_change("add_merchant", {"name": "Белкар", "mcc": "5411"}, 1)
+
+    asyncio.run(search_stores(update, context, "Белка"))
+
+    call = update.effective_message.reply_text.await_args
+    assert "Выберите магазин" in call.args[0]
+    labels = [button.text for button in buttons(call.kwargs["reply_markup"])]
+    assert labels[:2] == ["Белка", "Кофешоп «Белка»"]
+    assert "Белкар" not in labels
+
+
+def test_addresses_only_distinguish_same_named_search_results(setup):
+    repository, _, update, context = setup
+    first = repository.apply_change(
+        "add_merchant", {"name": "Близнец", "location": "Минск, улица Первая", "mcc": "5411"}, 1
+    )
+    repository.apply_change(
+        "add_merchant", {"name": "Близнец", "location": "Минск, улица Вторая", "mcc": "5499"}, 1
+    )
+
+    asyncio.run(search_stores(update, context, "Близнец"))
+
+    markup = update.effective_message.reply_text.await_args.kwargs["reply_markup"]
+    assert [button.text for button in buttons(markup)[:2]] == [
+        "Близнец · Минск, улица Первая",
+        "Близнец · Минск, улица Вторая",
+    ]
+    brand = repository.get_brand(first.brand_id)
+    text, _markup = _brand_view(repository, brand, 0, context, 10)
+    assert "улица Первая" not in text
 
 
 def test_public_brand_groups_channels_and_note_overrides_description(setup):

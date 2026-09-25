@@ -333,7 +333,8 @@ def test_store_search_add_new_prefills_the_unified_form(telegram_app):
             assert [
                 button["text"] for row in sent[0]["reply_markup"]["keyboard"] for button in row
             ] == ["❌ Отменить"]
-            assert "Название нового магазина *: Coffe House" in sent[1]["text"]
+            assert "Магазин *: Coffe House" in sent[1]["text"]
+            assert "Название нового магазина" not in sent[1]["text"]
             labels = [
                 button["text"]
                 for row in sent[1]["reply_markup"]["inline_keyboard"]
@@ -346,6 +347,66 @@ def test_store_search_add_new_prefills_the_unified_form(telegram_app):
             assert "active_field" not in draft.data
             assert "new_store_name" not in draft.data
             assert app.bot_data["community"].editor_message(42, draft.id) is not None
+
+    asyncio.run(scenario())
+
+
+def test_review_editor_returns_current_review_in_one_new_message(telegram_app):
+    app, calls = telegram_app
+    service = app.bot_data["community"]
+    store = app.bot_data["stores"].apply_change(
+        "add_merchant", {"name": "Review shop", "channel": "offline", "mcc": "5411"}, 42
+    )
+    draft = service.begin(
+        101,
+        stage="preview",
+        data={
+            "kind": "mcc_save",
+            "payload": {"brand_id": store.brand_id, "mcc": "5812", "channel": "online"},
+        },
+    )
+    proposal = service.submit(101, draft.id, draft.version)
+    claimed = service.claim(42, proposal.id, proposal.version)
+
+    async def scenario():
+        async with app:
+            await app.process_update(
+                tapped(
+                    app,
+                    f"community:q:{claimed.id}:{claimed.version}:edit",
+                    user_id=42,
+                    sequence=401,
+                )
+            )
+            bound = service.editor_message(42, service.draft(42).id)
+            assert bound is not None
+            assert any(
+                action == "editMessageText" and "открыт в редакторе" in data["text"]
+                for action, data in calls
+            )
+
+            calls.clear()
+            current = service.draft(42)
+            await app.process_update(
+                tapped(
+                    app,
+                    f"community:d:{current.id}:{current.version}:form_save",
+                    user_id=42,
+                    sequence=402,
+                    message_id=bound[1],
+                )
+            )
+
+            sent = [data for action, data in calls if action == "sendMessage"]
+            assert len(sent) == 1
+            assert "Изменения в заявке сохранены.\n\nРазбор №" in sent[0]["text"]
+            assert "keyboard" in sent[0]["reply_markup"]
+            assert any(
+                action == "editMessageText" and "Принять" in str(data["reply_markup"])
+                for action, data in calls
+            )
+            assert any(action == "deleteMessage" for action, _ in calls)
+            assert service.draft(42) is None
 
     asyncio.run(scenario())
 

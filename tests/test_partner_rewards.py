@@ -15,6 +15,7 @@ from mcc_bot.partner_rewards import (
     PartnerOfferInput,
     PartnerRepository,
     PartnerTierInput,
+    format_partner_offer_condition,
     resolve_store_matches,
 )
 from mcc_bot.stores import StoreError, StoreRepository
@@ -353,6 +354,117 @@ def _offer(brand_id, **overrides) -> PartnerOfferInput:
     }
     values.update(overrides)
     return PartnerOfferInput(**values)
+
+
+def test_address_list_is_compacted_for_display_without_changing_offer_eligibility(tmp_path) -> None:
+    _stores, partners, brand_id = _repositories(tmp_path)
+    conditions = (
+        "* при оплате через терминал в магазинах по адресам: "
+        "г. Минск, пр-т Победителей, 7; г. Брест, ул. Советская, 61"
+    )
+    partners.create_offer(
+        _offer(
+            brand_id,
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+            conditions=conditions,
+        ),
+        actor_id=1,
+    )
+    catalog = _catalog(tmp_path)
+
+    offline = resolve_store_matches(
+        catalog, partners, brand_id, "offline", "1234", on_date=date(2026, 8, 30)
+    )
+    online = resolve_store_matches(
+        catalog, partners, brand_id, "online", "1234", on_date=date(2026, 8, 30)
+    )
+    offline_vitamin = next(match for match in offline if match.card.id == "vitamin_d")
+    online_vitamin = next(match for match in online if match.card.id == "vitamin_d")
+    rendered = format_matches("1234", offline, {"1234": "Покупка"})
+
+    assert offline_vitamin.gross_value == Decimal("2")
+    assert format_moneyback(offline_vitamin) == "2% деньгами"
+    assert online_vitamin.gross_value == Decimal("3")
+    assert format_moneyback(online_vitamin) == "3% баллами"
+    assert "2% деньгами" in rendered
+    assert "только в точках, участвующих в предложении" in rendered
+    assert "Победителей" not in rendered and "Советская" not in rendered
+    assert partners.list_offers(brand_id)[0].conditions == conditions
+
+
+def test_approved_network_wide_komunarka_combo_hides_address_annotation(tmp_path) -> None:
+    stores = StoreRepository(tmp_path / "stores.sqlite3")
+    stores.initialize()
+    brand_id = stores.apply_change(
+        "add_merchant", {"name": "Коммунарка", "channel": "offline", "mcc": "1234"}, 1
+    ).brand_id
+    assert brand_id is not None
+    partners = PartnerRepository(stores)
+    partners.initialize()
+    conditions = (
+        "* при оплате через терминал в магазинах по адресам: "
+        "г. Минск, пр-т Победителей, 7; г. Брест, ул. Советская, 61"
+    )
+    offer = partners.create_offer(
+        _offer(
+            brand_id,
+            card_id="paritet_combo",
+            channel="offline",
+            mode="total",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2")),),
+            starts_on=None,
+            ends_on=None,
+            conditions=conditions,
+        ),
+        actor_id=1,
+        source_key="paritet:122633:paritet_combo:offline",
+    )
+
+    rendered_condition = format_partner_offer_condition(offer)
+    catalog_path = tmp_path / "combo-cards.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "cards": [
+                    {
+                        "id": "paritet_combo",
+                        "name": "КОМБОкарта",
+                        "issuer": "Паритетбанк",
+                        "emoji": "💳",
+                        "reward_programs": [
+                            {
+                                "id": "combo-base",
+                                "kind": "cash",
+                                "tax_exempt": False,
+                                "offers": [{"mcc": "1234", "value": 1}],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    resolved = resolve_store_matches(
+        CardCatalog.from_file(catalog_path),
+        partners,
+        brand_id,
+        "offline",
+        "1234",
+        on_date=date(2026, 8, 30),
+    )
+    rendered = format_matches("1234", resolved, {"1234": "Покупка"})
+
+    assert rendered_condition == ""
+    assert rendered == "🧾 MCC 1234 — Покупка\n\n1. 💳 КОМБОкарта — 2% деньгами"
+    assert offer.tiers[0].value == Decimal("2")
+    assert partners.list_offers(brand_id)[0].conditions == conditions
 
 
 def test_additional_points_are_composed_displayed_once_and_ranked(tmp_path) -> None:

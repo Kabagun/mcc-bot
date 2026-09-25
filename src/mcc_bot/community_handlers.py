@@ -350,6 +350,21 @@ async def _close_draft(
 ) -> None:
     """Discard a draft and restore its brand card when it has a live origin."""
 
+    if draft.data.get("review_edit"):
+        proposal_id = draft.data["review_edit"]["proposal_id"]
+        bound = service.editor_message(draft.user_id, draft.id)
+        service.cancel_draft(draft.user_id, draft.id, draft.version)
+        proposal = service.proposal(draft.user_id, proposal_id)
+        await _return_to_review(
+            update,
+            context,
+            service,
+            draft.user_id,
+            proposal,
+            bound,
+            notice="Редактирование отменено.",
+        )
+        return
     if draft.data.get("response_id"):
         proposal = service.cancel_response(draft.user_id, draft.id, draft.version)
         await _say(
@@ -425,8 +440,8 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
             "Добавление и исправление данных\n"
             "• Нажмите «➕ Добавить данные» и выберите магазин с MCC или партнёрство по "
             "карте. Из карточки магазина можно сразу открыть нужное изменение.\n"
-            "• Помощник сохраняет проверенные данные сразу. Для партнёрства укажите условия, "
-            "исключения и официальный источник; если ссылки нет, приложите скриншот.\n"
+            "• Помощник сохраняет проверенные данные сразу. Для партнёрства укажите условия "
+            "и исключения; по возможности добавьте официальный источник или скриншот.\n"
             "• Пока форма открыта, нижняя кнопка «❌ Отменить» закрывает её; после сохранения "
             "обычное меню возвращается.\n\n"
             "Очередь и проверка\n"
@@ -458,9 +473,8 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
         "Предложить данные\n"
         "• Нажмите «➕ Предложить данные» и выберите магазин с MCC или партнёрство по "
         "карте. Для MCC укажите, относится ли он к офлайн- или онлайн-оплате.\n"
-        "• Для партнёрства укажите карту, партнёра, выгоду, условия и исключения. Нужна "
-        "официальная ссылка или скриншот источника. В остальных формах ссылка или скриншот "
-        "также помогают помощнику проверить сведения.\n"
+        "• Для партнёрства укажите карту, партнёра, выгоду, условия и исключения. "
+        "Официальная ссылка или скриншот источника помогут проверить сведения, если они есть.\n"
         "• Проверьте заполненные данные и отправьте их. Дополнительного подтверждения нет: "
         "предложение сразу попадёт помощникам на проверку.\n"
         "• Если помощник попросит уточнение, бот пришлёт вопрос. Ответьте в открывшейся форме; "
@@ -1400,10 +1414,16 @@ def _queue_proposal_label(service: CommunityService, proposal: Proposal) -> str:
     return f"№{proposal.id} · {name[:32]} — {actions.get(proposal.kind, 'изменение данных')}"
 
 
-async def _review_view(update: Update, service: CommunityService, proposal: Proposal) -> None:
+def _review_content(
+    service: CommunityService, proposal: Proposal, *, notice: str | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the current review screen for a claimed proposal."""
+
     prefix = f"q:{proposal.id}:{proposal.version}:"
-    text = f"Разбор №{proposal.id} · резерв на 15 минут\n\n" + _display_payload(
-        service, proposal.kind, proposal.payload
+    text = (
+        (f"{notice}\n\n" if notice else "")
+        + f"Разбор №{proposal.id} · резерв на 15 минут\n\n"
+        + _display_payload(service, proposal.kind, proposal.payload)
     )
     if proposal.comment:
         text += "\nПриватный комментарий автора: " + proposal.comment
@@ -1422,7 +1442,33 @@ async def _review_view(update: Update, service: CommunityService, proposal: Prop
     if has_media:
         rows.append([("Скриншот", f"media:{proposal.id}:{proposal.version}")])
     rows.append([("Отменить разбор", prefix + "release")])
-    await _say_inline(update, text, _keyboard(rows))
+    return text, _keyboard(rows)
+
+
+async def _review_view(update: Update, service: CommunityService, proposal: Proposal) -> None:
+    text, markup = _review_content(service, proposal)
+    await _say_inline(update, text, markup)
+
+
+async def _return_to_review(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    reviewer_id: int,
+    proposal: Proposal,
+    bound: tuple[int, int] | None,
+    *,
+    notice: str,
+) -> None:
+    """Restore the main keyboard and put the current review below the editor."""
+
+    text, markup = _review_content(service, proposal, notice=notice)
+    await _say_with_restored_menu(update, text, keyboard_for(service, reviewer_id), markup)
+    if bound is not None:
+        try:
+            await context.bot.delete_message(chat_id=bound[0], message_id=bound[1])
+        except (TelegramError, AttributeError):
+            LOGGER.info("Could not delete the finished review editor")
 
 
 async def _recent_history(
@@ -1600,7 +1646,6 @@ def _form_fields(
         if isinstance(values.get("name"), str) and not isinstance(values.get("brand_id"), int):
             fields.extend(
                 (
-                    ("name", "Название нового магазина", True),
                     ("aliases", "Другие названия", False),
                     ("location", "Где находится", False),
                 )
@@ -2855,13 +2900,7 @@ async def _form_editor_callback(
         values["channel"] = channel
         data.update(values=values, active_field=None, dirty=True)
     elif action == "form_cancel":
-        if data.get("review_edit"):
-            proposal_id = data["review_edit"]["proposal_id"]
-            service.cancel_draft(draft.user_id, draft.id, draft.version)
-            await _say(update, "Редактор закрыт.", keyboard_for(service, draft.user_id))
-            await _review_view(update, service, service.proposal(draft.user_id, proposal_id))
-        else:
-            await _close_draft(update, context, service, draft)
+        await _close_draft(update, context, service, draft)
         return
     elif action == "form_save":
         if not _form_complete(data, service):
@@ -2879,13 +2918,17 @@ async def _form_editor_callback(
                 review["proposal_version"],
                 payload,
             )
+            bound = service.editor_message(draft.user_id, draft.id)
             service.cancel_draft(draft.user_id, draft.id, draft.version)
-            await _say(
+            await _return_to_review(
                 update,
-                "Изменения в заявке сохранены.",
-                keyboard_for(service, draft.user_id),
+                context,
+                service,
+                draft.user_id,
+                proposal,
+                bound,
+                notice="Изменения в заявке сохранены.",
             )
-            await _review_view(update, service, proposal)
             return
         preview = {
             "draft_mode": True,
@@ -4120,6 +4163,15 @@ async def _review_callback(
         }
         draft = service.begin(user_id, stage="form_editor", data=data, privileged=True)
         await _render_form_editor(update, context, service, draft)
+        query = update.callback_query
+        if query is not None and hasattr(query, "edit_message_text"):
+            try:
+                await query.edit_message_text(
+                    f"Разбор №{proposal.id} открыт в редакторе. После сохранения или отмены "
+                    "актуальная заявка появится внизу чата."
+                )
+            except TelegramError:
+                LOGGER.info("Could not mark the review screen as editing")
     elif action in {"approve", "replace_confirm"}:
         proposal = service.review(
             user_id,
