@@ -313,6 +313,19 @@ class CommunityService:
         with self.stores.connection() as conn:
             return self._role(conn, user_id)[0]
 
+    def unblock_reviewer_ids(self) -> tuple[int, ...]:
+        """Return the owner and currently active superadmins for private appeals."""
+
+        with self.stores.connection() as conn:
+            rows = conn.execute(
+                """SELECT user_id FROM community_roles
+                   WHERE active=1 AND role='superadmin' ORDER BY user_id"""
+            ).fetchall()
+        reviewers = ([self.owner_id] if self.owner_id is not None else []) + [
+            int(row["user_id"]) for row in rows if row["user_id"] != self.owner_id
+        ]
+        return tuple(reviewers)
+
     def is_admin(self, user_id: int) -> bool:
         """Check whether the user is a currently active reviewer or owner."""
 

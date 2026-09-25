@@ -92,6 +92,7 @@ class BlockedChat:
     last_name: str | None
     appeal_state: str
     appeal_text: str | None
+    permanent: bool
 
 
 def _identity_text(value: Any, *, maximum: int) -> str | None:
@@ -142,6 +143,34 @@ def _safe_error_text(error: TelegramError, bot: Bot, chat_id: int) -> str:
         if isinstance(candidate, int) and not isinstance(candidate, bool):
             related_ids.append(candidate)
     return redact_telegram_ids(value, *related_ids)
+
+
+def _block_chat(connection: sqlite3.Connection, chat_id: int) -> None:
+    """Escalate a new Forbidden response after a prior approval to a permanent ban."""
+
+    connection.execute("INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)", (chat_id,))
+    previous = connection.execute(
+        "SELECT active,appeal_state,permanent FROM blocked_chats WHERE chat_id=?", (chat_id,)
+    ).fetchone()
+    permanent = bool(
+        previous
+        and (
+            previous["permanent"]
+            or (not previous["active"] and previous["appeal_state"] == "approved")
+        )
+    )
+    connection.execute(
+        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state)
+           VALUES(?,1,CURRENT_TIMESTAMP,?,?) ON CONFLICT(chat_id) DO UPDATE SET
+           active=1,permanent=excluded.permanent,appeal_state=excluded.appeal_state,
+           blocked_at=CURRENT_TIMESTAMP,
+           appeal_text=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_text ELSE NULL END,
+           appeal_at=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_at ELSE NULL END,
+           resolved_at=CASE WHEN excluded.permanent=1 THEN blocked_chats.resolved_at ELSE NULL END,
+           resolved_by=CASE WHEN excluded.permanent=1
+                            THEN blocked_chats.resolved_by ELSE NULL END""",
+        (chat_id, int(permanent), "permanent" if permanent else "none"),
+    )
 
 
 class UserRegistry:
@@ -220,9 +249,18 @@ class UserRegistry:
                    appeal_text TEXT,
                    appeal_at TEXT,
                    resolved_at TEXT,
-                   resolved_by INTEGER
+                   resolved_by INTEGER,
+                   permanent INTEGER NOT NULL DEFAULT 0 CHECK(permanent IN (0, 1))
                 )"""
             )
+            blocked_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(blocked_chats)")
+            }
+            if "permanent" not in blocked_columns:
+                connection.execute(
+                    """ALTER TABLE blocked_chats ADD COLUMN permanent INTEGER NOT NULL
+                       DEFAULT 0 CHECK(permanent IN (0, 1))"""
+                )
             connection.execute(
                 """INSERT OR IGNORE INTO blocked_chats(chat_id)
                    SELECT DISTINCT f.chat_id FROM broadcast_failures f
@@ -412,16 +450,7 @@ class UserRegistry:
         if chat_id <= 0:
             return
         with closing(self._connect()) as connection, connection:
-            connection.execute(
-                """INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)""", (chat_id,)
-            )
-            connection.execute(
-                """INSERT INTO blocked_chats(chat_id) VALUES(?)
-                   ON CONFLICT(chat_id) DO UPDATE SET active=1,
-                   blocked_at=CURRENT_TIMESTAMP, appeal_state='none',
-                   appeal_text=NULL, appeal_at=NULL, resolved_at=NULL, resolved_by=NULL""",
-                (chat_id,),
-            )
+            _block_chat(connection, chat_id)
 
     def blocked_chat(self, chat_id: int) -> BlockedChat | None:
         """Return an active blocked chat, if one exists."""
@@ -429,12 +458,16 @@ class UserRegistry:
         with closing(self._connect()) as connection:
             row = connection.execute(
                 """SELECT b.chat_id,c.username,c.first_name,c.last_name,
-                   b.appeal_state,b.appeal_text FROM blocked_chats b
+                   b.appeal_state,b.appeal_text,b.permanent FROM blocked_chats b
                    JOIN telegram_chats c ON c.chat_id=b.chat_id
                    WHERE b.chat_id=? AND b.active=1""",
                 (chat_id,),
             ).fetchone()
-        return BlockedChat(**dict(row)) if row is not None else None
+        if row is None:
+            return None
+        values = dict(row)
+        values["permanent"] = bool(values["permanent"])
+        return BlockedChat(**values)
 
     def pending_appeals(self) -> tuple[BlockedChat, ...]:
         """Return pending unblock requests for authorized reviewers."""
@@ -442,12 +475,14 @@ class UserRegistry:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """SELECT b.chat_id,c.username,c.first_name,c.last_name,
-                   b.appeal_state,b.appeal_text FROM blocked_chats b
+                   b.appeal_state,b.appeal_text,b.permanent FROM blocked_chats b
                    JOIN telegram_chats c ON c.chat_id=b.chat_id
-                   WHERE b.active=1 AND b.appeal_state='pending'
+                   WHERE b.active=1 AND b.permanent=0 AND b.appeal_state='pending'
                    ORDER BY b.appeal_at,b.chat_id"""
             ).fetchall()
-        return tuple(BlockedChat(**dict(row)) for row in rows)
+        return tuple(
+            BlockedChat(**{**dict(row), "permanent": bool(row["permanent"])}) for row in rows
+        )
 
     def begin_appeal(self, chat_id: int) -> bool:
         """Start or restart an appeal for an active blocked private chat."""
@@ -456,7 +491,8 @@ class UserRegistry:
             cursor = connection.execute(
                 """UPDATE blocked_chats SET appeal_state='awaiting_reason',
                    appeal_text=NULL, appeal_at=NULL
-                   WHERE chat_id=? AND active=1""",
+                   WHERE chat_id=? AND active=1 AND permanent=0
+                   AND appeal_state IN ('none','rejected','awaiting_reason')""",
                 (chat_id,),
             )
             return cursor.rowcount == 1
@@ -471,7 +507,8 @@ class UserRegistry:
             cursor = connection.execute(
                 """UPDATE blocked_chats SET appeal_state='pending',
                    appeal_text=?, appeal_at=CURRENT_TIMESTAMP
-                   WHERE chat_id=? AND active=1 AND appeal_state='awaiting_reason'""",
+                   WHERE chat_id=? AND active=1 AND permanent=0
+                   AND appeal_state='awaiting_reason'""",
                 (reason, chat_id),
             )
             return cursor.rowcount == 1
@@ -483,7 +520,7 @@ class UserRegistry:
             cursor = connection.execute(
                 """UPDATE blocked_chats SET active=?, appeal_state=?,
                    resolved_at=CURRENT_TIMESTAMP,resolved_by=?
-                   WHERE chat_id=? AND active=1 AND appeal_state='pending'""",
+                   WHERE chat_id=? AND active=1 AND permanent=0 AND appeal_state='pending'""",
                 (0 if approve else 1, "approved" if approve else "rejected", reviewer_id, chat_id),
             )
             return cursor.rowcount == 1
@@ -520,13 +557,7 @@ class UserRegistry:
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
             if isinstance(error, Forbidden) and recipient.chat_id > 0:
-                connection.execute(
-                    """INSERT INTO blocked_chats(chat_id) VALUES(?)
-                       ON CONFLICT(chat_id) DO UPDATE SET active=1,
-                       blocked_at=CURRENT_TIMESTAMP,appeal_state='none',
-                       appeal_text=NULL,appeal_at=NULL,resolved_at=NULL,resolved_by=NULL""",
-                    (recipient.chat_id,),
-                )
+                _block_chat(connection, recipient.chat_id)
 
     def complete_broadcast_run(self, run_id: int) -> None:
         """Mark a fully iterated broadcast complete without hiding partial failures."""

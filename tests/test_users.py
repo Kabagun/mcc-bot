@@ -62,6 +62,17 @@ def test_user_registry_additively_migrates_legacy_schema(tmp_path) -> None:
                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"""
         )
         connection.execute("INSERT INTO telegram_chats(chat_id) VALUES(10)")
+        connection.execute(
+            """CREATE TABLE blocked_chats(
+               chat_id INTEGER PRIMARY KEY REFERENCES telegram_chats(chat_id),
+               active INTEGER NOT NULL, blocked_at TEXT NOT NULL,
+               appeal_state TEXT NOT NULL, appeal_text TEXT, appeal_at TEXT,
+               resolved_at TEXT, resolved_by INTEGER)"""
+        )
+        connection.execute(
+            """INSERT INTO blocked_chats(chat_id,active,blocked_at,appeal_state)
+               VALUES(10,0,'2026-09-25','approved')"""
+        )
 
     registry = UserRegistry(path)
     registry.initialize()
@@ -75,6 +86,9 @@ def test_user_registry_additively_migrates_legacy_schema(tmp_path) -> None:
         }
     assert {"username", "first_name", "last_name"} <= chat_columns
     assert {"broadcast_runs", "broadcast_failures"} <= tables
+    assert registry.blocked_chat(10) is None
+    registry.mark_forbidden(10)
+    assert registry.blocked_chat(10).permanent
 
 
 def test_user_registry_refreshes_and_clears_interaction_profile(tmp_path) -> None:
@@ -184,11 +198,21 @@ def test_forbidden_blocks_private_recipient_and_appeal_can_restore_access(tmp_pa
         registry.submit_appeal(10, "no")
     assert registry.submit_appeal(10, "Я хочу снова пользоваться ботом")
     assert registry.pending_appeals()[0].appeal_text == "Я хочу снова пользоваться ботом"
+    assert not registry.begin_appeal(10)
+    assert registry.pending_appeals()[0].appeal_state == "pending"
     assert registry.resolve_appeal(10, approve=True, reviewer_id=1)
     assert registry.blocked_chat(10) is None
     assert registry.chat_ids() == (10, 20)
     registry.initialize()
     assert registry.chat_ids() == (10, 20)
+    registry.mark_forbidden(10)
+    assert registry.blocked_chat(10).permanent
+    assert registry.blocked_chat(10).appeal_state == "permanent"
+    assert not registry.begin_appeal(10)
+    assert not registry.resolve_appeal(10, approve=True, reviewer_id=1)
+    assert registry.chat_ids() == (20,)
+    registry.initialize()
+    assert registry.blocked_chat(10).permanent
 
 
 def test_migration_blocks_only_latest_completed_forbidden_failures(tmp_path) -> None:

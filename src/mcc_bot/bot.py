@@ -42,6 +42,9 @@ from .stores import Brand, StoreRepository
 from .users import BlockedChat, UserRegistry
 
 LOGGER = logging.getLogger(__name__)
+REPEAT_BLOCK_WARNING = (
+    "Если после разблокировки вы снова заблокируете бота, доступ будет закрыт навсегда."
+)
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
 RESULT_TOO_LONG = (
@@ -363,7 +366,50 @@ async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def _blocked_label(chat: BlockedChat) -> str:
     """Format a private moderation label without exposing a Telegram ID."""
 
-    return (chat.first_name or chat.username or "Пользователь")[:32]
+    if chat.username:
+        return f"@{chat.username}"[:32]
+    name = " ".join(part for part in (chat.first_name, chat.last_name) if part)
+    return (name or "Пользователь")[:32]
+
+
+async def _notify_unblock_reviewers(context: ContextTypes.DEFAULT_TYPE, chat: BlockedChat) -> None:
+    """Send a new appeal privately to the owner and active superadmins."""
+
+    community: CommunityService = context.application.bot_data["community"]
+    registry: UserRegistry = context.application.bot_data["user_registry"]
+    markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Разблокировать", callback_data=f"unblock:approve:{chat.chat_id}"
+                )
+            ],
+            [InlineKeyboardButton("❌ Отклонить", callback_data=f"unblock:reject:{chat.chat_id}")],
+            [
+                InlineKeyboardButton(
+                    "📋 Открыть заявку", callback_data=f"unblock:view:{chat.chat_id}"
+                )
+            ],
+        ]
+    )
+    for reviewer_id in community.unblock_reviewer_ids():
+        if community.role(reviewer_id) not in {"owner", "superadmin"}:
+            continue
+        if registry.blocked_chat(reviewer_id) is not None:
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=reviewer_id,
+                text=(
+                    f"Запрос на разблокировку · {_blocked_label(chat)}\n\n"
+                    f"Причина: {chat.appeal_text}"
+                ),
+                reply_markup=markup,
+            )
+        except Forbidden:
+            registry.mark_forbidden(reviewer_id)
+        except TelegramError:
+            LOGGER.info("Could not deliver an unblock request to a reviewer")
 
 
 async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -387,11 +433,17 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
     if query is not None:
         await query.answer()
         if query.data == "unblock:request":
-            registry.begin_appeal(chat.id)
-            await query.edit_message_text(
-                "Расскажите, почему вы заблокировали бота и хотите снова им пользоваться. "
-                "Ответьте одним сообщением (5-500 символов)."
-            )
+            if blocked.permanent:
+                await query.edit_message_text(
+                    "Доступ закрыт навсегда после повторной блокировки бота."
+                )
+            elif registry.begin_appeal(chat.id):
+                await query.edit_message_text(
+                    "Расскажите, почему вы заблокировали бота и хотите снова им пользоваться. "
+                    "Ответьте одним сообщением (5-500 символов).\n\n" + REPEAT_BLOCK_WARNING
+                )
+            else:
+                await query.edit_message_text("Ваш запрос на разблокировку рассматривается.")
         else:
             await query.edit_message_text("Доступ ограничен. Откройте /start для запроса.")
         raise ApplicationHandlerStop
@@ -408,14 +460,23 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
         except ValueError as error:
             await message.reply_text(str(error))
         else:
-            await message.reply_text("Запрос отправлен на рассмотрение. О решении сообщим здесь.")
+            await message.reply_text(
+                "Запрос отправлен на рассмотрение. О решении сообщим здесь.\n\n"
+                + REPEAT_BLOCK_WARNING
+            )
+            appeal = registry.blocked_chat(chat.id)
+            if appeal is not None and appeal.appeal_state == "pending":
+                await _notify_unblock_reviewers(context, appeal)
         raise ApplicationHandlerStop
-    if blocked.appeal_state == "pending":
+    if blocked.permanent:
+        await message.reply_text("Доступ закрыт навсегда после повторной блокировки бота.")
+    elif blocked.appeal_state == "pending":
         await message.reply_text("Ваш запрос на разблокировку рассматривается.")
     else:
         await message.reply_text(
             "Ранее Telegram отклонил сообщения бота для вашего аккаунта. "
-            "Для восстановления доступа расскажите, почему вы блокировали бота.",
+            "Для восстановления доступа расскажите, почему вы блокировали бота.\n\n"
+            + REPEAT_BLOCK_WARNING,
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -449,7 +510,7 @@ async def unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             try:
                 await context.bot.send_message(
                     target,
-                    "Доступ восстановлен. Откройте /start."
+                    "Доступ восстановлен. Откройте /start.\n\n" + REPEAT_BLOCK_WARNING
                     if approve
                     else "Запрос на разблокировку отклонён. Вы можете подать новый запрос.",
                 )
