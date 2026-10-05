@@ -273,7 +273,16 @@ def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKe
     )
     if service.role(user_id) in {"owner", "superadmin"}:
         rows.append([(MANAGE_ROLES, "roles:0")])
-        rows.append([("🚫 Заявки на разблокировку", "unblock:list:0")])
+        return InlineKeyboardMarkup(
+            [
+                *_keyboard(rows).inline_keyboard,
+                [
+                    InlineKeyboardButton(
+                        "🚫 Заявки на разблокировку", callback_data="unblock:list:0"
+                    )
+                ],
+            ]
+        )
     return _keyboard(rows)
 
 

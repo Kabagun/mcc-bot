@@ -73,6 +73,36 @@ def _minimal_card(program: dict[str, object]) -> dict[str, object]:
     }
 
 
+def test_disabled_cards_preserve_rules_and_can_be_restored(tmp_path: Path) -> None:
+    card = _minimal_card({"kind": "cash", "tax_exempt": False, "default": {"value": 3}})
+    card["enabled"] = False
+    payload = {"version": 2, "cards": [card]}
+    catalog = CardCatalog.from_file(_write_payload(tmp_path, payload))
+    assert catalog.cards == ()
+    assert catalog.lookup("5411") == ()
+    assert catalog.disabled_cards[0].reward_programs[0].default_value == Decimal("3")
+
+    card["enabled"] = True
+    restored = CardCatalog.from_file(_write_payload(tmp_path, payload))
+    assert restored.disabled_cards == ()
+    assert restored.lookup("5411")[0].gross_percent == Decimal("3")
+
+
+@pytest.mark.parametrize("enabled", [None, 0, 1, "false"])
+def test_card_enabled_flag_requires_boolean(tmp_path: Path, enabled: object) -> None:
+    card = _minimal_card({"kind": "cash", "tax_exempt": False, "offers": []})
+    card["enabled"] = enabled
+    with pytest.raises(CatalogError, match="enabled"):
+        CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))
+
+
+def test_disabled_card_still_requires_valid_rules(tmp_path: Path) -> None:
+    card = _minimal_card({"kind": "cash", "tax_exempt": False, "default": {"value": -1}})
+    card["enabled"] = False
+    with pytest.raises(CatalogError):
+        CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))
+
+
 def test_partner_policy_fallback_is_readable_but_not_explicit(tmp_path: Path) -> None:
     card = _minimal_card({"id": "cash", "kind": "cash", "tax_exempt": False, "offers": []})
     catalog = CardCatalog.from_file(_write_payload(tmp_path, {"version": 2, "cards": [card]}))

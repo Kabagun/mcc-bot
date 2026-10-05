@@ -3,6 +3,7 @@ from __future__ import annotations
 # Russian UI copy and ordinary Unicode buttons are intentional.
 # ruff: noqa: RUF001
 import asyncio
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,6 +14,7 @@ from mcc_bot.partner_rewards import (
     PartnerOfferInput,
     PartnerRepository,
     PartnerTierInput,
+    resolve_store_matches,
 )
 from mcc_bot.store_handlers import handle_store_callback, search_stores
 from mcc_bot.stores import StoreRepository
@@ -95,6 +97,34 @@ def test_store_overview_exposes_total_partner_percent(tmp_path, catalog_path) ->
 
     assert "20% деньгами" in text
     assert "Alpha Card" in text
+
+
+def test_disabled_card_partner_offer_is_hidden_without_deleting_saved_offer(tmp_path, catalog_path):
+    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    next(card for card in payload["cards"] if card["id"] == "alpha")["enabled"] = False
+    catalog_path.write_text(json.dumps(payload), encoding="utf-8")
+    _stores, partners, brand_id, update, context = _context(
+        tmp_path, catalog_path, brand_name="Hidden Partner", mcc=None
+    )
+    partners.create_offer(_offer(brand_id, value="20"), actor_id=1)
+
+    asyncio.run(search_stores(update, context, "Hidden Partner"))
+    text = update.effective_message.reply_text.await_args.args[0]
+    assert "Alpha Card" not in text and "alpha" not in text
+    assert "🎁 Партнёрская выгода" not in text
+    catalog = context.application.bot_data["catalog"]
+    matches = resolve_store_matches(catalog, partners, brand_id, "online", "5411")
+    assert all(match.card.id != "alpha" for match in matches)
+    assert len(partners.list_active_offers(brand_id)) == 1
+
+    next(card for card in payload["cards"] if card["id"] == "alpha")["enabled"] = True
+    catalog_path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = CardCatalog.from_file(catalog_path)
+    assert next(
+        match.gross_value
+        for match in resolve_store_matches(restored, partners, brand_id, "online", "5411")
+        if match.card.id == "alpha"
+    ) == Decimal("20")
 
 
 def test_store_card_callback_is_partner_aware_but_raw_mcc_is_not(tmp_path, catalog_path) -> None:

@@ -691,4 +691,10 @@ def test_application_registers_details_callback_handler(
         for handler in handlers
         if isinstance(handler, CallbackQueryHandler) and handler.pattern
     }
-    assert patterns == {"^mcc_details:", "^mcc_lookup:", "^store:", "^community:", "^unblock:"}
+    assert patterns == {
+        "^mcc_details:",
+        "^mcc_lookup:",
+        "^store:",
+        "^community:",
+        "^(?:community:)?unblock:",
+    }

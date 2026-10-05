@@ -249,8 +249,9 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         text += "\n\nНаблюдений по офлайн- и онлайн-оплате пока нет."
         partners = context.application.bot_data.get("partners")
         offers = partners.list_active_offers(brand.id) if partners is not None else ()
+        cards = {card.id: card for card in context.application.bot_data["catalog"].cards}
+        offers = tuple((offer, tier) for offer, tier in offers if offer.card_id in cards)
         if offers:
-            cards = {card.id: card for card in context.application.bot_data["catalog"].cards}
             text += "\n\n<b>🎁 Партнёрская выгода</b>"
             for offer, tier in offers:
                 card = cards.get(offer.card_id)
@@ -459,7 +460,9 @@ def pending_overlay(context, brand_id: int) -> tuple[str, int, tuple[int, ...]]:
             )
     if offers:
         cards = {card.id: card for card in context.application.bot_data["catalog"].cards}
-        lines.extend(("", "<b>🎁 Партнёрская выгода</b>"))
+        offers = {key: payload for key, payload in offers.items() if payload["card_id"] in cards}
+        if offers:
+            lines.extend(("", "<b>🎁 Партнёрская выгода</b>"))
         for payload in offers.values():
             card = cards.get(payload["card_id"])
             lines.append(

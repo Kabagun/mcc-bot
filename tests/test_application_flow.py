@@ -88,6 +88,44 @@ def rendered(calls):
     return [data for action, data in calls if action in {"sendMessage", "editMessageText"}]
 
 
+@pytest.mark.parametrize("user_id", [42, 102])
+def test_management_unblock_button_and_already_sent_menu_route_correctly(telegram_app, user_id):
+    app, calls = telegram_app
+    registry = app.bot_data["user_registry"]
+    community = app.bot_data["community"]
+    community.set_role(42, 102, True)
+    community.set_role(42, 102, True, role="superadmin")
+    community.set_role(42, 103, True)
+    registry.mark_forbidden(101)
+    registry.begin_appeal(101)
+    registry.submit_appeal(101, "Хочу вернуться")
+
+    async def scenario():
+        async with app:
+            await app.process_update(incoming(app, "⚙️ Управление", user_id=user_id))
+            markup = rendered(calls)[-1]["reply_markup"]["inline_keyboard"]
+            button = next(
+                button for row in markup for button in row if "разблокировку" in button["text"]
+            )
+            assert button["callback_data"] == "unblock:list:0"
+            for sequence, data in enumerate(
+                (button["callback_data"], "community:unblock:list:0"), start=100
+            ):
+                calls.clear()
+                await app.process_update(tapped(app, data, user_id=user_id, sequence=sequence))
+                assert "Заявки на разблокировку: 1" in rendered(calls)[-1]["text"]
+                assert not any(action == "sendMessage" for action, _ in calls)
+            calls.clear()
+            await app.process_update(
+                tapped(app, "community:unblock:list:0", user_id=103, sequence=103)
+            )
+            assert not rendered(calls)
+            assert any(data.get("text") == "Недоступно" for action, data in calls)
+            assert len(registry.pending_appeals()) == 1
+
+    asyncio.run(scenario())
+
+
 def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app):
     app, calls = telegram_app
     registry = app.bot_data["user_registry"]

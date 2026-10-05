@@ -502,7 +502,7 @@ async def unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     await query.answer()
     registry: UserRegistry = context.application.bot_data["user_registry"]
-    parts = (query.data or "").split(":")
+    parts = (query.data or "").removeprefix("community:").split(":")
     if len(parts) == 3 and parts[1] in {"approve", "reject"} and parts[2].isdigit():
         target = int(parts[2])
         approve = parts[1] == "approve"
@@ -601,8 +601,10 @@ def build_application(settings: BotSettings) -> Application:
     application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
     application.add_handler(CallbackQueryHandler(lookup_mcc_callback, pattern=r"^mcc_lookup:"))
     application.add_handler(CallbackQueryHandler(handle_store_callback, pattern=r"^store:"))
+    application.add_handler(
+        CallbackQueryHandler(unblock_callback, pattern=r"^(?:community:)?unblock:")
+    )
     application.add_handler(CallbackQueryHandler(community_callback, pattern=r"^community:"))
-    application.add_handler(CallbackQueryHandler(unblock_callback, pattern=r"^unblock:"))
     application.add_handler(CallbackQueryHandler(expired_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, lookup_media))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_text))

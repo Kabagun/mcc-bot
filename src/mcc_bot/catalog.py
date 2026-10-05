@@ -669,9 +669,12 @@ def _parse_card(raw_card: Any, card_index: int) -> Card:
             "reward_limits",
             "reward_programs",
             "partner_policy",
+            "enabled",
         },
         prefix,
     )
+    if not isinstance(raw_card.get("enabled", True), bool):
+        raise CatalogError(f"{prefix}.enabled должен быть boolean")
     card_id = _text(raw_card.get("id"), f"{prefix}.id")
     name = _text(raw_card.get("name"), f"{prefix}.name")
     issuer = _text(raw_card.get("issuer"), f"{prefix}.issuer", required=False)
@@ -776,13 +779,14 @@ def _validate_reward_dimensions(cards: tuple[Card, ...]) -> None:
 
 @dataclass(frozen=True, slots=True)
 class CardCatalog:
-    """Validated in-memory catalog used by Telegram handlers and the CLI."""
+    """Validated catalog with enabled cards and separately preserved disabled cards."""
 
     cards: tuple[Card, ...]
+    disabled_cards: tuple[Card, ...] = ()
 
     @classmethod
     def from_file(cls, path: Path | str) -> CardCatalog:
-        """Read and validate a UTF-8 version 2 JSON catalog from ``path``."""
+        """Validate all cards; exclude entries with ``enabled: false`` from public lookup."""
 
         path = Path(path)
         try:
@@ -810,16 +814,20 @@ class CardCatalog:
             raise CatalogError("Поле cards каталога должно быть массивом")
 
         cards: list[Card] = []
+        disabled_cards: list[Card] = []
         seen_ids: set[str] = set()
         for card_index, raw_card in enumerate(raw_cards):
             card = _parse_card(raw_card, card_index)
             if card.id in seen_ids:
                 raise CatalogError(f"Повторяется идентификатор карты: {card.id}")
             seen_ids.add(card.id)
-            cards.append(card)
+            if raw_card.get("enabled", True):
+                cards.append(card)
+            else:
+                disabled_cards.append(card)
         card_tuple = tuple(cards)
-        _validate_reward_dimensions(card_tuple)
-        return cls(cards=card_tuple)
+        _validate_reward_dimensions((*card_tuple, *disabled_cards))
+        return cls(cards=card_tuple, disabled_cards=tuple(disabled_cards))
 
     def lookup(self, raw_mcc: str) -> tuple[CardMatch, ...]:
         """Return cards with at least one component, sorted by gross sum."""
