@@ -729,24 +729,35 @@ def test_review_editor_cancel_from_reply_keyboard_returns_to_review(flow):
 
 def test_role_aware_guide_explains_the_short_user_and_helper_paths(flow):
     user = send(flow, GUIDE, 10)
+    user.effective_message.reply_text.assert_awaited_once()
+    assert user.effective_message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
     user_text = user.effective_message.reply_text.await_args.args[0]
-    assert "Напишите название магазина" in user_text
-    assert "четыре цифры MCC из операции" in user_text
+    assert "<b>🔎 Поиск</b>\n" in user_text
+    assert "Отправьте название магазина" in user_text
+    assert "четыре цифры из банковской операции" in user_text
     assert "3% + 5% баллами" in user_text
-    assert "Офлайн и онлайн показаны отдельно" in user_text
+    assert "Выбирайте офлайн или онлайн" in user_text
     assert "магазин с MCC или партнёрство по карте" in user_text
-    assert "официальная ссылка или скриншот" in user_text.lower()
+    assert "официальный источник или скриншот" in user_text
 
     helper = send(flow, GUIDE, 2)
+    helper.effective_message.reply_text.assert_awaited_once()
+    assert helper.effective_message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
     helper_text = helper.effective_message.reply_text.await_args.args[0]
-    assert "резервируется за вами ровно на 15 минут" in helper_text
-    assert "Принять" in helper_text
-    assert "Отклонить" in helper_text
-    assert "Уточнить" in helper_text
+    assert "<b>15 минут</b>, без продления" in helper_text
+    assert "\n• <b>Принять</b> — сохранить данные." in helper_text
+    assert "\n• <b>Отклонить</b> — закрыть заявку." in helper_text
+    assert "\n• <b>Уточнить</b> — задать вопрос автору." in helper_text
     assert "Отменить разбор" in helper_text
-    assert "продлить резерв нельзя" in helper_text
-    assert "условия, исключения" in helper_text
-    assert "историю изменений" in helper_text
+    assert "условия и исключения" in helper_text
+    assert "История изменений" in helper_text
+    assert "управление помощниками" not in helper_text
+
+    service = flow.application.bot_data["community"]
+    service.set_role(1, 2, True, role="superadmin")
+    for user_id in (1, 2):
+        manager = send(flow, GUIDE, user_id)
+        assert "управление помощниками" in manager.effective_message.reply_text.await_args.args[0]
 
 
 def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
