@@ -539,6 +539,8 @@ attribution and pinned source URL.
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | bot only | Token issued by BotFather |
 | `BOT_OWNER_TELEGRAM_ID` | bot only | Explicit positive Telegram user ID of the owner |
+| `MCC_FORM_FLOW_V2_USER_IDS` | no | Comma-separated positive Telegram user IDs opted into guided forms; empty by default |
+| `MCC_FORM_FLOW_V2_ALL_USERS` | no | Explicitly enable guided forms for everyone; defaults to `false` |
 | `MCC_CATALOG_PATH` | no | Optional external catalog override; otherwise bundled data |
 | `MCC_DESCRIPTIONS_PATH` | no | Optional external MCC map override; otherwise bundled data |
 | `MCC_USER_REGISTRY_PATH` | no | SQLite chat registry path; defaults to `var/users.sqlite3` |
@@ -546,6 +548,15 @@ attribution and pinned source URL.
 | `LOG_LEVEL` | no | Python log level; defaults to `INFO` |
 
 Do not commit `.env`; it contains the Telegram token.
+
+Guided contribution forms can be piloted with `MCC_FORM_FLOW_V2_USER_IDS` while
+`MCC_FORM_FLOW_V2_ALL_USERS=false`. Only explicitly listed accounts receive the
+new interface; roles do not automatically enroll owners, superadmins or helpers.
+Existing unfinished forms keep their original interface. Add accounts to the
+allowlist only for an approved expansion; use the separate all-users flag for an
+approved full rollout. Neither setting grants editing or moderation permissions.
+The pilot uses the ordinary shared data: publishing a valid change makes it
+available to all users. Keep automated experiments in isolated test databases.
 
 ## Linux deployment
 

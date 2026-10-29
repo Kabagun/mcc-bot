@@ -29,6 +29,7 @@ from .community import (
     StaleAction,
     clean_text,
 )
+from .form_rollout import is_form_flow_v2_enabled
 from .formatting import format_limits, split_message
 from .stores import BrandMccGroup, normalize_store_name
 
@@ -860,6 +861,7 @@ async def _render_draft(
     draft: Draft,
     *,
     notice: str | None = None,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
 ) -> None:
     stage, data = draft.stage, draft.data
     if stage in {"reason", "review_preview"}:
@@ -1345,14 +1347,34 @@ async def _render_draft(
         if "recent_offset" in data:
             rows.append([("⬅️ К списку изменений", "recent_back")])
     elif stage == "reason":
-        text = "Что нужно уточнить у автора?"
+        if data.get("form_flow_v2"):
+            text = (
+                "❌ Отклонить заявку\n\nНапишите причину отклонения. Она сохранится в заявке."
+                if data.get("decision") == "rejected"
+                else "💬 Уточнить данные\n\nНапишите, что нужно уточнить у автора. "
+                "Заявка вернётся на проверку после ответа."
+            )
+        else:
+            text = "Что нужно уточнить у автора?"
     elif stage == "review_preview":
-        text = "Проверьте сообщение автору:\n\n" + data["reason"]
-        rows = [[("Отправить решение", "decision")]]
+        if data.get("form_flow_v2"):
+            rejecting = data.get("decision") == "rejected"
+            text = (
+                "Проверьте причину отклонения:\n\n" if rejecting else "Проверьте вопрос автору:\n\n"
+            ) + data["reason"]
+            rows = [[("Отклонить заявку" if rejecting else "Отправить вопрос", "decision")]]
+        else:
+            text = "Проверьте сообщение автору:\n\n" + data["reason"]
+            rows = [[("Отправить решение", "decision")]]
     else:
         raise CommunityError("Неизвестный шаг. Отмените действие и начните заново.")
     if notice:
         text = notice + "\n\n" + text
+    if data.get("form_flow_v2") and stage in {"reason", "review_preview"} and context is not None:
+        await _render_durable_form_message(
+            update, context, service, draft, text, _draft_buttons(draft, rows)
+        )
+        return
     markup: Any = _draft_buttons(draft, rows)
     if draft.data.get("draft_mode") and not rows:
         markup = draft_keyboard_for()
@@ -1746,6 +1768,83 @@ def _form_card(context: ContextTypes.DEFAULT_TYPE, card_id: str | None):
     return next((card for card in getattr(catalog, "cards", ()) if card.id == card_id), None)
 
 
+def _form_is_edit(data: dict[str, Any]) -> bool:
+    values = data.get("values", {})
+    return bool(
+        data.get("review_edit")
+        or data.get("form") == "store_metadata"
+        or values.get("merchant_id")
+        or values.get("offer_id")
+    )
+
+
+def _form_required_fields(data: dict[str, Any], service: CommunityService) -> tuple[str, ...]:
+    fields = tuple(
+        key
+        for key, _label, required in _form_fields(data["form"], data)
+        if required or (key == "location" and _location_required(service, data))
+    )
+    return tuple(sorted(fields, key=lambda key: key == "location"))
+
+
+def _form_field_filled(data: dict[str, Any], key: str) -> bool:
+    values = data.get("values", {})
+    if key == "brand_id":
+        return isinstance(values.get("brand_id"), int) or bool(values.get("name"))
+    return values.get(key) not in (None, "", [])
+
+
+def _form_next_required(data: dict[str, Any], service: CommunityService) -> str | None:
+    return next(
+        (key for key in _form_required_fields(data, service) if not _form_field_filled(data, key)),
+        None,
+    )
+
+
+def _finish_form_field(data: dict[str, Any], service: CommunityService) -> None:
+    """Advance guided creation only; direct edits return to the common form."""
+
+    data["active_field"] = (
+        _form_next_required(data, service)
+        if data.get("form_flow_v2") and data.get("guided_input")
+        else None
+    )
+    data.pop("matches", None)
+    data.pop("new_store_name", None)
+
+
+def _form_title(data: dict[str, Any]) -> str:
+    if data.get("form_flow_v2") is not True:
+        return _FORM_TITLES[data["form"]]
+    if data.get("review_edit"):
+        return "✏️ Исправить данные заявки"
+    if data["form"] == "store_metadata":
+        return "✏️ Данные магазина"
+    subject = "партнёрство по карте" if data["form"] == "partner_save" else "MCC магазина"
+    return f"✏️ Изменить {subject}" if _form_is_edit(data) else f"➕ Добавить {subject}"
+
+
+def _form_submit_label(service: CommunityService, draft: Draft) -> str:
+    if draft.data.get("form_flow_v2") is not True:
+        return "💾 Сохранить"
+    if _form_is_edit(draft.data):
+        return "Сохранить изменения" if service.is_admin(draft.user_id) else "Отправить на проверку"
+    return "Опубликовать" if service.is_admin(draft.user_id) else "Отправить на проверку"
+
+
+def _form_partner_policy(context: ContextTypes.DEFAULT_TYPE, data: dict[str, Any]) -> str:
+    card = _form_card(context, data.get("values", {}).get("card_id"))
+    if card is None or not _partner_policy_is_explicit(card):
+        return ""
+    reward = "деньгами" if card.partner_policy.reward_kind == "cash" else "баллами"
+    mode = (
+        "дополнительная выгода сверх обычной по карте"
+        if card.partner_policy.mode == "additional"
+        else "общая выгода, включая обычную по карте"
+    )
+    return f"Выгода {reward}: {mode}. Укажите процент от суммы покупки."
+
+
 def _partner_policy_is_explicit(card: Any) -> bool:
     """Return whether a card is intentionally enabled for partnership editing."""
 
@@ -1783,6 +1882,8 @@ def _form_value_text(
         return ", ".join(value or ())
     if key == "screenshot":
         return "приложен" if service.draft_has_media(draft.user_id, draft.id) else ""
+    if key == "value" and draft.data.get("form_flow_v2") and value not in {None, ""}:
+        return f"{value}%"
     return str(value) if value not in {None, ""} else ""
 
 
@@ -1966,6 +2067,7 @@ def _form_rows(
 ) -> list[list[tuple[str, str]]]:
     data = draft.data
     active = data.get("active_field")
+    pilot = data.get("form_flow_v2") is True
     rows: list[list[tuple[str, str]]] = []
     if active == "brand_id":
         for brand_id in data.get("matches", [])[:10]:
@@ -2002,14 +2104,18 @@ def _form_rows(
         )
         rows.append([(label, f"form_channel:{value}") for label, value in options[:1]])
         rows.append([(label, f"form_channel:{value}") for label, value in options[1:]])
-    else:
-        optional_open = bool(data.get("optional_open")) or _location_required(service, data)
+    elif not active or not pilot:
+        optional_open = bool(data.get("optional_open")) or (
+            not pilot and _location_required(service, data)
+        )
         for key, label, required in _form_fields(data["form"], data):
+            if pilot and key == "value":
+                label = "Размер выгоды, %"
             if key == "location" and _location_required(service, data):
                 required = True
-            if not required and not optional_open:
-                continue
             value = _form_value_text(context, service, draft, key)
+            if not required and not optional_open and not (pilot and value):
+                continue
             marker = "❗ " if required and not value else ""
             rows.append([(f"{marker}{label}{' *' if required else ''}", f"form_field:{key}")])
         rows.append(
@@ -2021,7 +2127,9 @@ def _form_rows(
             ]
         )
         if _form_complete(data, service):
-            rows.append([("💾 Сохранить", "form_save")])
+            rows.append([(_form_submit_label(service, draft), "form_save")])
+    if pilot and active:
+        rows.append([("← К форме", "form_back")])
     return rows
 
 
@@ -2096,8 +2204,9 @@ async def _render_form_editor(
 ) -> None:
     """Render and update the one durable Telegram message for a form."""
 
-    title = _FORM_TITLES[draft.data["form"]]
+    title = _form_title(draft.data)
     lines = [title]
+    pilot = draft.data.get("form_flow_v2") is True
     locked_brand_id = draft.data.get("locked_brand_id")
     if isinstance(locked_brand_id, int):
         locked_brand = _brand(service, locked_brand_id)
@@ -2105,22 +2214,91 @@ async def _render_form_editor(
             raise StaleAction("Магазин больше недоступен. Откройте форму заново.")
         lines.append(f"Магазин: {locked_brand.name}")
     lines.append("")
+    optional_open = bool(draft.data.get("optional_open")) or (
+        not pilot and _location_required(service, draft.data)
+    )
+    if pilot:
+        required_fields = _form_required_fields(draft.data, service)
+        filled = sum(_form_field_filled(draft.data, key) for key in required_fields)
+        lines.extend((f"Обязательные поля: {filled} из {len(required_fields)}", ""))
     for key, label, required in _form_fields(draft.data["form"], draft.data):
+        if pilot and key == "value":
+            label = "Размер выгоды, %"
         if key == "location" and _location_required(service, draft.data):
             required = True
         value = _form_value_text(context, service, draft, key)
+        if pilot and not required and not optional_open and not value:
+            continue
         marker = "❗" if required and not value else "•"
         lines.append(f"{marker} {label}{' *' if required else ''}: {value or 'не заполнено'}")
     active = draft.data.get("active_field")
     if active:
         lines.extend(("", _form_prompt(active)))
+        if pilot and active == "brand_id" and "matches" in draft.data:
+            if draft.data["matches"]:
+                lines.append("Выберите магазин из результатов или уточните название.")
+            elif draft.data.get("form") == "partner_save" and not service.is_admin(draft.user_id):
+                lines.append(
+                    "Магазин не найден. Уточните название. Для партнёрства нужен магазин "
+                    "с подтверждённым MCC — сначала можно предложить его в разделе «Магазин с MCC»."
+                )
+            else:
+                lines.append(
+                    "Магазин не найден. Уточните название или создайте новый кнопкой ниже."
+                )
+        if (
+            pilot
+            and active == "card_id"
+            and not any(
+                _partner_policy_is_explicit(card)
+                for card in getattr(context.application.bot_data.get("catalog"), "cards", ())
+            )
+        ):
+            lines.append(
+                "Для партнёрств пока нет доступных карт. Вернитесь к форме или отмените её."
+            )
     else:
-        lines.extend(("", "Поля можно заполнять в любом порядке."))
+        lines.extend(
+            (
+                "",
+                "Выберите поле, чтобы изменить его."
+                if pilot
+                else "Поля можно заполнять в любом порядке.",
+            )
+        )
+    if pilot and draft.data["form"] == "partner_save":
+        policy = _form_partner_policy(context, draft.data)
+        if policy:
+            lines.extend(("", policy))
     if notice:
         lines.extend(("", notice))
     text = "\n".join(lines)
     markup = _draft_buttons(draft, _form_rows(context, service, draft))
     await _render_durable_form_message(update, context, service, draft, text, markup)
+
+
+async def _render_pilot_error(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    user_id: int,
+    notice: str,
+) -> bool:
+    """Keep validation errors with the participant's current editable form."""
+
+    try:
+        draft = service.draft(user_id)
+        if draft is None or draft.data.get("form_flow_v2") is not True:
+            return False
+        if draft.stage == "form_editor":
+            await _render_form_editor(update, context, service, draft, notice=notice)
+            return True
+        if draft.stage in {"reason", "review_preview"}:
+            await _render_draft(update, service, draft, notice=notice, context=context)
+            return True
+    except CommunityError:
+        return False
+    return False
 
 
 def _new_form_data(
@@ -2130,6 +2308,8 @@ def _new_form_data(
     *,
     values: dict[str, Any] | None = None,
     locked_brand_id: int | None = None,
+    user_id: int | None = None,
+    pilot: bool | None = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "draft_mode": True,
@@ -2145,6 +2325,12 @@ def _new_form_data(
             raise StaleAction("Контекст магазина изменился. Откройте форму заново.")
         data["locked_brand_id"] = locked_brand_id
         data["brand_id"] = locked_brand_id
+    if pilot is True or (
+        pilot is None and user_id is not None and is_form_flow_v2_enabled(context, user_id)
+    ):
+        data["form_flow_v2"] = True
+        data["guided_input"] = not _form_is_edit(data)
+        _finish_form_field(data, service)
     return data
 
 
@@ -2166,6 +2352,7 @@ async def _begin_form(
         form,
         values=values,
         locked_brand_id=locked_brand_id,
+        user_id=user_id,
     )
     draft = service.begin(
         user_id,
@@ -2248,8 +2435,7 @@ def _consume_form_text(
             values.pop("aliases", None)
             values.pop("location", None)
             data.update(values=values, active_field=None, dirty=True)
-            data.pop("matches", None)
-            data.pop("new_store_name", None)
+            _finish_form_field(data, service)
         else:
             results = service.stores.search(query, limit=100)
             similar = (*results.matches, *results.suggestions)
@@ -2320,6 +2506,12 @@ def _consume_form_text(
                 amount = Decimal(normalized)
             except Exception as exc:
                 raise CommunityError("Введите числовое значение.") from exc
+            if (
+                field == "value"
+                and data.get("form_flow_v2")
+                and (not amount.is_finite() or amount <= 0 or amount > 100)
+            ):
+                raise CommunityError("Размер выгоды должен быть больше 0 и не больше 100%.")
             if not amount.is_finite() or amount < 0 or (field == "value" and amount <= 0):
                 raise CommunityError("Введите положительное числовое значение.")
             values[field] = format(amount.normalize(), "f")
@@ -2331,8 +2523,7 @@ def _consume_form_text(
     else:
         raise CommunityError("Поле больше недоступно.")
     data.update(values=values, active_field=None, dirty=True)
-    data.pop("matches", None)
-    data.pop("new_store_name", None)
+    _finish_form_field(data, service)
     return service.advance(
         draft.user_id,
         draft.id,
@@ -2472,15 +2663,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
                 await _say(update, "Редактор закрыт.", keyboard_for(service, user_id))
                 return False
             draft = _consume_text(service, draft, text, getattr(update, "update_id", None))
-            await _render_draft(update, service, draft)
+            await _render_draft(update, service, draft, context=context)
     except _ButtonOnlyInput as exc:
         draft = service.draft(user_id)
         if draft is None:
             await _say(update, str(exc), keyboard_for(service, user_id))
         else:
-            await _render_draft(update, service, draft, notice=str(exc))
+            await _render_draft(update, service, draft, notice=str(exc), context=context)
     except (CommunityError, ValueError) as exc:
-        await _say(update, str(exc), _current_reply_keyboard(service, user_id))
+        if not await _render_pilot_error(update, context, service, user_id, str(exc)):
+            await _say(update, str(exc), _current_reply_keyboard(service, user_id))
     return True
 
 
@@ -2813,9 +3005,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
                 update_id=getattr(update, "update_id", None),
                 media=(photo.file_id, photo.file_unique_id),
             )
-            await _render_draft(update, service, draft)
+            await _render_draft(update, service, draft, context=context)
     except (CommunityError, ValueError) as exc:
-        await _say(update, str(exc))
+        if not await _render_pilot_error(update, context, service, user_id, str(exc)):
+            await _say(update, str(exc))
     return True
 
 
@@ -2850,7 +3043,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _dispatch_callback(update, context, service, user_id, parts)
     except (CommunityError, ValueError, KeyError, IndexError) as exc:
         text = str(exc) if isinstance(exc, ValueError) else "Кнопка устарела. Откройте меню заново."
-        await _say(update, text, _current_reply_keyboard(service, user_id))
+        if not await _render_pilot_error(update, context, service, user_id, text):
+            await _say(update, text, _current_reply_keyboard(service, user_id))
 
 
 async def _finish_form_submission(
@@ -2858,14 +3052,17 @@ async def _finish_form_submission(
     context: ContextTypes.DEFAULT_TYPE,
     service: CommunityService,
     draft: Draft,
+    proposal: Proposal | None = None,
 ) -> None:
-    proposal = service.submit(draft.user_id, draft.id, draft.version)
+    proposal = proposal or service.submit(draft.user_id, draft.id, draft.version)
+    pilot = draft.data.get("form_flow_v2") is True
+    summary = _form_result_summary(context, service, draft, proposal) if pilot else ""
     if proposal.status != "approved":
         if draft.data.get("response_id"):
             await _notify_returned_review(context, service, proposal)
         await _say_with_restored_menu(
             update,
-            "Спасибо! Предложение отправлено на проверку.",
+            summary if pilot else "Спасибо! Предложение отправлено на проверку.",
             keyboard_for(service, draft.user_id),
         )
         return
@@ -2882,10 +3079,43 @@ async def _finish_form_submission(
     rows = [[("🏪 Открыть магазин", f"open_brand:{brand_id}")]] if brand_id else []
     await _say_with_restored_menu(
         update,
-        "Изменение сохранено.",
+        summary if pilot else "Изменение сохранено.",
         keyboard_for(service, draft.user_id),
         _keyboard(rows) if rows else None,
     )
+
+
+def _form_result_summary(
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    draft: Draft,
+    proposal: Proposal,
+) -> str:
+    """Confirm the object and its actual publication status after submission."""
+
+    if proposal.status != "approved":
+        title = "✅ Предложение отправлено на проверку"
+    elif _form_is_edit(draft.data):
+        title = "✅ Изменения сохранены"
+    else:
+        title = "✅ Данные опубликованы"
+    payload = proposal.payload
+    brand = _brand(service, payload["brand_id"]) if payload.get("brand_id") else None
+    name = payload.get("name") or (brand.name if brand else "магазин")
+    lines = [title, "", f"Магазин: {name}"]
+    if payload.get("mcc"):
+        lines.append(f"MCC: {payload['mcc']}")
+    if payload.get("card_id"):
+        card = _form_card(context, payload["card_id"])
+        lines.append(f"Карта: {card.name if card else 'выбранная карта'}")
+        reward = "деньгами" if payload.get("reward_kind") == "cash" else "баллами"
+        mode = "дополнительно" if payload.get("mode") == "additional" else "всего"
+        lines.append(f"Выгода: {payload['value']}% {reward}, {mode}")
+    if payload.get("channel"):
+        lines.append("Способ оплаты: " + _form_value_text(context, service, draft, "channel"))
+    if proposal.status != "approved":
+        lines.extend(("", "Если понадобится уточнение, бот напишет вам."))
+    return "\n".join(lines)
 
 
 async def _form_editor_callback(
@@ -2905,11 +3135,19 @@ async def _form_editor_callback(
         if field not in {item[0] for item in _form_fields(data["form"], data)}:
             raise StaleAction("Поле больше недоступно.")
         data["active_field"] = field
+        if data.get("form_flow_v2"):
+            data["guided_input"] = False
         data.pop("matches", None)
         data.pop("new_store_name", None)
     elif action == "form_more":
         data["optional_open"] = not bool(data.get("optional_open"))
         data["active_field"] = None
+        if data.get("form_flow_v2"):
+            data["guided_input"] = False
+    elif action == "form_back" and data.get("form_flow_v2"):
+        data.update(active_field=None, guided_input=False)
+        data.pop("matches", None)
+        data.pop("new_store_name", None)
     elif action == "form_select" and data.get("active_field") == "brand_id":
         if data.get("locked_brand_id") is not None:
             raise StaleAction("Магазин закреплён контекстом формы.")
@@ -2924,6 +3162,7 @@ async def _form_editor_callback(
         values.pop("aliases", None)
         values.pop("location", None)
         data.update(values=values, active_field=None, dirty=True)
+        _finish_form_field(data, service)
     elif action == "form_new_store" and data.get("active_field") == "brand_id":
         if data.get("locked_brand_id") is not None:
             raise StaleAction("Магазин закреплён контекстом формы.")
@@ -2940,6 +3179,7 @@ async def _form_editor_callback(
             values.pop("aliases", None)
             values.pop("location", None)
         data.update(values=values, active_field=None, dirty=True)
+        _finish_form_field(data, service)
     elif action == "form_card" and data.get("active_field") == "card_id":
         cards = getattr(context.application.bot_data.get("catalog"), "cards", ())
         index = int(parts[1])
@@ -2950,6 +3190,7 @@ async def _form_editor_callback(
             raise StaleAction("Карта больше недоступна.")
         values["card_id"] = card.id
         data.update(values=values, active_field=None, dirty=True)
+        _finish_form_field(data, service)
     elif action == "form_channel" and data.get("active_field") == "channel":
         channel = parts[1]
         allowed = (
@@ -2961,6 +3202,7 @@ async def _form_editor_callback(
             raise CommunityError("Выберите допустимый способ оплаты.")
         values["channel"] = channel
         data.update(values=values, active_field=None, dirty=True)
+        _finish_form_field(data, service)
     elif action == "form_cancel":
         await _close_draft(update, context, service, draft)
         return
@@ -2991,6 +3233,10 @@ async def _form_editor_callback(
                 bound,
                 notice="Изменения в заявке сохранены.",
             )
+            return
+        if data.get("form_flow_v2"):
+            proposal = service.submit_form(draft.user_id, draft.id, draft.version, kind, payload)
+            await _finish_form_submission(update, context, service, draft, proposal)
             return
         preview = {
             "draft_mode": True,
@@ -3162,10 +3408,14 @@ async def _begin_form_menu(
 ) -> None:
     if _brand(service, brand_id) is None:
         raise CommunityError("Магазин больше недоступен.")
+    user_id = _identity(update)
+    data = _menu_data(service, brand_id)
+    if user_id is not None and is_form_flow_v2_enabled(context, user_id):
+        data["form_flow_v2"] = True
     draft = service.begin(
-        _identity(update),
+        user_id,
         stage="form_menu",
-        data=_menu_data(service, brand_id),
+        data=data,
         privileged=False,
     )
     await _render_form_menu(update, context, service, draft)
@@ -3217,6 +3467,7 @@ async def _form_menu_callback(
                 "location": brand.location,
             },
             locked_brand_id=brand.id,
+            pilot=data.get("form_flow_v2") is True,
         )
     elif action == "menu_mcc_new":
         form_data = _new_form_data(
@@ -3225,6 +3476,7 @@ async def _form_menu_callback(
             "mcc_save",
             values={"brand_id": brand.id},
             locked_brand_id=brand.id,
+            pilot=data.get("form_flow_v2") is True,
         )
     elif action in {"menu_mcc_edit", "menu_mcc_delete"}:
         item = data["facts"][int(parts[1])]
@@ -3267,6 +3519,7 @@ async def _form_menu_callback(
                 "note": item["note"],
             },
             locked_brand_id=brand.id,
+            pilot=data.get("form_flow_v2") is True,
         )
     elif action == "menu_partner_new":
         form_data = _new_form_data(
@@ -3275,6 +3528,7 @@ async def _form_menu_callback(
             "partner_save",
             values={"brand_id": brand.id},
             locked_brand_id=brand.id,
+            pilot=data.get("form_flow_v2") is True,
         )
     elif action in {"menu_partner_edit", "menu_partner_delete"}:
         item = data["offers"][int(parts[1])]
@@ -3298,6 +3552,7 @@ async def _form_menu_callback(
             "partner_save",
             values=item,
             locked_brand_id=brand.id,
+            pilot=data.get("form_flow_v2") is True,
         )
     else:
         raise StaleAction("Действие больше недоступно.")
@@ -3423,7 +3678,7 @@ async def _dispatch_callback(
             },
             privileged=service.is_admin(user_id),
         )
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     elif action == "d":
         draft = service.draft(user_id)
         if draft is None or draft.id != parts[1] or draft.version != int(parts[2]):
@@ -3433,7 +3688,7 @@ async def _dispatch_callback(
         raise StaleAction("Кнопка устарела. Откройте /start.")
     elif action == "respond":
         draft = service.respond(user_id, int(parts[1]), int(parts[2]))
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     elif action == "media":
         reference = service.media_for(
             user_id, int(parts[1]), review_version=int(parts[2]) if len(parts) == 3 else None
@@ -3484,7 +3739,7 @@ async def _dispatch_callback(
                 "recent_offset": offset,
             },
         )
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     elif action == "history":
         brand_id = int(parts[1])
         if not _brand(service, brand_id, include_archived=True):
@@ -3495,7 +3750,7 @@ async def _dispatch_callback(
             privileged=True,
             data={"editing": True, "brand_id": brand_id},
         )
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     elif action == "digest":
         if len(parts) != 3 or parts[1] not in {"0", "1"}:
             raise CommunityError("Некорректная настройка.")
@@ -3660,7 +3915,7 @@ async def _draft_callback(
         if meaningful and stage != "cancel_confirm":
             data["cancel_stage"] = stage
             draft = service.advance(draft.user_id, draft.id, draft.version, "cancel_confirm", data)
-            await _render_draft(update, service, draft)
+            await _render_draft(update, service, draft, context=context)
             return
         await _close_draft(update, context, service, draft)
         return
@@ -3672,10 +3927,10 @@ async def _draft_callback(
         if not isinstance(previous, str) or previous == "cancel_confirm":
             raise StaleAction("Не удалось восстановить предыдущий шаг.")
         draft = service.advance(draft.user_id, draft.id, draft.version, previous, data)
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
         return
     if action == "resume":
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
         return
     if action == "submit" and stage == "preview":
         proposal = service.submit(draft.user_id, draft.id, draft.version)
@@ -3723,7 +3978,7 @@ async def _draft_callback(
         stage = history[-1]
         data["back"] = history[:-1]
         draft = service.advance(draft.user_id, draft.id, draft.version, stage, data)
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
         return
     if action == "select" and stage in {
         "choose",
@@ -4157,7 +4412,7 @@ async def _draft_callback(
     else:
         raise StaleAction("Кнопка не относится к текущему шагу.")
     draft = _advance(service, draft, stage, data)
-    await _render_draft(update, service, draft)
+    await _render_draft(update, service, draft, context=context)
 
 
 def _history_offset(value: str) -> int:
@@ -4220,7 +4475,10 @@ async def _review_callback(
             form,
             values=values,
             locked_brand_id=locked_brand_id,
+            user_id=user_id,
         )
+        if data.get("form_flow_v2"):
+            data.update(active_field=None, guided_input=False)
         data["review_edit"] = {
             "proposal_id": proposal.id,
             "proposal_version": proposal.version,
@@ -4297,9 +4555,10 @@ async def _review_callback(
                 "proposal_version": version,
                 "decision": "rejected",
                 "draft_mode": True,
+                **({"form_flow_v2": True} if is_form_flow_v2_enabled(context, user_id) else {}),
             },
         )
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     elif action == "clarify":
         service.validate_review(user_id, proposal_id, version)
         draft = service.begin(
@@ -4311,8 +4570,9 @@ async def _review_callback(
                 "proposal_version": version,
                 "decision": "clarification",
                 "draft_mode": True,
+                **({"form_flow_v2": True} if is_form_flow_v2_enabled(context, user_id) else {}),
             },
         )
-        await _render_draft(update, service, draft)
+        await _render_draft(update, service, draft, context=context)
     else:
         raise CommunityError("Действие недоступно.")

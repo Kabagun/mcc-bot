@@ -44,6 +44,40 @@ def _owner_id() -> int:
     return int(raw_value)
 
 
+def _form_flow_v2_user_ids() -> frozenset[int]:
+    name = "MCC_FORM_FLOW_V2_USER_IDS"
+    raw_value = os.getenv(name, "")
+    if not raw_value.isascii():
+        raise SettingsError(f"{name} должен содержать положительные ID через запятую")
+    if not raw_value.strip():
+        return frozenset()
+    user_ids = set()
+    for raw_id in raw_value.split(","):
+        value = raw_id.strip()
+        if (
+            not value.isascii()
+            or not value.isdecimal()
+            or len(value) > 19
+            or not 0 < int(value) < 2**63
+        ):
+            raise SettingsError(f"{name} должен содержать положительные ID через запятую")
+        user_ids.add(int(value))
+    return frozenset(user_ids)
+
+
+def _form_flow_v2_all_users() -> bool:
+    name = "MCC_FORM_FLOW_V2_ALL_USERS"
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return False
+    value = raw_value.strip().casefold() if raw_value.isascii() else ""
+    if value in {"true", "1", "yes"}:
+        return True
+    if value in {"false", "0", "no"}:
+        return False
+    raise SettingsError(f"{name} должен содержать true/false, 1/0 или yes/no")
+
+
 @dataclass(frozen=True, slots=True)
 class BotSettings:
     """Complete Telegram bot configuration."""
@@ -55,6 +89,8 @@ class BotSettings:
     stores_path: Path = DEFAULT_STORES_PATH
     owner_telegram_id: int | None = None
     log_level: str = "INFO"
+    form_flow_v2_user_ids: frozenset[int] = frozenset()
+    form_flow_v2_all_users: bool = False
 
     @classmethod
     def from_environment(cls) -> BotSettings:
@@ -71,4 +107,6 @@ class BotSettings:
             stores_path=_path("MCC_STORES_PATH", DEFAULT_STORES_PATH),
             owner_telegram_id=_owner_id(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            form_flow_v2_user_ids=_form_flow_v2_user_ids(),
+            form_flow_v2_all_users=_form_flow_v2_all_users(),
         )

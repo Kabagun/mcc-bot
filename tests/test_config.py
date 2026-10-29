@@ -18,6 +18,8 @@ from mcc_bot.config import (
 def _set_required_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("BOT_OWNER_TELEGRAM_ID", "12345")
+    monkeypatch.delenv("MCC_FORM_FLOW_V2_USER_IDS", raising=False)
+    monkeypatch.delenv("MCC_FORM_FLOW_V2_ALL_USERS", raising=False)
 
 
 def test_token_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,6 +63,96 @@ def test_owner_must_be_an_explicit_positive_user_id(monkeypatch, raw):
     monkeypatch.setenv("BOT_OWNER_TELEGRAM_ID", raw)
     with pytest.raises(SettingsError, match="BOT_OWNER_TELEGRAM_ID"):
         BotSettings.from_environment()
+
+
+def test_form_rollout_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required_environment(monkeypatch)
+
+    settings = BotSettings.from_environment()
+
+    assert settings.form_flow_v2_user_ids == frozenset()
+    assert settings.form_flow_v2_all_users is False
+    assert BotSettings(token="token").form_flow_v2_user_ids == frozenset()
+    assert BotSettings(token="token").form_flow_v2_all_users is False
+
+
+@pytest.mark.parametrize("raw", ["", " ", "\t"])
+def test_empty_form_rollout_allowlist_stays_disabled(monkeypatch, raw):
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_USER_IDS", raw)
+
+    assert BotSettings.from_environment().form_flow_v2_user_ids == frozenset()
+
+
+def test_form_rollout_reads_explicit_user_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_USER_IDS", f"12345, 23456,12345,{2**63 - 1}")
+
+    settings = BotSettings.from_environment()
+
+    assert settings.form_flow_v2_user_ids == frozenset({12345, 23456, 2**63 - 1})
+    assert settings.form_flow_v2_all_users is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ",12345",
+        "12345,",
+        "12345,,23456",
+        "12345, ,23456",
+        "0",
+        "-12345",
+        "+12345",
+        "1.5",
+        "true",
+        "false",
+        "someone",
+        "１２３",  # noqa: RUF001
+        "\u200312345",
+        str(2**63),
+        "9" * 5000,
+    ],
+)
+def test_invalid_form_rollout_user_ids_are_rejected_without_echoing_values(monkeypatch, raw):
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_USER_IDS", raw)
+
+    with pytest.raises(SettingsError, match="MCC_FORM_FLOW_V2_USER_IDS") as error:
+        BotSettings.from_environment()
+
+    assert str(error.value) == (
+        "MCC_FORM_FLOW_V2_USER_IDS должен содержать положительные ID через запятую"
+    )
+
+
+@pytest.mark.parametrize("raw", ["true", "TRUE", "1", "yes", " Yes "])
+def test_form_rollout_all_users_requires_explicit_true(monkeypatch, raw):
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_ALL_USERS", raw)
+
+    assert BotSettings.from_environment().form_flow_v2_all_users is True
+
+
+@pytest.mark.parametrize("raw", ["false", "FALSE", "0", "no", " No "])
+def test_form_rollout_all_users_accepts_explicit_false(monkeypatch, raw):
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_ALL_USERS", raw)
+
+    assert BotSettings.from_environment().form_flow_v2_all_users is False
+
+
+@pytest.mark.parametrize("raw", ["", " ", "2", "on", "off", "truthy", "\u2003true", "да"])
+def test_invalid_form_rollout_all_users_flag_is_rejected_without_echoing_value(monkeypatch, raw):
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("MCC_FORM_FLOW_V2_ALL_USERS", raw)
+
+    with pytest.raises(SettingsError, match="MCC_FORM_FLOW_V2_ALL_USERS") as error:
+        BotSettings.from_environment()
+
+    assert (
+        str(error.value) == "MCC_FORM_FLOW_V2_ALL_USERS должен содержать true/false, 1/0 или yes/no"
+    )
 
 
 def test_load_environment_reads_dotenv_from_working_directory(

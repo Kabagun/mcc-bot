@@ -838,6 +838,7 @@ class CommunityService:
             self._discard_draft(conn, user_id)
             draft_id = uuid.uuid4().hex[:12]
             data = self._protect_draft_data(conn, stage, dict(data or {}))
+            data = self._protect_form_snapshot(conn, stage, data)
             if stage == "preview" and data.get("kind") in EDIT_KINDS:
                 data["expected"] = self._snapshot(conn, data["kind"], data["payload"])
             conn.execute(
@@ -937,6 +938,7 @@ class CommunityService:
                     (draft.id, media[0], media[1], time.time()),
                 )
             data = self._protect_draft_data(conn, stage, data, current=draft.data)
+            data = self._protect_form_snapshot(conn, stage, data, current=draft.data)
             if (
                 stage == "preview"
                 and draft.stage != "preview"
@@ -1996,6 +1998,63 @@ class CommunityService:
             }
         return result
 
+    def _protect_form_snapshot(
+        self,
+        conn: sqlite3.Connection,
+        stage: str,
+        data: dict[str, Any],
+        *,
+        current: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Keep the source seen when a pilot edit opened until it is submitted."""
+
+        if stage != "form_editor" or data.get("form_flow_v2") is not True:
+            return data
+        kind, values = self._draft_effect(data)
+        if values is None or not (
+            kind == "store_metadata"
+            or (kind == "mcc_save" and "merchant_id" in values)
+            or (kind == "partner_save" and "offer_id" in values)
+        ):
+            return data
+        previous = (current or {}).get("form_expected")
+        if previous is not None and (current or {}).get("form") == kind:
+            data["form_expected"] = previous
+        else:
+            data["form_expected"] = self._snapshot(conn, kind, values)
+        return data
+
+    def submit_form(
+        self,
+        user_id: int,
+        draft_id: str,
+        version: int,
+        kind: str,
+        payload: dict[str, Any],
+    ) -> Proposal:
+        """Submit a pilot editor atomically, retaining its full state on failure."""
+
+        with self.stores.transaction() as conn:
+            draft = self._draft(conn, user_id, draft_id, version)
+            if draft.stage != "form_editor" or draft.data.get("form_flow_v2") is not True:
+                raise StaleAction("Откройте текущую форму заново.")
+            expected_kind = draft.data.get("form")
+            if expected_kind == "store_create":
+                expected_kind = "mcc_save"
+            if kind != expected_kind or kind not in LOCKED_BRAND_KINDS:
+                raise StaleAction("Вид данных формы изменился. Откройте форму заново.")
+            payload = self._validate_payload(kind, payload)
+            protected = self._protect_draft_data(
+                conn,
+                "preview",
+                {**draft.data, "kind": kind, "payload": payload},
+                current=draft.data,
+            )
+            protected["expected"] = draft.data.get("form_expected") or self._snapshot(
+                conn, kind, payload
+            )
+            return self._submit_draft(conn, draft, protected)
+
     def submit(self, user_id: int, draft_id: str, version: int) -> Proposal:
         """Submit user evidence or atomically publish a trusted preview once."""
 
@@ -2006,96 +2065,104 @@ class CommunityService:
             protected_data = self._protect_draft_data(
                 conn, draft.stage, draft.data, current=draft.data
             )
-            role = self._role(conn, user_id)[0]
-            kind = protected_data.get("kind", "")
-            if kind not in (EDIT_KINDS if role != "user" else PUBLIC_KINDS):
-                raise AccessDenied("Это изменение доступно только помощникам.")
-            payload = self._validate_payload(kind, protected_data.get("payload", {}))
-            if kind == "partner_save" and "name" in payload and role == "user":
-                raise AccessDenied("Новый магазин для партнёрства может создать только помощник.")
-            if (
-                role == "user"
-                and kind in {"card_partnership", "partner_save"}
-                and "brand_id" in payload
-                and not self.stores.list_brand_mcc_groups(payload["brand_id"], connection=conn)
-            ):
-                raise AccessDenied(
-                    "Партнёрство можно предложить только для магазина с подтверждённым MCC."
-                )
-            response_id = protected_data.get("response_id")
-            fingerprint = self._fingerprint(kind, payload)
-            self._ensure_not_duplicate(
-                conn, kind, payload, fingerprint, exclude_proposal_id=response_id
+            return self._submit_draft(conn, draft, protected_data)
+
+    def _submit_draft(
+        self, conn: sqlite3.Connection, draft: Draft, protected_data: dict[str, Any]
+    ) -> Proposal:
+        """Use one publication path for previews and atomic pilot editors."""
+
+        user_id = draft.user_id
+        role = self._role(conn, user_id)[0]
+        kind = protected_data.get("kind", "")
+        if kind not in (EDIT_KINDS if role != "user" else PUBLIC_KINDS):
+            raise AccessDenied("Это изменение доступно только помощникам.")
+        payload = self._validate_payload(kind, protected_data.get("payload", {}))
+        if kind == "partner_save" and "name" in payload and role == "user":
+            raise AccessDenied("Новый магазин для партнёрства может создать только помощник.")
+        if (
+            role == "user"
+            and kind in {"card_partnership", "partner_save"}
+            and "brand_id" in payload
+            and not self.stores.list_brand_mcc_groups(payload["brand_id"], connection=conn)
+        ):
+            raise AccessDenied(
+                "Партнёрство можно предложить только для магазина с подтверждённым MCC."
             )
-            comment = protected_data.get("comment", "")
-            if comment:
-                comment = clean_text(comment)
-            media = conn.execute(
-                "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
-            ).fetchone()
-            original = self._proposal(conn, response_id) if response_id else None
-            if original and (
-                original.user_id != user_id
-                or original.status != "clarification"
-                or original.version != protected_data.get("response_version")
-            ):
-                raise StaleAction("Предложение уже изменилось.")
-            now = time.time()
-            if original:
-                proposal_id = original.id
-                reviewer_id = original.reviewer_id
-                if reviewer_id is not None and self._role(conn, reviewer_id)[0] == "user":
-                    reviewer_id = None
-                conn.execute(
-                    """UPDATE community_proposals SET status='pending',version=version+1,
-                       comment=?,updated_at=?,reviewer_id=?,lease_until=? WHERE id=?""",
-                    (
-                        comment,
-                        now,
-                        reviewer_id,
-                        now + LEASE_SECONDS if reviewer_id is not None else None,
-                        proposal_id,
-                    ),
-                )
-                if media:
-                    conn.execute("DELETE FROM community_media WHERE proposal_id=?", (proposal_id,))
-            else:
-                cursor = conn.execute(
-                    """INSERT INTO community_proposals(draft_id,user_id,kind,payload,comment,
-                       status,version,created_at,updated_at,fingerprint)
-                       VALUES(?,?,?,?,?,'pending',1,?,?,?)""",
-                    (
-                        draft.id,
-                        user_id,
-                        kind,
-                        _safe_json(payload),
-                        comment,
-                        now,
-                        now,
-                        fingerprint,
-                    ),
-                )
-                proposal_id = cursor.lastrowid
+        response_id = protected_data.get("response_id")
+        fingerprint = self._fingerprint(kind, payload)
+        self._ensure_not_duplicate(
+            conn, kind, payload, fingerprint, exclude_proposal_id=response_id
+        )
+        comment = protected_data.get("comment", "")
+        if comment:
+            comment = clean_text(comment)
+        media = conn.execute(
+            "SELECT 1 FROM community_media WHERE draft_id=?", (draft.id,)
+        ).fetchone()
+        original = self._proposal(conn, response_id) if response_id else None
+        if original and (
+            original.user_id != user_id
+            or original.status != "clarification"
+            or original.version != protected_data.get("response_version")
+        ):
+            raise StaleAction("Предложение уже изменилось.")
+        now = time.time()
+        if original:
+            proposal_id = original.id
+            reviewer_id = original.reviewer_id
+            if reviewer_id is not None and self._role(conn, reviewer_id)[0] == "user":
+                reviewer_id = None
             conn.execute(
-                "UPDATE community_media SET proposal_id=?,draft_id=NULL WHERE draft_id=?",
-                (proposal_id, draft.id),
+                """UPDATE community_proposals SET status='pending',version=version+1,
+                   comment=?,updated_at=?,reviewer_id=?,lease_until=? WHERE id=?""",
+                (
+                    comment,
+                    now,
+                    reviewer_id,
+                    now + LEASE_SECONDS if reviewer_id is not None else None,
+                    proposal_id,
+                ),
             )
-            proposal = self._proposal(conn, proposal_id)
-            # A response to clarification always returns to review, even if its
-            # author received a role while their original proposal was pending.
-            if role != "user" and not original:
-                audit_id = self._publish(
-                    conn, proposal, user_id, expected=protected_data.get("expected")
-                )
-                conn.execute(
-                    """UPDATE community_proposals SET status='approved',version=version+1,
-                       reviewer_id=?,audit_id=?,finalized_at=? WHERE id=?""",
-                    (user_id, audit_id, now, proposal_id),
-                )
-                self._expire_proposal_media(conn, proposal_id, now)
-            conn.execute("DELETE FROM community_editor_messages WHERE user_id=?", (user_id,))
-            conn.execute("DELETE FROM community_drafts WHERE user_id=?", (user_id,))
-            return self._proposal(conn, proposal_id)
+            if media:
+                conn.execute("DELETE FROM community_media WHERE proposal_id=?", (proposal_id,))
+        else:
+            cursor = conn.execute(
+                """INSERT INTO community_proposals(draft_id,user_id,kind,payload,comment,
+                   status,version,created_at,updated_at,fingerprint)
+                   VALUES(?,?,?,?,?,'pending',1,?,?,?)""",
+                (
+                    draft.id,
+                    user_id,
+                    kind,
+                    _safe_json(payload),
+                    comment,
+                    now,
+                    now,
+                    fingerprint,
+                ),
+            )
+            proposal_id = cursor.lastrowid
+        conn.execute(
+            "UPDATE community_media SET proposal_id=?,draft_id=NULL WHERE draft_id=?",
+            (proposal_id, draft.id),
+        )
+        proposal = self._proposal(conn, proposal_id)
+        # A response to clarification always returns to review, even if its
+        # author received a role while their original proposal was pending.
+        if role != "user" and not original:
+            audit_id = self._publish(
+                conn, proposal, user_id, expected=protected_data.get("expected")
+            )
+            conn.execute(
+                """UPDATE community_proposals SET status='approved',version=version+1,
+                   reviewer_id=?,audit_id=?,finalized_at=? WHERE id=?""",
+                (user_id, audit_id, now, proposal_id),
+            )
+            self._expire_proposal_media(conn, proposal_id, now)
+        conn.execute("DELETE FROM community_editor_messages WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM community_drafts WHERE user_id=?", (user_id,))
+        return self._proposal(conn, proposal_id)
 
     def respond(self, user_id: int, proposal_id: int, version: int) -> Draft:
         """Create a private clarification draft tied to the current proposal version."""

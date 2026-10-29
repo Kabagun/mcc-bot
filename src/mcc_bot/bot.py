@@ -34,6 +34,7 @@ from .community_handlers import handle_media as handle_community_media
 from .community_handlers import handle_text as handle_community_text
 from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
+from .form_rollout import FormFlowRollout
 from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
 from .partner_rewards import PartnerRepository
@@ -594,6 +595,10 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["stores"] = stores
     application.bot_data["partners"] = partners
     application.bot_data["community"] = community
+    application.bot_data["form_flow_v2"] = FormFlowRollout(
+        user_ids=settings.form_flow_v2_user_ids,
+        all_users=settings.form_flow_v2_all_users,
+    )
     application.add_handler(TypeHandler(Update, remember_chat), group=-2)
     application.add_handler(TypeHandler(Update, enforce_blocked_access), group=-1)
     application.add_handler(CommandHandler("start", start))
