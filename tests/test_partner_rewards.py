@@ -383,7 +383,7 @@ def test_address_list_is_compacted_for_display_without_changing_offer_eligibilit
     )
     offline_vitamin = next(match for match in offline if match.card.id == "vitamin_d")
     online_vitamin = next(match for match in online if match.card.id == "vitamin_d")
-    rendered = format_matches("1234", offline, {"1234": "Покупка"})
+    rendered = format_matches("1234", offline, {"1234": "Покупка"}, details=True)
 
     assert offline_vitamin.gross_value == Decimal("2")
     assert format_moneyback(offline_vitamin) == "2% деньгами"
@@ -490,7 +490,9 @@ def test_additional_points_are_composed_displayed_once_and_ranked(tmp_path) -> N
     assert format_moneyback(resolved[0]) == "3% + 5% баллами"
     rendered = format_matches("1234", resolved, {"1234": "Покупка"})
     assert "Витамин Д — 3% + 5% баллами" in rendered
-    assert ("сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026") in rendered
+    assert "сумма от" not in rendered and "по 31.10.2026" not in rendered
+    expanded = format_matches("1234", resolved, {"1234": "Покупка"}, details=True)
+    assert ("сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026") in expanded
     assert "Партнёрское предложение" not in rendered
     assert "Только при онлайн-оплате" not in rendered
 
@@ -556,9 +558,8 @@ def test_points_exclusion_falls_back_to_ordinary_money_with_reason(tmp_path) -> 
 
     assert format_moneyback(vitamin) == "1% деньгами"
     assert vitamin.gross_value == Decimal("1")
-    assert vitamin.context_lines == (
-        "Баллы Плюшек не начисляются: С 15.11.2021 бонусные баллы не начисляются",
-    )
+    assert vitamin.context_lines == ()
+    assert "не начисляются" not in format_matches("5411", (vitamin,), details=True)
 
 
 def test_specific_partner_exclusion_does_not_undo_broader_base_suppression(tmp_path) -> None:
@@ -590,7 +591,7 @@ def test_specific_partner_exclusion_does_not_undo_broader_base_suppression(tmp_p
     vitamin = next(match for match in resolved if match.card.id == "vitamin_d")
 
     assert format_moneyback(vitamin) == "1% деньгами"
-    assert vitamin.context_lines == ("Баллы Плюшек не начисляются: Партнёрская акция не действует",)
+    assert vitamin.context_lines == ()
 
 
 def test_total_points_replace_the_complete_ordinary_reward(tmp_path) -> None:
@@ -633,9 +634,7 @@ def test_excluded_total_offer_preserves_ordinary_same_kind_reward(tmp_path) -> N
 
     assert cactus.gross_value == Decimal("1")
     assert format_moneyback(cactus) == "1% деньгами"
-    assert cactus.context_lines == (
-        "Партнёрский манибэк не начисляется: Акция не действует для этой покупки",
-    )
+    assert cactus.context_lines == ()
 
 
 @pytest.mark.parametrize("total_kind,additional_kind", [("cash", "points"), ("points", "cash")])
@@ -698,9 +697,7 @@ def test_global_transport_mcc_exclusion_applies_to_arbitrary_brand(tmp_path) -> 
     )
     vitamin = next(match for match in resolved if match.card.id == "vitamin_d")
     assert format_moneyback(vitamin) == "1% деньгами"
-    assert vitamin.context_lines == (
-        "Баллы Плюшек не начисляются: Организации, осуществляющие пассажирские перевозки",
-    )
+    assert vitamin.context_lines == ()
 
 
 def test_tiers_dates_crud_and_caller_transaction(tmp_path) -> None:

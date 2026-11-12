@@ -1226,15 +1226,6 @@ def resolve_store_matches(
                     )
                     for component in components
                 ]
-                reason = exclusion.reason or "магазин исключён из бонусной программы"
-                if exclusion.card_id == "vitamin_d" and exclusion.reward_kind == "points":
-                    label = "Баллы Плюшек"
-                elif exclusion.reward_kind == "points":
-                    label = "Партнёрские баллы"
-                else:
-                    label = "Партнёрский манибэк"
-                verb = "не начисляются" if exclusion.reward_kind == "points" else "не начисляется"
-                context_lines.append(f"{label} {verb}: {reason}")
                 continue
             assert resolution.offer is not None and resolution.tier is not None
             offer, tier = resolution.offer, resolution.tier

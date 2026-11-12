@@ -70,7 +70,10 @@ def format_moneyback(match: CardMatch) -> str:
 
     if len(match.components) == 1:
         component = match.components[0]
-        return _component_label(component, show_kind=component.kind == "points")
+        show_kind = component.kind == "points" or any(
+            program.kind == "points" for program in match.card.reward_programs
+        )
+        return _component_label(component, show_kind=show_kind)
     return " + ".join(
         _component_label(component, show_kind=component.kind == "points")
         for component in match.components
@@ -286,6 +289,8 @@ def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> 
     if html:
         marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
     summary = f"{index}. {marker} {name} — {reward}"
+    if not details:
+        return summary
     context_lines = [
         compacted
         for line in match.context_lines
@@ -294,8 +299,6 @@ def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> 
     if html:
         context_lines = [escape(line) for line in context_lines]
     summary_lines = [summary, *(f"   {line}" for line in context_lines)]
-    if not details:
-        return "\n".join(summary_lines)
     lines = _match_details(match)
     if html:
         lines = [f"<i>{escape(lines[0])}</i>", *(escape(line) for line in lines[1:])]

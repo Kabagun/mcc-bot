@@ -7,9 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from telegram.error import Forbidden, NetworkError
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 
-from mcc_bot.users import UserRegistry, broadcast_message, redact_telegram_ids
+from mcc_bot.users import (
+    BroadcastSafetyError,
+    UserRegistry,
+    broadcast_message,
+    redact_telegram_ids,
+)
 
 
 def test_user_registry_remembers_unique_chat_ids(tmp_path) -> None:
@@ -85,7 +90,12 @@ def test_user_registry_additively_migrates_legacy_schema(tmp_path) -> None:
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
     assert {"username", "first_name", "last_name"} <= chat_columns
-    assert {"broadcast_runs", "broadcast_failures"} <= tables
+    assert {
+        "broadcast_runs",
+        "broadcast_failures",
+        "broadcast_releases",
+        "broadcast_release_deliveries",
+    } <= tables
     assert registry.blocked_chat(10) is None
     registry.mark_forbidden(10)
     assert registry.blocked_chat(10).permanent
@@ -311,3 +321,181 @@ def test_unexpected_interruption_leaves_durable_in_progress_run(tmp_path) -> Non
         0,
     )
     assert run.completed_at is None
+
+
+def test_release_retry_skips_successes_and_retries_only_eligible_failures(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    for chat_id in (10, 20, 30):
+        registry.remember(chat_id, "synthetic")
+    bot = AsyncMock()
+    bot.send_message.side_effect = [object(), RetryAfter(1), Forbidden("blocked")]
+
+    first = asyncio.run(broadcast_message(bot, registry, "News", release_id="test-release"))
+
+    assert (first.attempted, first.sent, first.failed) == (3, 1, 2)
+    restarted_registry = UserRegistry(registry.path)
+    restarted_registry.initialize()
+    restarted_registry.remember(40, "synthetic")
+    retry_bot = AsyncMock()
+    retry = asyncio.run(
+        broadcast_message(retry_bot, restarted_registry, "News", release_id="test-release")
+    )
+
+    assert (retry.attempted, retry.sent, retry.failed) == (2, 2, 0)
+    assert [call.kwargs["chat_id"] for call in retry_bot.send_message.await_args_list] == [20, 40]
+    assert all(
+        call.kwargs["disable_notification"] is True
+        for call in retry_bot.send_message.await_args_list
+    )
+    retry_bot.reset_mock()
+    final = asyncio.run(
+        broadcast_message(retry_bot, restarted_registry, "News", release_id="test-release")
+    )
+    assert (final.attempted, final.sent, final.failed) == (0, 0, 0)
+    retry_bot.send_message.assert_not_awaited()
+    with sqlite3.connect(registry.path) as connection:
+        statuses = connection.execute(
+            "SELECT chat_id,status FROM broadcast_release_deliveries ORDER BY chat_id"
+        ).fetchall()
+    assert statuses == [(10, "sent"), (20, "sent"), (30, "failed"), (40, "sent")]
+
+
+def test_legacy_broadcasts_and_distinct_releases_remain_independent(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+    bot = AsyncMock()
+
+    for release_id in (None, None, "first", "second"):
+        result = asyncio.run(broadcast_message(bot, registry, "News", release_id=release_id))
+        assert (result.attempted, result.sent, result.failed) == (1, 1, 0)
+
+    assert bot.send_message.await_count == 4
+
+
+def test_release_rejects_changed_message_without_sending_or_exposing_it(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+    bot = AsyncMock()
+    asyncio.run(broadcast_message(bot, registry, "Approved\n", release_id="first"))
+    bot.reset_mock()
+
+    with pytest.raises(BroadcastSafetyError, match="differs") as error:
+        asyncio.run(broadcast_message(bot, registry, "Private changed text", release_id="first"))
+
+    assert "Private changed text" not in str(error.value)
+    bot.send_message.assert_not_awaited()
+    with sqlite3.connect(registry.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("release_id", ["", "has spaces", "x" * 129, "../private"])
+def test_release_rejects_invalid_identifier_before_sending(tmp_path, release_id) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    bot = AsyncMock()
+
+    with pytest.raises(BroadcastSafetyError, match="Release ID must"):
+        asyncio.run(broadcast_message(bot, registry, "News", release_id=release_id))
+
+    bot.send_message.assert_not_awaited()
+    assert registry.latest_broadcast_run() is None
+
+
+def test_release_rejects_concurrent_run(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+
+    async def run_concurrently() -> None:
+        sending = asyncio.Event()
+        finish = asyncio.Event()
+        first_bot = AsyncMock()
+        second_bot = AsyncMock()
+
+        async def send_message(**_kwargs):
+            sending.set()
+            await finish.wait()
+
+        first_bot.send_message.side_effect = send_message
+        first_task = asyncio.create_task(
+            broadcast_message(first_bot, registry, "News", release_id="first")
+        )
+        await sending.wait()
+        try:
+            with pytest.raises(BroadcastSafetyError, match="active or interrupted"):
+                await broadcast_message(second_bot, registry, "News", release_id="first")
+            second_bot.send_message.assert_not_awaited()
+        finally:
+            finish.set()
+            result = await first_task
+        assert result.sent == 1
+
+    asyncio.run(run_concurrently())
+
+
+def test_release_interruption_keeps_durable_reservation_and_blocks_blind_retry(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+    registry.remember(20, "synthetic")
+    bot = AsyncMock()
+    bot.send_message.side_effect = [object(), RuntimeError("process interrupted")]
+
+    with pytest.raises(RuntimeError, match="process interrupted"):
+        asyncio.run(broadcast_message(bot, registry, "News", release_id="first"))
+
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+    retry_bot = AsyncMock()
+    with pytest.raises(BroadcastSafetyError, match="active or interrupted"):
+        asyncio.run(broadcast_message(retry_bot, restarted, "News", release_id="first"))
+    retry_bot.send_message.assert_not_awaited()
+    run = restarted.latest_broadcast_run()
+    assert (run.status, run.sent, run.failed) == ("in_progress", 1, 0)
+    with sqlite3.connect(registry.path) as connection:
+        assert connection.execute(
+            "SELECT chat_id,status FROM broadcast_release_deliveries ORDER BY chat_id"
+        ).fetchall() == [(10, "sent"), (20, "sending")]
+
+
+def test_release_cannot_retry_after_acceptance_without_persisted_success(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+    bot = AsyncMock()
+
+    with (
+        patch.object(registry, "record_broadcast_success", side_effect=sqlite3.OperationalError),
+        pytest.raises(sqlite3.OperationalError),
+    ):
+        asyncio.run(broadcast_message(bot, registry, "News", release_id="first"))
+
+    bot.send_message.assert_awaited_once()
+    bot.reset_mock()
+    with pytest.raises(BroadcastSafetyError, match="active or interrupted"):
+        asyncio.run(broadcast_message(bot, registry, "News", release_id="first"))
+    bot.send_message.assert_not_awaited()
+
+
+def test_release_distinguishes_uncertain_transport_and_definite_api_failure(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic")
+    bot = AsyncMock()
+    bot.send_message.side_effect = NetworkError("response lost")
+
+    result = asyncio.run(broadcast_message(bot, registry, "News", release_id="uncertain"))
+
+    assert (result.sent, result.failed) == (0, 1)
+    bot.reset_mock()
+    with pytest.raises(BroadcastSafetyError, match="uncertain deliveries"):
+        asyncio.run(broadcast_message(bot, registry, "News", release_id="uncertain"))
+    bot.send_message.assert_not_awaited()
+    bot.send_message.side_effect = BadRequest("rejected")
+    asyncio.run(broadcast_message(bot, registry, "News", release_id="definite"))
+    bot.send_message.side_effect = None
+    result = asyncio.run(broadcast_message(bot, registry, "News", release_id="definite"))
+    assert (result.sent, result.failed) == (1, 0)

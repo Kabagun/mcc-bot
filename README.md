@@ -70,8 +70,9 @@ A store lookup may apply an active partner reward for the selected store and
 payment method. An additional reward remains a separate component, for example
 `Витамин Д — 3% + 5% баллами`; it is ranked as an 8% total but is never rendered
 as a misleading `8%`. A total partner rate replaces the ordinary result for that
-card. Short conditions and validity dates are displayed below the
-card. A plain MCC lookup never applies store-specific partner data because the
+card. Short conditions and validity dates are displayed in the expanded
+card. Compact results contain only card names and rewards; exclusion reasons
+are not displayed. A plain MCC lookup never applies store-specific partner data because the
 store is unknown. If a store has a confirmed partner reward but no confirmed MCC,
 the partner card is shown with a warning that ordinary cards cannot yet be
 compared.
@@ -619,6 +620,27 @@ The manifest keeps networks and uncertain stores addressless, explicitly includi
 The dated partner commands read the audit actor from `BOT_OWNER_TELEGRAM_ID`,
 validate expected source rows before changing anything, and are safe to run again.
 Their evidence keys are derived from each source image hash and visual row number.
+
+The reviewed 2026-11-12 package uses the existing importer and data model. It adds
+Shchodraya partner rewards and the reviewed points exclusions for Shchodraya and
+Vitamin D. Apply it only as part of the approved production release:
+
+```bash
+mcc-apply-partner-seed-20260830 --database /srv/bots/mcc-bot/var/stores.sqlite3 --seed /srv/bots/mcc-bot/src/mcc_bot/data/partner_seed_20261112.json
+```
+
+Use `MCC_FORM_FLOW_V2_ALL_USERS=true` for the approved full rollout. It applies to
+new forms and does not change existing unfinished drafts or user permissions.
+After verifying the release, broadcast the exact approved UTF-8 text silently:
+
+```bash
+mcc-broadcast --release-id <release-version> --message-file <approved-message-file>
+```
+
+Reuse the identifier and unchanged text for retries. Successful deliveries are
+skipped. Definite failed deliveries and eligible unsent recipients may be retried;
+an interrupted run or uncertain transport result requires reconciliation before
+another attempt. The command reports only sent and failed counts.
 
 ## Tests and checks
 

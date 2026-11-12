@@ -84,8 +84,11 @@ def test_existing_legacy_draft_does_not_switch_when_user_joins_pilot(flow):
     assert current.data.get("active_field") is None
 
 
-def test_guided_new_store_reaches_review_without_opening_each_field(flow):
-    service = _pilot(flow, 10)
+@pytest.mark.parametrize("all_users", [False, True])
+def test_guided_new_store_reaches_review_without_opening_each_field(flow, all_users):
+    service = _pilot(flow, *(() if all_users else (10,)))
+    if all_users:
+        flow.application.bot_data["form_flow_v2"] = FormFlowRollout(all_users=True)
     started = start_data(flow)
     assert service.draft(10).data.get("active_field") == "brand_id"
     assert "Источник: не заполнено" not in _text(started)

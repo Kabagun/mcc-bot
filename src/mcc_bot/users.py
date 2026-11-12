@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from telegram import Bot
-from telegram.error import Forbidden, TelegramError
+from telegram.error import BadRequest, ChatMigrated, Forbidden, RetryAfter, TelegramError
 
 LOGGER = logging.getLogger(__name__)
 _MISSING = object()
@@ -26,6 +26,10 @@ _TELEGRAM_ID_CONTEXT_PATTERN = re.compile(
 )
 _SUPERGROUP_ID_PATTERN = re.compile(r"(?<!\d)-100\d{6,}(?!\d)")
 _PROFILE_LOOKUP_DELAY_SECONDS = 0.05
+
+
+class BroadcastSafetyError(RuntimeError):
+    """A release cannot safely proceed without operator reconciliation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +245,23 @@ class UserRegistry:
                    ON broadcast_failures(run_id, id)"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS broadcast_releases (
+                   release_id TEXT PRIMARY KEY,
+                   message_sha256 TEXT NOT NULL,
+                   active_run_id INTEGER REFERENCES broadcast_runs(id)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS broadcast_release_deliveries (
+                   release_id TEXT NOT NULL REFERENCES broadcast_releases(release_id),
+                   chat_id INTEGER NOT NULL,
+                   run_id INTEGER NOT NULL REFERENCES broadcast_runs(id),
+                   status TEXT NOT NULL CHECK(status IN ('sending','sent','failed','uncertain')),
+                   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY(release_id,chat_id)
+                )"""
+            )
+            connection.execute(
                 """CREATE TABLE IF NOT EXISTS blocked_chats (
                    chat_id INTEGER PRIMARY KEY REFERENCES telegram_chats(chat_id),
                    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
@@ -432,10 +453,109 @@ class UserRegistry:
             )
             return int(cursor.lastrowid)
 
-    def record_broadcast_success(self, run_id: int) -> None:
+    def prepare_release_broadcast(
+        self, release_id: str, message_sha256: str
+    ) -> tuple[int, tuple[ChatRecipient, ...]]:
+        """Atomically reserve a release and select eligible deliveries not yet successful.
+
+        An active run survives process death deliberately: Telegram may have accepted its
+        last message before the local acknowledgement was persisted. Neither a stale run
+        nor an uncertain transport outcome may be retried automatically.
+        """
+
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", release_id):
+            raise BroadcastSafetyError(
+                "Release ID must contain 1-128 letters, digits, dots, underscores or -"
+            )
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """INSERT OR IGNORE INTO broadcast_releases(release_id,message_sha256)
+                   VALUES(?,?)""",
+                (release_id, message_sha256),
+            )
+            release = connection.execute(
+                "SELECT message_sha256,active_run_id FROM broadcast_releases WHERE release_id=?",
+                (release_id,),
+            ).fetchone()
+            if release["message_sha256"] != message_sha256:
+                raise BroadcastSafetyError("Release message differs from its recorded text")
+            if release["active_run_id"] is not None:
+                raise BroadcastSafetyError(
+                    "Release is active or interrupted; reconcile its delivery state before retrying"
+                )
+            uncertain = connection.execute(
+                """SELECT 1 FROM broadcast_release_deliveries
+                   WHERE release_id=? AND status IN ('sending','uncertain') LIMIT 1""",
+                (release_id,),
+            ).fetchone()
+            if uncertain is not None:
+                raise BroadcastSafetyError(
+                    "Release has uncertain deliveries; reconcile them before retrying"
+                )
+            rows = connection.execute(
+                """SELECT c.chat_id,c.username,c.first_name,c.last_name
+                   FROM telegram_chats c LEFT JOIN blocked_chats b ON b.chat_id=c.chat_id
+                   LEFT JOIN broadcast_release_deliveries d
+                       ON d.chat_id=c.chat_id AND d.release_id=?
+                   WHERE COALESCE(b.active,0)=0 AND COALESCE(d.status,'failed')!='sent'
+                   ORDER BY c.chat_id""",
+                (release_id,),
+            ).fetchall()
+            cursor = connection.execute(
+                """INSERT INTO broadcast_runs(recipient_count,message_sha256) VALUES(?,?)""",
+                (len(rows), message_sha256),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE broadcast_releases SET active_run_id=? WHERE release_id=?",
+                (run_id, release_id),
+            )
+        return run_id, tuple(ChatRecipient(**dict(row)) for row in rows)
+
+    def begin_release_delivery(self, release_id: str, run_id: int, chat_id: int) -> None:
+        """Persist intent before contacting Telegram; never overwrite a successful send."""
+
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            release = connection.execute(
+                "SELECT 1 FROM broadcast_releases WHERE release_id=? AND active_run_id=?",
+                (release_id, run_id),
+            ).fetchone()
+            if release is None:
+                raise BroadcastSafetyError("Release run does not own the delivery reservation")
+            cursor = connection.execute(
+                """INSERT INTO broadcast_release_deliveries(release_id,chat_id,run_id,status)
+                   VALUES(?,?,?,'sending') ON CONFLICT(release_id,chat_id) DO UPDATE SET
+                   run_id=excluded.run_id,status='sending',updated_at=CURRENT_TIMESTAMP
+                   WHERE broadcast_release_deliveries.status='failed'""",
+                (release_id, chat_id, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise BroadcastSafetyError("Release delivery is already sent or uncertain")
+
+    @staticmethod
+    def _finish_release_delivery(
+        connection: sqlite3.Connection, release_id: str, run_id: int, chat_id: int, status: str
+    ) -> None:
+        cursor = connection.execute(
+            """UPDATE broadcast_release_deliveries SET status=?,updated_at=CURRENT_TIMESTAMP
+               WHERE release_id=? AND chat_id=? AND run_id=? AND status='sending'""",
+            (status, release_id, chat_id, run_id),
+        )
+        if cursor.rowcount != 1:
+            raise BroadcastSafetyError(
+                "Release delivery reservation is missing or already resolved"
+            )
+
+    def record_broadcast_success(
+        self, run_id: int, *, release_id: str | None = None, chat_id: int | None = None
+    ) -> None:
         """Durably advance one successful delivery for an in-progress run."""
 
         with closing(self._connect()) as connection, connection:
+            if release_id is not None:
+                self._finish_release_delivery(connection, release_id, run_id, chat_id, "sent")
             cursor = connection.execute(
                 """UPDATE broadcast_runs SET attempted_count=attempted_count+1,
                    sent_count=sent_count+1 WHERE id=? AND status='in_progress'""",
@@ -531,10 +651,23 @@ class UserRegistry:
         recipient: ChatRecipient,
         error: TelegramError,
         bot: Bot,
+        *,
+        release_id: str | None = None,
     ) -> None:
         """Durably record one failure and its profile snapshot in one transaction."""
 
         with closing(self._connect()) as connection, connection:
+            if release_id is not None:
+                # A timeout or transport failure can happen after Telegram accepted the
+                # message. Only definite API rejections are safe to retry automatically.
+                status = (
+                    "failed"
+                    if isinstance(error, (BadRequest, ChatMigrated, Forbidden, RetryAfter))
+                    else "uncertain"
+                )
+                self._finish_release_delivery(
+                    connection, release_id, run_id, recipient.chat_id, status
+                )
             connection.execute(
                 """INSERT INTO broadcast_failures(
                    run_id,chat_id,username,first_name,last_name,error_type,error_text
@@ -559,7 +692,7 @@ class UserRegistry:
             if isinstance(error, Forbidden) and recipient.chat_id > 0:
                 _block_chat(connection, recipient.chat_id)
 
-    def complete_broadcast_run(self, run_id: int) -> None:
+    def complete_broadcast_run(self, run_id: int, *, release_id: str | None = None) -> None:
         """Mark a fully iterated broadcast complete without hiding partial failures."""
 
         with closing(self._connect()) as connection, connection:
@@ -570,6 +703,14 @@ class UserRegistry:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
+            if release_id is not None:
+                cursor = connection.execute(
+                    """UPDATE broadcast_releases SET active_run_id=NULL
+                       WHERE release_id=? AND active_run_id=?""",
+                    (release_id, run_id),
+                )
+                if cursor.rowcount != 1:
+                    raise BroadcastSafetyError("Release run does not own the delivery reservation")
 
     def latest_broadcast_run(self) -> BroadcastRun | None:
         """Return the newest run and its recorded failures, including incomplete runs."""
@@ -636,16 +777,28 @@ async def _enrich_recipient(
         return enriched
 
 
-async def broadcast_message(bot: Bot, registry: UserRegistry, text: str) -> BroadcastResult:
-    """Silently broadcast text while durably recording counters and failures."""
+async def broadcast_message(
+    bot: Bot, registry: UserRegistry, text: str, *, release_id: str | None = None
+) -> BroadcastResult:
+    """Silently broadcast text, optionally deduplicating an explicitly named release.
 
-    recipients = registry.recipients()
+    Counters describe this attempt, including retries. Release IDs must be reused with
+    exactly the same text. Interrupted or uncertain releases require reconciliation;
+    ordinary broadcasts retain their existing independent-run behavior.
+    """
+
     message_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    run_id = registry.create_broadcast_run(message_sha256, len(recipients))
+    if release_id is None:
+        recipients = registry.recipients()
+        run_id = registry.create_broadcast_run(message_sha256, len(recipients))
+    else:
+        run_id, recipients = registry.prepare_release_broadcast(release_id, message_sha256)
     sent = 0
     failed = 0
     for remembered_recipient in recipients:
         recipient = await _enrich_recipient(bot, registry, remembered_recipient)
+        if release_id is not None:
+            registry.begin_release_delivery(release_id, run_id, recipient.chat_id)
         try:
             await bot.send_message(
                 chat_id=recipient.chat_id,
@@ -653,10 +806,12 @@ async def broadcast_message(bot: Bot, registry: UserRegistry, text: str) -> Broa
                 disable_notification=True,
             )
         except TelegramError as error:
-            registry.record_broadcast_failure(run_id, recipient, error, bot)
+            registry.record_broadcast_failure(run_id, recipient, error, bot, release_id=release_id)
             failed += 1
         else:
-            registry.record_broadcast_success(run_id)
+            registry.record_broadcast_success(
+                run_id, release_id=release_id, chat_id=recipient.chat_id
+            )
             sent += 1
-    registry.complete_broadcast_run(run_id)
+    registry.complete_broadcast_run(run_id, release_id=release_id)
     return BroadcastResult(attempted=len(recipients), sent=sent, failed=failed)

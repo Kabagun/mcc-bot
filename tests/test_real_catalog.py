@@ -80,7 +80,7 @@ YARKAYA_EXCLUSIONS = {
     "9399",
     "8999",
 }
-VITAMIN_POINTS_EXCLUSIONS = KUFAR_EXCLUSIONS | {"4111", "4112"}
+VITAMIN_POINTS_EXCLUSIONS = KUFAR_EXCLUSIONS | {"4111", "4112", "4121", "4131", "4511"}
 R_KARTA_EXCLUSIONS = {
     "4812",
     "4814",
@@ -315,7 +315,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 19
+    assert len(raw["cards"]) == 20
     assert (
         sum(
             len(program.get("offers", []))
@@ -368,10 +368,13 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
     assert all(
         card["partner_policy"]
         == {
-            "mode": "additional" if card["id"] == "vitamin_d" else "total",
+            "mode": (
+                "additional" if card["id"] in {"vitamin_d", "belarusbank_shchodraya"} else "total"
+            ),
             "reward_kind": (
                 "points"
-                if card["id"] in {"vitamin_d", "cactus_mtbank", "mtkarta", "kufar"}
+                if card["id"]
+                in {"vitamin_d", "cactus_mtbank", "mtkarta", "kufar", "belarusbank_shchodraya"}
                 else "cash"
             ),
         }
@@ -401,6 +404,8 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "shopper_mtbank",
         "zepter_card",
         "zepter_plus",
+        "belarusbank_shchodraya",
+        "reshenie_r_karta",
         "paritet_combo",
         "dabrabyt_spraunaya",
         "bnb_1_2_3",
@@ -448,16 +453,18 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "3. 💳 Шоппер — 2,5% (2,435%)\n"
         "4. 💳 Цептер Card — 2%\n"
         "5. 💳 Цептер PLUS — 2%\n"
-        "6. 💳 КОМБОкарта — 1,2%\n"
-        "7. 💳 Спраўная — 1,11%\n"
-        "8. 💳 1-2-3 — 1%\n"
-        "9. 💳 Движение — 1%\n"
-        "10. 💳 Куфар — 1% баллами\n"
-        "11. 💳 МТкарта — 1% баллами\n"
-        "12. 💳 Социальная — 1%\n"
-        "13. 💳 Яркая — 1%\n"
-        "14. 💳 Cashalot — 0,5%\n"
-        "15. 💳 Статускарта — 0,5%"
+        "6. 💳 Шчодрая — 2% баллами\n"
+        "7. 💳 R-карта — 1,5%\n"
+        "8. 💳 КОМБОкарта — 1,2%\n"
+        "9. 💳 Спраўная — 1,11%\n"
+        "10. 💳 1-2-3 — 1%\n"
+        "11. 💳 Движение — 1%\n"
+        "12. 💳 Куфар — 1% баллами\n"
+        "13. 💳 МТкарта — 1% баллами\n"
+        "14. 💳 Социальная — 1%\n"
+        "15. 💳 Яркая — 1%\n"
+        "16. 💳 Cashalot — 0,5%\n"
+        "17. 💳 Статускарта — 0,5%"
     )
 
 
@@ -618,16 +625,18 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
         "3. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
         "4. 💳 <b>Цептер Card</b> — 2%\n"
         "5. 💳 <b>Цептер PLUS</b> — 2%\n"
-        "6. 💳 <b>КОМБОкарта</b> — 1,2%\n"
-        "7. 💳 <b>Спраўная</b> — 1,11%\n"
-        "8. 💳 <b>1-2-3</b> — 1%\n"
-        "9. 💳 <b>Движение</b> — 1%\n"
-        "10. 💳 <b>Куфар</b> — 1% баллами\n"
-        "11. 💳 <b>МТкарта</b> — 1% баллами\n"
-        "12. 💳 <b>Социальная</b> — 1%\n"
-        "13. 💳 <b>Яркая</b> — 1%\n"
-        "14. 💳 <b>Cashalot</b> — 0,5%\n"
-        "15. 💳 <b>Статускарта</b> — 0,5%"
+        "6. 💳 <b>Шчодрая</b> — 2% баллами\n"
+        "7. 💳 <b>R-карта</b> — 1,5%\n"
+        "8. 💳 <b>КОМБОкарта</b> — 1,2%\n"
+        "9. 💳 <b>Спраўная</b> — 1,11%\n"
+        "10. 💳 <b>1-2-3</b> — 1%\n"
+        "11. 💳 <b>Движение</b> — 1%\n"
+        "12. 💳 <b>Куфар</b> — 1% баллами\n"
+        "13. 💳 <b>МТкарта</b> — 1% баллами\n"
+        "14. 💳 <b>Социальная</b> — 1%\n"
+        "15. 💳 <b>Яркая</b> — 1%\n"
+        "16. 💳 <b>Cashalot</b> — 0,5%\n"
+        "17. 💳 <b>Статускарта</b> — 0,5%"
     )
     pages = format_match_pages("5411", matches, _descriptions(), html=True)
     assert len(pages) == 1
@@ -783,7 +792,11 @@ def test_real_catalog_vitamin_points_exclude_transport() -> None:
     assert all(match.card.id != "vitamin_d" for match in catalog.lookup("4111"))
     vitamin = next(match for match in catalog.lookup("4112") if match.card.id == "vitamin_d")
     assert [component.kind for component in vitamin.components] == ["cash"]
-    assert format_moneyback(vitamin) == "1%"
+    assert format_moneyback(vitamin) == "1% деньгами"
+    for mcc in ("4121", "4131", "4511"):
+        vitamin = next(match for match in catalog.lookup(mcc) if match.card.id == "vitamin_d")
+        assert [component.kind for component in vitamin.components] == ["cash"]
+        assert format_moneyback(vitamin) == "1% деньгами"
 
 
 def test_real_catalog_kufar_fallback_exclusions_vitamin_and_leading_zero() -> None:
@@ -1048,10 +1061,10 @@ def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:
     )
 
 
-def test_reshenie_cards_are_preserved_but_hidden_from_live_catalog() -> None:
+def test_r_card_is_restored_but_visa_offer_stays_hidden() -> None:
     catalog = _catalog()
-    assert len(catalog.cards) == 17
-    assert {card.id for card in catalog.disabled_cards} == {"reshenie_r_karta", "reshenie_visa_pay"}
-    assert all(match.card.issuer != "Банк Решение" for match in catalog.lookup("5411"))
-    assert "Решение" not in format_limits(catalog.cards)
-    assert "R-карта" not in format_limits(catalog.cards)
+    assert len(catalog.cards) == 19
+    assert {card.id for card in catalog.disabled_cards} == {"reshenie_visa_pay"}
+    assert any(match.card.id == "reshenie_r_karta" for match in catalog.lookup("5411"))
+    assert "R-карта" in format_limits(catalog.cards)
+    assert "Visa Решение" not in format_limits(catalog.cards)

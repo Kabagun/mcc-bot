@@ -39,7 +39,7 @@ def test_format_matches_renders_only_cards_and_rewards(catalog_path: Path, tmp_p
     assert "after tax" not in rendered
 
 
-def test_format_matches_hides_address_annotations(catalog_path: Path) -> None:
+def test_expanded_matches_hide_address_annotations(catalog_path: Path) -> None:
     match = replace(
         CardCatalog.from_file(catalog_path).lookup("5411")[0],
         context_lines=(
@@ -50,13 +50,28 @@ def test_format_matches_hides_address_annotations(catalog_path: Path) -> None:
         ),
     )
 
-    rendered = format_matches("5411", (match,))
+    rendered = format_matches("5411", (match,), details=True)
 
     assert "5% (4,61%)" in rendered
     assert "только в точках, участвующих в предложении" in rendered
     assert "Минск" not in rendered
     assert "Точная точка Изи-карты" not in rendered
     assert "Адреса:" not in rendered
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "Баллы не начисляются: 15.11.2021",
+        "сумма от 100 BYN · по 30.11.2026",
+        "Только при онлайн-оплате",
+    ],
+)
+def test_compact_results_show_only_card_and_reward(catalog_path: Path, caption: str) -> None:
+    original = CardCatalog.from_file(catalog_path).lookup("5411")[0]
+    match = replace(original, context_lines=(caption,))
+    assert format_matches("5411", (match,)) == format_matches("5411", (original,))
+    assert caption not in format_matches("5411", (match,), html=True)
 
 
 def test_format_limits_renders_all_cards_and_program_terms(catalog_path: Path) -> None:
