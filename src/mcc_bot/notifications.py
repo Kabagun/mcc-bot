@@ -125,7 +125,7 @@ async def send_reminder_invitations(
             )
         except TelegramError as error:
             if isinstance(error, Forbidden) and registry is not None:
-                registry.mark_forbidden(user_id)
+                registry.mark_forbidden(user_id, error)
             service.finish_reminder_invitation(user_id, day, epoch, "uncertain")
             result["uncertain"] += 1
             LOGGER.info("Reminder invitation delivery uncertain; no automatic retry")
@@ -178,7 +178,7 @@ async def send_daily_digest(
             )
         except TelegramError as error:
             if isinstance(error, Forbidden) and registry is not None:
-                registry.mark_forbidden(user_id)
+                registry.mark_forbidden(user_id, error)
             service.finish_digest(user_id, day, "uncertain")
             result["uncertain"] += 1
             LOGGER.info("Daily digest delivery uncertain; no automatic retry")

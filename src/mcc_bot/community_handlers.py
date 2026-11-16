@@ -503,6 +503,7 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
         + (
             "\n\nЧтобы выйти из формы, нажмите <b>«❌ Отменить»</b> внизу. "
             "После сохранения или отмены вернётся главное меню."
+            "\n\nЕсли вы блокируете бота в Telegram, доступ к боту закрывается навсегда."
         )
     )
 
@@ -1637,7 +1638,7 @@ def _mark_forbidden(context: ContextTypes.DEFAULT_TYPE, user_id: int, error: Tel
     if isinstance(error, Forbidden):
         registry = context.application.bot_data.get("user_registry")
         if registry is not None:
-            registry.mark_forbidden(user_id)
+            registry.mark_forbidden(user_id, error)
 
 
 def _blocked_by_registry(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:

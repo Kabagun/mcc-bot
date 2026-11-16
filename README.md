@@ -234,6 +234,15 @@ Ordinary users' proposals stay private and pending until a helper approves them;
 creating a new store and its partnership is atomic at approval. Helper publication,
 card-policy validation and protection against moving an existing offer stay unchanged.
 
+Blocking the bot in Telegram permanently closes access to the bot. A private
+`my_chat_member` block event or an explicit `bot was blocked by the user` Forbidden
+response records that ban immediately. Unblocking the bot in Telegram does not
+clear the ban or enable an appeal. Generic Forbidden responses and transport
+failures are not evidence that a user blocked the bot. The private membership
+event semantics are documented in the [Telegram Bot API](https://core.telegram.org/bots/api#update).
+Historical bans are applied explicitly using `UserRegistry.ban_known_blockers()`
+and include only current active blocks with confirmed user-block evidence.
+
 Screenshots are stored only as Telegram file references, not downloaded files.
 Users must redact names, balances, card/account details and unrelated operations.
 References expire five days after a final decision, cancellation or direct admin

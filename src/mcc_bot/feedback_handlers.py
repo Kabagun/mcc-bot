@@ -334,7 +334,11 @@ async def _deliver(
                     photo=part.file_id,
                     disable_notification=True,
                 )
-        except (BadRequest, Forbidden, RetryAfter):
+        except (BadRequest, Forbidden, RetryAfter) as error:
+            if isinstance(error, Forbidden):
+                registry = context.application.bot_data.get("user_registry")
+                if registry is not None:
+                    registry.mark_forbidden(owner_id, error)
             repo.finish_delivery_part(submission.id, part.position, "pending")
             break
         except TelegramError:

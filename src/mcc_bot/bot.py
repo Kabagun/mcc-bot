@@ -11,7 +11,7 @@ import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
@@ -19,6 +19,7 @@ from telegram.ext import (
     ApplicationBuilder,
     ApplicationHandlerStop,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -49,9 +50,7 @@ from .stores import Brand, StoreRepository
 from .users import BlockedChat, UserRegistry
 
 LOGGER = logging.getLogger(__name__)
-REPEAT_BLOCK_WARNING = (
-    "Если после разблокировки вы снова заблокируете бота, доступ будет закрыт навсегда."
-)
+REPEAT_BLOCK_WARNING = "Если вы заблокируете бота в Telegram, доступ к боту будет закрыт навсегда."
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
 RESULT_TOO_LONG = (
@@ -342,6 +341,12 @@ async def expired_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def report_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Report unexpected failures without logging Telegram identities or evidence."""
 
+    if isinstance(context.error, Forbidden) and isinstance(update, Update):
+        chat = update.effective_chat
+        if chat is not None and chat.type == "private":
+            context.application.bot_data["user_registry"].mark_forbidden(chat.id, context.error)
+            LOGGER.info("Telegram rejected a private reply; access status recorded")
+            return
     LOGGER.error("Unexpected bot error: %s", type(context.error).__name__)
     if isinstance(update, Update) and update.effective_message is not None:
         try:
@@ -351,6 +356,25 @@ async def report_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         except TelegramError:
             LOGGER.info("Could not deliver an error notice")
+
+
+async def record_bot_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Persist a private user's explicit block before ordinary access guards run."""
+    membership = update.my_chat_member
+    if membership is None:
+        return
+    chat = membership.chat
+    changed = membership.new_chat_member
+    if (
+        chat.type != "private"
+        or chat.id <= 0
+        or membership.from_user.id != chat.id
+        or changed.user.id != context.bot.id
+        or not changed.user.is_bot
+        or changed.status != ChatMember.BANNED
+    ):
+        return
+    context.application.bot_data["user_registry"].ban(chat.id)
 
 
 async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -421,8 +445,8 @@ async def _notify_unblock_reviewers(context: ContextTypes.DEFAULT_TYPE, chat: Bl
                 ),
                 reply_markup=markup,
             )
-        except Forbidden:
-            registry.mark_forbidden(reviewer_id)
+        except Forbidden as error:
+            registry.mark_forbidden(reviewer_id, error)
         except TelegramError:
             LOGGER.info("Could not deliver an unblock request to a reviewer")
 
@@ -449,9 +473,7 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer()
         if query.data == "unblock:request":
             if blocked.permanent:
-                await query.edit_message_text(
-                    "Доступ закрыт навсегда после повторной блокировки бота."
-                )
+                await query.edit_message_text("Доступ к боту закрыт навсегда.")
             elif registry.begin_appeal(chat.id):
                 await query.edit_message_text(
                     "Расскажите, почему вы заблокировали бота и хотите снова им пользоваться. "
@@ -484,7 +506,7 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
                 await _notify_unblock_reviewers(context, appeal)
         raise ApplicationHandlerStop
     if blocked.permanent:
-        await message.reply_text("Доступ закрыт навсегда после повторной блокировки бота.")
+        await message.reply_text("Доступ к боту закрыт навсегда.")
     elif blocked.appeal_state == "pending":
         await message.reply_text("Ваш запрос на разблокировку рассматривается.")
     else:
@@ -529,8 +551,8 @@ async def unblock_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     if approve
                     else "Запрос на разблокировку отклонён. Вы можете подать новый запрос.",
                 )
-            except Forbidden:
-                registry.mark_forbidden(target)
+            except Forbidden as error:
+                registry.mark_forbidden(target, error)
             except TelegramError:
                 LOGGER.info("Could not deliver an unblock decision")
         parts = ["unblock", "list", "0"]
@@ -615,6 +637,9 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["form_flow_v2"] = FormFlowRollout(
         user_ids=settings.form_flow_v2_user_ids,
         all_users=settings.form_flow_v2_all_users,
+    )
+    application.add_handler(
+        ChatMemberHandler(record_bot_membership, ChatMemberHandler.MY_CHAT_MEMBER), group=-4
     )
     application.add_handler(TypeHandler(Update, remember_chat), group=-3)
     application.add_handler(TypeHandler(Update, enforce_blocked_access), group=-2)

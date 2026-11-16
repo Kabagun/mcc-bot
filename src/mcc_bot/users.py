@@ -26,6 +26,10 @@ _TELEGRAM_ID_CONTEXT_PATTERN = re.compile(
 )
 _SUPERGROUP_ID_PATTERN = re.compile(r"(?<!\d)-100\d{6,}(?!\d)")
 _PROFILE_LOOKUP_DELAY_SECONDS = 0.05
+_USER_BLOCK_ERROR_PATTERN = re.compile(
+    r"(?:forbidden\s*:\s*)?bot\s+was\s+blocked\s+by\s+(?:the\s+)?user[.!]?",
+    re.IGNORECASE,
+)
 
 
 class BroadcastSafetyError(RuntimeError):
@@ -149,25 +153,58 @@ def _safe_error_text(error: TelegramError, bot: Bot, chat_id: int) -> str:
     return redact_telegram_ids(value, *related_ids)
 
 
-def _block_chat(connection: sqlite3.Connection, chat_id: int) -> None:
-    """Escalate a new Forbidden response after a prior approval to a permanent ban."""
+def is_user_block_error(error_or_text: object) -> bool:
+    """Recognize confirmed private user-block rejections, not other delivery failures.
+
+    Text is accepted for persisted Forbidden audit records. Exception objects must
+    actually be Forbidden: a network failure containing similar text is not proof.
+    """
+
+    if not isinstance(error_or_text, (Forbidden, str)):
+        return False
+    value = str(error_or_text).strip()
+    return _USER_BLOCK_ERROR_PATTERN.fullmatch(value) is not None
+
+
+def _is_private_chat_id(chat_id: object) -> bool:
+    return type(chat_id) is int and 0 < chat_id < 2**63
+
+
+def _ban_chat(connection: sqlite3.Connection, chat_id: int) -> None:
+    """Permanently block access while preserving the existing block and appeal audit."""
+
+    connection.execute("INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)", (chat_id,))
+    connection.execute(
+        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state)
+           VALUES(?,1,CURRENT_TIMESTAMP,1,'permanent') ON CONFLICT(chat_id) DO UPDATE SET
+           active=1,permanent=1,appeal_state='permanent'
+           WHERE blocked_chats.active<>1 OR blocked_chats.permanent<>1
+           OR blocked_chats.appeal_state<>'permanent'""",
+        (chat_id,),
+    )
+
+
+def _block_chat(
+    connection: sqlite3.Connection, chat_id: int, error: Forbidden | str | None = None
+) -> None:
+    """Ban confirmed user blocks, preserving appealable handling for generic failures."""
 
     connection.execute("INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)", (chat_id,))
     previous = connection.execute(
         "SELECT active,appeal_state,permanent FROM blocked_chats WHERE chat_id=?", (chat_id,)
     ).fetchone()
-    permanent = bool(
-        previous
-        and (
-            previous["permanent"]
-            or (not previous["active"] and previous["appeal_state"] == "approved")
-        )
-    )
+    permanent = bool(is_user_block_error(error) or (previous and previous["permanent"]))
+    if permanent:
+        _ban_chat(connection, chat_id)
+        return
+    # A fresh generic failure must not borrow second-resolution broadcast proof
+    # from an earlier block, even when both incidents occur in the same second.
     connection.execute(
         """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state)
-           VALUES(?,1,CURRENT_TIMESTAMP,?,?) ON CONFLICT(chat_id) DO UPDATE SET
+           VALUES(?,1,strftime('%Y-%m-%d %H:%M:%f','now'),?,?)
+           ON CONFLICT(chat_id) DO UPDATE SET
            active=1,permanent=excluded.permanent,appeal_state=excluded.appeal_state,
-           blocked_at=CURRENT_TIMESTAMP,
+           blocked_at=strftime('%Y-%m-%d %H:%M:%f','now'),
            appeal_text=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_text ELSE NULL END,
            appeal_at=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_at ELSE NULL END,
            resolved_at=CASE WHEN excluded.permanent=1 THEN blocked_chats.resolved_at ELSE NULL END,
@@ -564,13 +601,47 @@ class UserRegistry:
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
 
-    def mark_forbidden(self, chat_id: int) -> None:
-        """Block a private chat after a confirmed Telegram Forbidden response."""
+    def ban(self, chat_id: int) -> None:
+        """Permanently ban one private account without changing its audit metadata."""
 
-        if chat_id <= 0:
+        if not _is_private_chat_id(chat_id):
             return
         with closing(self._connect()) as connection, connection:
-            _block_chat(connection, chat_id)
+            _ban_chat(connection, chat_id)
+
+    def mark_forbidden(self, chat_id: int, error: Forbidden | str | None = None) -> None:
+        """Block a private chat; confirmed user blocks are permanent immediately."""
+
+        if not _is_private_chat_id(chat_id):
+            return
+        if error is not None and not isinstance(error, (Forbidden, str)):
+            return
+        with closing(self._connect()) as connection, connection:
+            _block_chat(connection, chat_id, error)
+
+    def ban_known_blockers(self) -> int:
+        """Promote current active blocks backed by a confirmed Forbidden audit record.
+
+        The latest failure must confirm a user block and belong to the current
+        block period. Older or ambiguous evidence is deliberately insufficient.
+        Inactive forgiven records and existing permanent audit remain unchanged.
+        """
+
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """SELECT b.chat_id,f.error_text FROM blocked_chats b
+                   JOIN broadcast_failures f ON f.chat_id=b.chat_id
+                   WHERE b.active=1 AND b.permanent=0 AND b.chat_id>0
+                   AND f.error_type='Forbidden' AND f.failed_at>=b.blocked_at
+                   AND f.id=(SELECT latest.id FROM broadcast_failures latest
+                             WHERE latest.chat_id=b.chat_id
+                             ORDER BY latest.failed_at DESC,latest.id DESC LIMIT 1)"""
+            ).fetchall()
+            chat_ids = {row["chat_id"] for row in rows if is_user_block_error(row["error_text"])}
+            for chat_id in chat_ids:
+                _ban_chat(connection, chat_id)
+            return len(chat_ids)
 
     def blocked_chat(self, chat_id: int) -> BlockedChat | None:
         """Return an active blocked chat, if one exists."""
@@ -689,8 +760,8 @@ class UserRegistry:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Broadcast run is missing or already complete")
-            if isinstance(error, Forbidden) and recipient.chat_id > 0:
-                _block_chat(connection, recipient.chat_id)
+            if isinstance(error, Forbidden) and _is_private_chat_id(recipient.chat_id):
+                _block_chat(connection, recipient.chat_id, error)
 
     def complete_broadcast_run(self, run_id: int, *, release_id: str | None = None) -> None:
         """Mark a fully iterated broadcast complete without hiding partial failures."""

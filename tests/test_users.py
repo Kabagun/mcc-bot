@@ -13,6 +13,7 @@ from mcc_bot.users import (
     BroadcastSafetyError,
     UserRegistry,
     broadcast_message,
+    is_user_block_error,
     redact_telegram_ids,
 )
 
@@ -98,6 +99,8 @@ def test_user_registry_additively_migrates_legacy_schema(tmp_path) -> None:
     } <= tables
     assert registry.blocked_chat(10) is None
     registry.mark_forbidden(10)
+    assert not registry.blocked_chat(10).permanent
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
     assert registry.blocked_chat(10).permanent
 
 
@@ -193,7 +196,7 @@ def test_forbidden_blocks_private_recipient_and_appeal_can_restore_access(tmp_pa
     registry.remember(10, "blocked", "Blocked")
     registry.remember(20)
     bot = AsyncMock()
-    bot.send_message.side_effect = [Forbidden("bot was blocked by the user"), object()]
+    bot.send_message.side_effect = [Forbidden("user is deactivated"), object()]
 
     result = asyncio.run(broadcast_message(bot, registry, "News"))
 
@@ -215,7 +218,7 @@ def test_forbidden_blocks_private_recipient_and_appeal_can_restore_access(tmp_pa
     assert registry.chat_ids() == (10, 20)
     registry.initialize()
     assert registry.chat_ids() == (10, 20)
-    registry.mark_forbidden(10)
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
     assert registry.blocked_chat(10).permanent
     assert registry.blocked_chat(10).appeal_state == "permanent"
     assert not registry.begin_appeal(10)
@@ -499,3 +502,311 @@ def test_release_distinguishes_uncertain_transport_and_definite_api_failure(tmp_
     bot.send_message.side_effect = None
     result = asyncio.run(broadcast_message(bot, registry, "News", release_id="definite"))
     assert (result.sent, result.failed) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        Forbidden("bot was blocked by the user"),
+        Forbidden("Bot was blocked by user"),
+        Forbidden("  BOT  was\tblocked BY the\n USER  "),
+        "bot was blocked by the user",
+        " FORBIDDEN : Bot  was blocked by user. ",
+        "Forbidden: bot was blocked by the user!",
+    ],
+)
+def test_user_block_detection_accepts_only_confirmed_message_variants(error) -> None:
+    assert is_user_block_error(error)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        None,
+        Forbidden("user is deactivated"),
+        Forbidden("Forbidden"),
+        Forbidden("bot was kicked from the group chat"),
+        Forbidden("bot is not a member of the channel chat"),
+        Forbidden("not enough rights to send text messages to the chat"),
+        Forbidden("bot was blocked by the user in a group"),
+        NetworkError("bot was blocked by the user"),
+        BadRequest("bot was blocked by the user"),
+        RuntimeError("bot was blocked by the user"),
+        "NetworkError: bot was blocked by the user",
+        "user was blocked by the bot",
+        "bot was not blocked by the user",
+        "blocked",
+    ],
+)
+def test_user_block_detection_rejects_unconfirmed_and_nonprivate_reasons(error) -> None:
+    assert not is_user_block_error(error)
+
+
+def test_first_confirmed_user_block_is_permanent_and_has_no_appeal(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic", "Synthetic")
+
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
+
+    blocked = registry.blocked_chat(10)
+    assert blocked.permanent
+    assert blocked.appeal_state == "permanent"
+    assert registry.chat_ids() == ()
+    assert registry.private_chat_count() == 0
+    assert not registry.begin_appeal(10)
+    assert not registry.submit_appeal(10, "Synthetic appeal text")
+    assert not registry.resolve_appeal(10, approve=True, reviewer_id=1)
+    assert registry.pending_appeals() == ()
+
+
+@pytest.mark.parametrize("error", [None, Forbidden("user is deactivated"), Forbidden("Forbidden")])
+def test_unknown_forbidden_still_creates_appealable_block(tmp_path, error) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+
+    registry.mark_forbidden(10, error)
+
+    assert not registry.blocked_chat(10).permanent
+    assert registry.blocked_chat(10).appeal_state == "none"
+    assert registry.begin_appeal(10)
+
+
+def test_non_forbidden_exception_does_not_create_block(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+
+    registry.mark_forbidden(10, NetworkError("bot was blocked by the user"))
+
+    assert registry.blocked_chat(10) is None
+
+
+@pytest.mark.parametrize("chat_id", [-1001, 0, True, "10", 10.0, 2**63])
+def test_explicit_ban_and_forbidden_ignore_nonprivate_identifiers(tmp_path, chat_id) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+
+    registry.ban(chat_id)
+    registry.mark_forbidden(chat_id, Forbidden("bot was blocked by the user"))
+
+    assert registry.chat_ids() == ()
+    with sqlite3.connect(registry.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM blocked_chats").fetchone()[0] == 0
+
+
+def _block_audit(registry, chat_id):
+    with sqlite3.connect(registry.path) as connection:
+        return connection.execute(
+            """SELECT blocked_at,appeal_text,appeal_at,resolved_at,resolved_by
+               FROM blocked_chats WHERE chat_id=?""",
+            (chat_id,),
+        ).fetchone()
+
+
+def test_ban_promotion_and_duplicate_events_preserve_block_and_appeal_audit(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            """UPDATE blocked_chats SET blocked_at='2000-01-01 00:00:00',
+               appeal_state='pending',appeal_text='Synthetic appeal',appeal_at='2000-01-02',
+               resolved_at='2000-01-03',resolved_by=1 WHERE chat_id=10"""
+        )
+    before = _block_audit(registry, 10)
+
+    registry.ban(10)
+    registry.ban(10)
+    registry.mark_forbidden(10)
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+    restarted.remember(10, "synthetic_updated", "Synthetic")
+
+    assert _block_audit(restarted, 10) == before
+    assert restarted.blocked_chat(10).permanent
+    assert restarted.blocked_chat(10).appeal_state == "permanent"
+    assert restarted.chat_ids() == ()
+    assert not restarted.begin_appeal(10)
+
+
+def test_backfill_promotes_only_current_active_confirmed_private_blocks(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    for chat_id in (10, 20, 30, 40):
+        registry.mark_forbidden(chat_id)
+    registry.ban(50)
+    registry.remember(60)
+    registry.remember(-1001)
+    registry.begin_appeal(40)
+    registry.submit_appeal(40, "Synthetic appeal text")
+    assert registry.resolve_appeal(40, approve=True, reviewer_id=1)
+    run_id = registry.create_broadcast_run("synthetic-hash", 7)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            "INSERT INTO blocked_chats(chat_id,active,appeal_state) VALUES(-1001,1,'none')"
+        )
+        connection.execute(
+            """UPDATE blocked_chats SET blocked_at='2000-01-01 00:00:00',
+               appeal_text='Synthetic appeal history',appeal_at='2000-01-02'
+               WHERE chat_id IN (10,50)"""
+        )
+        connection.executemany(
+            """INSERT INTO broadcast_failures(run_id,chat_id,error_type,error_text)
+               VALUES(?,?,?,?)""",
+            [
+                (run_id, 10, "Forbidden", "bot was blocked by the user"),
+                (run_id, 20, "Forbidden", "user is deactivated"),
+                (run_id, 30, "NetworkError", "bot was blocked by the user"),
+                (run_id, 40, "Forbidden", "bot was blocked by the user"),
+                (run_id, 50, "Forbidden", "bot was blocked by the user"),
+                (run_id, 60, "Forbidden", "bot was blocked by the user"),
+                (run_id, -1001, "Forbidden", "bot was blocked by the user"),
+            ],
+        )
+    before_promoted = _block_audit(registry, 10)
+    before_permanent = _block_audit(registry, 50)
+
+    assert registry.ban_known_blockers() == 1
+    assert registry.ban_known_blockers() == 0
+
+    assert registry.blocked_chat(10).permanent
+    assert not registry.blocked_chat(20).permanent
+    assert not registry.blocked_chat(30).permanent
+    assert registry.blocked_chat(40) is None
+    assert registry.blocked_chat(50).permanent
+    assert registry.blocked_chat(60) is None
+    assert not registry.blocked_chat(-1001).permanent
+    assert _block_audit(registry, 10) == before_promoted
+    assert _block_audit(registry, 50) == before_permanent
+    assert registry.chat_ids() == (40, 60)
+
+
+def test_broadcast_confirmed_block_bans_in_same_transaction_and_preserves_failure(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic", "Synthetic")
+    bot = AsyncMock()
+    bot.send_message.side_effect = Forbidden("bot was blocked by the user")
+
+    result = asyncio.run(broadcast_message(bot, registry, "Synthetic message", release_id="test"))
+
+    assert (result.sent, result.failed) == (0, 1)
+    assert registry.blocked_chat(10).permanent
+    assert registry.latest_broadcast_run().failures[0].error_type == "Forbidden"
+    assert registry.latest_broadcast_run().failures[0].error_text == "bot was blocked by the user"
+    assert registry.chat_ids() == ()
+
+
+def test_invalid_broadcast_run_rolls_back_failure_and_permanent_ban(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic", "Synthetic")
+    run_id = registry.create_broadcast_run("synthetic-hash", 1)
+    registry.complete_broadcast_run(run_id)
+    recipient = registry.recipients()[0]
+
+    with pytest.raises(RuntimeError, match="already complete"):
+        registry.record_broadcast_failure(
+            run_id, recipient, Forbidden("bot was blocked by the user"), AsyncMock()
+        )
+
+    assert registry.blocked_chat(10) is None
+    assert registry.latest_broadcast_run().failures == ()
+
+
+def _historical_failure(registry, chat_id, text, *, error_type="Forbidden", failed_at=None):
+    run_id = registry.create_broadcast_run("synthetic-hash", 1)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            """INSERT INTO broadcast_failures(run_id,chat_id,error_type,error_text,failed_at)
+               VALUES(?,?,?,?,COALESCE(?,CURRENT_TIMESTAMP))""",
+            (run_id, chat_id, error_type, text, failed_at),
+        )
+
+
+def _approve_legacy_block(registry, chat_id):
+    assert registry.begin_appeal(chat_id)
+    assert registry.submit_appeal(chat_id, "Synthetic forgiven appeal")
+    assert registry.resolve_appeal(chat_id, approve=True, reviewer_id=1)
+
+
+def test_forgiven_confirmed_history_never_bans_a_later_deactivated_incident(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    # Model an appealable user-block record created before the permanent-block policy.
+    registry.mark_forbidden(10)
+    _historical_failure(
+        registry, 10, "bot was blocked by the user", failed_at="2000-01-01 00:00:00"
+    )
+    _approve_legacy_block(registry, 10)
+    bot = AsyncMock()
+    bot.send_message.side_effect = Forbidden("user is deactivated")
+
+    asyncio.run(broadcast_message(bot, registry, "Synthetic message"))
+
+    assert not registry.blocked_chat(10).permanent
+    assert registry.ban_known_blockers() == 0
+    assert not registry.blocked_chat(10).permanent
+    assert registry.begin_appeal(10)
+
+
+def test_repeated_generic_failure_cannot_reuse_same_second_forgiven_evidence(tmp_path) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    _historical_failure(registry, 10, "bot was blocked by the user")
+    _approve_legacy_block(registry, 10)
+
+    registry.mark_forbidden(10, Forbidden("user is deactivated"))
+    registry.mark_forbidden(10)
+
+    assert registry.ban_known_blockers() == 0
+    assert not registry.blocked_chat(10).permanent
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+    assert restarted.ban_known_blockers() == 0
+    assert not restarted.blocked_chat(10).permanent
+
+
+@pytest.mark.parametrize("latest_type", ["Forbidden", "NetworkError"])
+def test_latest_unconfirmed_failure_supersedes_older_confirmed_evidence(
+    tmp_path, latest_type
+) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute("UPDATE blocked_chats SET blocked_at='2000-01-01 00:00:00'")
+    _historical_failure(
+        registry, 10, "bot was blocked by the user", failed_at="2000-01-02 00:00:00"
+    )
+    _historical_failure(
+        registry,
+        10,
+        "user is deactivated",
+        error_type=latest_type,
+        failed_at="2000-01-03 00:00:00",
+    )
+
+    assert registry.ban_known_blockers() == 0
+    assert not registry.blocked_chat(10).permanent
+
+
+@pytest.mark.parametrize(
+    ("failure_time", "expected_count"),
+    [("2000-01-01 00:00:00", 0), ("2000-01-02 00:00:00", 1), ("2000-01-03 00:00:00", 1)],
+)
+def test_backfill_requires_confirmed_evidence_from_current_block_period(
+    tmp_path, failure_time, expected_count
+) -> None:
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute("UPDATE blocked_chats SET blocked_at='2000-01-02 00:00:00'")
+    _historical_failure(registry, 10, "bot was blocked by the user", failed_at=failure_time)
+
+    assert registry.ban_known_blockers() == expected_count
+    assert registry.blocked_chat(10).permanent is bool(expected_count)
+    assert registry.ban_known_blockers() == 0

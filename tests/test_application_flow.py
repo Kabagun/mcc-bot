@@ -10,6 +10,7 @@ import json
 
 import pytest
 from telegram import Update
+from telegram.error import Forbidden
 from telegram.request import HTTPXRequest
 
 from mcc_bot.bot import build_application
@@ -140,7 +141,7 @@ def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app
             await app.process_update(incoming(app, "5411"))
             assert "Beta Card" not in rendered(calls)[-1]["text"]
             assert "почему вы блокировали" in rendered(calls)[-1]["text"]
-            assert "доступ будет закрыт навсегда" in rendered(calls)[-1]["text"]
+            assert "Если вы заблокируете бота в Telegram" in rendered(calls)[-1]["text"]
             calls.clear()
             await app.process_update(incoming(app, "5411", group=True, sequence=10))
             assert not rendered(calls)
@@ -187,7 +188,7 @@ def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app
             calls.clear()
             await app.process_update(incoming(app, "5411", sequence=4))
             assert "Beta Card" in rendered(calls)[-1]["text"]
-            registry.mark_forbidden(101)
+            registry.mark_forbidden(101, Forbidden("bot was blocked by the user"))
             calls.clear()
             await app.process_update(incoming(app, "/start", sequence=5))
             assert "навсегда" in rendered(calls)[-1]["text"]
