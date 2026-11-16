@@ -322,7 +322,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2829
+        == 2830
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -490,7 +490,7 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
 
     zepter_card = cards["zepter_card"]
     zepter_offers = zepter_card["reward_programs"][0]["offers"]
-    assert len(zepter_offers) == 39
+    assert len(zepter_offers) == 40
     assert {offer["mcc"] for offer in zepter_offers} == {
         "3351",
         "3501",
@@ -515,6 +515,7 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
         "5812",
         "5814",
         "5912",
+        "5944",
         "5945",
         "5962",
         "5977",
@@ -1047,6 +1048,7 @@ def test_vitamin_points_only_details_do_not_show_cash_thresholds_or_caps() -> No
 def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:
     descriptions = _descriptions()
     assert descriptions.get("5411") == "Продуктовые магазины"
+    assert descriptions.get("3990") == "Экосистема Яндекс"
     assert descriptions.get("0742")
     assert descriptions.get("0000") == "описание не найдено"
     assert descriptions.get("5661") == "Обувь"

@@ -85,7 +85,8 @@ def test_existing_legacy_draft_does_not_switch_when_user_joins_pilot(flow):
 
 
 @pytest.mark.parametrize("all_users", [False, True])
-def test_guided_new_store_reaches_review_without_opening_each_field(flow, all_users):
+@pytest.mark.parametrize("mcc", ["5411", "3990"])
+def test_guided_new_store_reaches_review_without_opening_each_field(flow, all_users, mcc):
     service = _pilot(flow, *(() if all_users else (10,)))
     if all_users:
         flow.application.bot_data["form_flow_v2"] = FormFlowRollout(all_users=True)
@@ -95,7 +96,7 @@ def test_guided_new_store_reaches_review_without_opening_each_field(flow, all_us
     send(flow, "Новый тестовый магазин")
     draft_click(flow, "form_new_store")
     assert service.draft(10).data.get("active_field") == "mcc"
-    send(flow, "5411")
+    send(flow, mcc)
     assert service.draft(10).data.get("active_field") == "channel"
     ready = draft_click(flow, "form_channel:offline")
     assert service.draft(10).data.get("active_field") is None
@@ -103,6 +104,7 @@ def test_guided_new_store_reaches_review_without_opening_each_field(flow, all_us
     saved = draft_click(flow, "form_save")
     assert service.draft(10) is None
     assert service.own_proposals(10)[0].status == "pending"
+    assert service.own_proposals(10)[0].payload["mcc"] == mcc
     assert "Новый тестовый магазин" in _text(saved)
 
 

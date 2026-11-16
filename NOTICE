@@ -33,3 +33,4 @@ SOFTWARE.
 This repository retains only the MCC-to-short-Russian-label mapping. The label
 for MCC 5411 is an explicit application wording override: "Продуктовые
 магазины".
+MCC 3990 is an application addition: "Экосистема Яндекс".
