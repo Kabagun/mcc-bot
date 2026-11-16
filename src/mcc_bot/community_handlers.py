@@ -31,11 +31,17 @@ from .community import (
 )
 from .form_rollout import is_form_flow_v2_enabled
 from .formatting import format_limits, split_message
+from .notifications import (
+    reminder_actions_keyboard,
+    reminder_choice_keyboard,
+    reminder_preference_message,
+)
 from .stores import BrandMccGroup, normalize_store_name
 
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
 GUIDE = "❓ Как пользоваться"
+FEEDBACK = "💬 Отзыв админу"
 SUGGEST = "➕ Предложить данные"
 ADD = "➕ Добавить данные"
 VOLUNTEER = "🙋 Хочу помогать"
@@ -44,8 +50,8 @@ LEGACY_MINE = "👤 Мои предложения"
 QUEUE = "📋 Разобрать очередь"
 MANAGE = "⚙️ Управление"
 MANAGE_HISTORY = "📜 История изменений"
-MANAGE_DIGEST_ON = "🔕 Включить сводку в 20:00"
-MANAGE_DIGEST_OFF = "🔔 Отключить сводку"
+MANAGE_DIGEST_ON = "🔕 Включить напоминания в 20:00"
+MANAGE_DIGEST_OFF = "🔔 Отключить напоминания"
 MANAGE_ROLES = "👥 Помощники и заявки"
 MAIN_MENU = "⬅️ Главное меню"
 CANCEL_DRAFT = "❌ Отменить"
@@ -225,16 +231,16 @@ def _audit_identity(actor: dict[str, Any]) -> str:
 
 
 def keyboard_for(service: CommunityService, user_id: int) -> ReplyKeyboardMarkup:
-    """Build a persistent keyboard from the user's current effective role."""
+    """Build a stable, collapsible keyboard from the user's current role."""
 
     if service.is_admin(user_id):
-        rows = [[INFO], [ADD], [QUEUE, MANAGE], [GUIDE]]
+        rows = [[INFO], [ADD], [QUEUE, MANAGE], [FEEDBACK, GUIDE]]
     else:
         application = (
             APPLICATION_PENDING if service.role_request_status(user_id) == "pending" else VOLUNTEER
         )
-        rows = [[INFO], [SUGGEST], [application], [GUIDE]]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+        rows = [[INFO], [SUGGEST], [application], [FEEDBACK, GUIDE]]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 def draft_keyboard_for() -> ReplyKeyboardMarkup:
@@ -424,6 +430,8 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Отправьте четырёхзначный MCC или название магазина.\n"
         "Например: 5411 или Евроопт.\n"
         "Данные магазинов пополняют пользователи; проверяйте MCC перед покупкой.\n\n"
+        "Развиваем бота вместе: добавляйте данные, сообщайте об ошибках и пишите отзывы. "
+        "Без вашей помощи данные устаревают, а бот теряет пользу.\n\n"
         f"👥 Пользователей: "
         f"{context.application.bot_data['user_registry'].private_chat_count()} · "
         f"🤝 Помощников: {service.helper_count()}",
@@ -468,7 +476,7 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
             "• <b>Уточнить</b> — задать вопрос автору. После ответа заявка вернётся в очередь.\n\n"
             "«Отменить разбор» или истечение 15 минут возвращает заявку в общую очередь.\n\n"
             "<b>⚙️ Управление</b>\n"
-            "История изменений и сводка в 20:00.\n"
+            "История изменений и тихие напоминания в 20:00.\n"
             "Если правку можно отменить, в истории будет кнопка отмены."
         )
         if service.role(user_id) in {"owner", "superadmin"}:
@@ -486,6 +494,12 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
     return (
         search
         + actions
+        + (
+            "\n\n<b>💬 Обратная связь</b>\n"
+            "«💬 Отзыв админу» — рассказать об ошибке, предложить улучшение или поделиться "
+            "впечатлениями. Добавьте текст и картинки, затем нажмите «Отправить».\n"
+            "Бот становится полезнее благодаря вашим данным, проверкам и отзывам."
+        )
         + (
             "\n\nЧтобы выйти из формы, нажмите <b>«❌ Отменить»</b> внизу. "
             "После сохранения или отмены вернётся главное меню."
@@ -1902,19 +1916,6 @@ def _exact_store_brands(service: CommunityService, query: str) -> tuple[Any, ...
     )
 
 
-def _ensure_form_brand_selectable(service: CommunityService, draft: Draft, brand_id: int) -> None:
-    """Recheck restrictions before a searched brand becomes form state."""
-
-    if (
-        draft.data.get("form") == "partner_save"
-        and not service.is_admin(draft.user_id)
-        and not service.brand_has_confirmed_mcc(brand_id)
-    ):
-        raise CommunityError(
-            "Партнёрство можно предложить только для магазина с подтверждённым MCC."
-        )
-
-
 def _location_required(service: CommunityService | None, data: dict[str, Any]) -> bool:
     """Whether an entered name collides and therefore needs a location."""
 
@@ -2076,9 +2077,7 @@ def _form_rows(
                 location = getattr(brand, "location", None) or "место не указано"
                 label = f"{brand.name} · {location}"
                 rows.append([(label[:60], f"form_select:{brand.id}")])
-        can_create = data.get("form") == "mcc_save" or (
-            data.get("form") == "partner_save" and service.is_admin(draft.user_id)
-        )
+        can_create = data.get("form") in {"mcc_save", "partner_save"}
         if data.get("new_store_name") and can_create:
             rows.append([(f"➕ Создать новый «{data['new_store_name'][:34]}»", "form_new_store")])
     elif active == "card_id":
@@ -2237,11 +2236,6 @@ async def _render_form_editor(
         if pilot and active == "brand_id" and "matches" in draft.data:
             if draft.data["matches"]:
                 lines.append("Выберите магазин из результатов или уточните название.")
-            elif draft.data.get("form") == "partner_save" and not service.is_admin(draft.user_id):
-                lines.append(
-                    "Магазин не найден. Уточните название. Для партнёрства нужен магазин "
-                    "с подтверждённым MCC — сначала можно предложить его в разделе «Магазин с MCC»."
-                )
             else:
                 lines.append(
                     "Магазин не найден. Уточните название или создайте новый кнопкой ниже."
@@ -2429,7 +2423,6 @@ def _consume_form_text(
         query = clean_text(text, maximum=MAX_NAME)
         exact = _exact_store_brands(service, query)
         if len(exact) == 1:
-            _ensure_form_brand_selectable(service, draft, exact[0].id)
             values["brand_id"] = exact[0].id
             values.pop("name", None)
             values.pop("aliases", None)
@@ -3156,7 +3149,6 @@ async def _form_editor_callback(
             raise StaleAction("Выберите магазин из текущих результатов.")
         if _brand(service, brand_id) is None:
             raise StaleAction("Магазин больше недоступен.")
-        _ensure_form_brand_selectable(service, draft, brand_id)
         values["brand_id"] = brand_id
         values.pop("name", None)
         values.pop("aliases", None)
@@ -3168,8 +3160,6 @@ async def _form_editor_callback(
             raise StaleAction("Магазин закреплён контекстом формы.")
         if data.get("form") not in {"mcc_save", "partner_save"}:
             raise StaleAction("Новый магазин больше нельзя выбрать в этой форме.")
-        if data.get("form") == "partner_save" and not service.is_admin(draft.user_id):
-            raise CommunityError("Новый магазин для партнёрства может создать только помощник.")
         name = data.get("new_store_name")
         if not isinstance(name, str) or not name:
             raise StaleAction("Сначала отправьте название магазина.")
@@ -3751,6 +3741,22 @@ async def _dispatch_callback(
             data={"editing": True, "brand_id": brand_id},
         )
         await _render_draft(update, service, draft, context=context)
+    elif action == "reminder":
+        if len(parts) != 3 or parts[1] not in {"0", "1"}:
+            raise CommunityError("Некорректная настройка напоминаний.")
+        enabled = parts[1] == "1"
+        try:
+            service.set_digest(user_id, enabled, expected_epoch=int(parts[2]))
+        except CommunityError as error:
+            await _say_inline(update, str(error), InlineKeyboardMarkup([]))
+            return
+        epoch = service.role_epoch(user_id)
+        markup = (
+            reminder_actions_keyboard(epoch, service.reminder_work_counts(user_id))
+            if enabled
+            else InlineKeyboardMarkup([reminder_choice_keyboard(epoch).inline_keyboard[0]])
+        )
+        await _say_inline(update, reminder_preference_message(enabled), markup)
     elif action == "digest":
         if len(parts) != 3 or parts[1] not in {"0", "1"}:
             raise CommunityError("Некорректная настройка.")
@@ -3844,7 +3850,7 @@ async def _dispatch_callback(
                 if delivered
                 else "Роль обновлена, но уведомление пользователю не доставлено."
             )
-            + " Вечерняя сводка выключена до нового согласия помощника.",
+            + " Напоминания выключены до нового согласия помощника.",
             _keyboard([[("⬅️ К списку", "roles:0")]]),
         )
     elif action == "decline":

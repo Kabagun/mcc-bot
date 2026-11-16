@@ -174,6 +174,50 @@ def test_pilot_partner_rate_is_checked_immediately_and_can_be_corrected(flow, in
     assert service.own_proposals(2)[0].status == "approved"
 
 
+@pytest.mark.parametrize(
+    ("existing", "decision"), [(True, "approved"), (False, "approved"), (False, "rejected")]
+)
+def test_all_users_can_propose_partnership_without_mcc_before_moderated_publication(
+    flow, existing, decision
+):
+    service = _partner(flow)
+    flow.application.bot_data["form_flow_v2"] = FormFlowRollout(all_users=True)
+    name = "Партнёр без MCC"
+    brand_id = (
+        service.stores.create_partner_store(name, "any", actor_id=1).brand_id if existing else None
+    )
+    start_data(flow, user=10, kind="partner")
+    assert service.draft(10).data["active_field"] == "brand_id"
+    found = send(flow, name)
+    if not existing:
+        assert any("Создать новый" in label for label in _labels(found))
+        draft_click(flow, "form_new_store")
+    assert service.draft(10).data["active_field"] == "card_id"
+    draft_click(flow, "form_card:0")
+    draft_click(flow, "form_channel:any")
+    ready = send(flow, "5")
+    assert "Отправить на проверку" in _labels(ready)
+    draft_click(flow, "form_save")
+    proposal = service.own_proposals(10)[0]
+    assert proposal.kind == "partner_save"
+    assert proposal.status == "pending"
+    assert service.role(10) == "user"
+    if existing:
+        assert service.partners.list_offers(brand_id) == ()
+    else:
+        assert not service.stores.search(name).matches
+    claimed = service.claim(2, proposal.id, proposal.version)
+    service.review(2, claimed.id, claimed.version, decision)
+    if decision == "rejected":
+        assert not service.stores.search(name).matches
+    else:
+        saved = service.stores.search(name).matches[0]
+        assert not service.stores.list_brand_mcc_groups(saved.id)
+        offers = service.partners.list_offers(saved.id)
+        assert len(offers) == 1
+        assert offers[0].tiers[0].value == 5
+
+
 @pytest.mark.parametrize("reviewer_id", [1, 2])
 def test_rejection_reason_uses_pilot_wording_only_for_enrolled_reviewer(flow, reviewer_id):
     service = _pilot(flow, 2)

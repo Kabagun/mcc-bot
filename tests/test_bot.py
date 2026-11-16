@@ -696,5 +696,6 @@ def test_application_registers_details_callback_handler(
         "^mcc_lookup:",
         "^store:",
         "^community:",
+        "^feedback:",
         "^(?:community:)?unblock:",
     }

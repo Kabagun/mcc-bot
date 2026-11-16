@@ -251,6 +251,11 @@ class CommunityService:
                     day TEXT NOT NULL, user_id INTEGER NOT NULL,
                     state TEXT NOT NULL, created_at REAL NOT NULL,
                     PRIMARY KEY(day,user_id))""",
+                """CREATE TABLE IF NOT EXISTS community_reminder_invitations (
+                    user_id INTEGER PRIMARY KEY, day TEXT NOT NULL,
+                    role_epoch INTEGER NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('intent','sent','uncertain','skipped')),
+                    created_at REAL NOT NULL)""",
                 """CREATE TABLE IF NOT EXISTS community_review_snapshots (
                     proposal_id INTEGER PRIMARY KEY, version INTEGER NOT NULL,
                     state TEXT NOT NULL)""",
@@ -266,6 +271,14 @@ class CommunityService:
                     """ALTER TABLE community_roles ADD COLUMN role TEXT NOT NULL
                     DEFAULT 'admin' CHECK(role IN ('admin','superadmin'))"""
                 )
+            if "digest_choice_made" not in role_columns:
+                conn.execute(
+                    """ALTER TABLE community_roles ADD COLUMN digest_choice_made INTEGER
+                    NOT NULL DEFAULT 0 CHECK(digest_choice_made IN (0,1))"""
+                )
+                # Existing subscribers already consented. A legacy zero cannot
+                # distinguish an explicit refusal from a never-displayed choice.
+                conn.execute("UPDATE community_roles SET digest_choice_made=1 WHERE digest=1")
             role_event_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(community_role_events)")
             }
@@ -663,8 +676,9 @@ class CommunityService:
             if expected_epoch is not None and self._role(conn, user_id)[1] != expected_epoch:
                 raise StaleAction("Доступ изменился. Откройте управление заново.")
             conn.execute(
-                """INSERT INTO community_roles(user_id,active,epoch,digest) VALUES(?,0,0,?)
-                   ON CONFLICT(user_id) DO UPDATE SET digest=excluded.digest""",
+                """INSERT INTO community_roles(user_id,active,epoch,digest,digest_choice_made)
+                   VALUES(?,0,0,?,1) ON CONFLICT(user_id) DO UPDATE SET
+                   digest=excluded.digest,digest_choice_made=1""",
                 (user_id, int(enabled)),
             )
 
@@ -2078,17 +2092,6 @@ class CommunityService:
         if kind not in (EDIT_KINDS if role != "user" else PUBLIC_KINDS):
             raise AccessDenied("Это изменение доступно только помощникам.")
         payload = self._validate_payload(kind, protected_data.get("payload", {}))
-        if kind == "partner_save" and "name" in payload and role == "user":
-            raise AccessDenied("Новый магазин для партнёрства может создать только помощник.")
-        if (
-            role == "user"
-            and kind in {"card_partnership", "partner_save"}
-            and "brand_id" in payload
-            and not self.stores.list_brand_mcc_groups(payload["brand_id"], connection=conn)
-        ):
-            raise AccessDenied(
-                "Партнёрство можно предложить только для магазина с подтверждённым MCC."
-            )
         response_id = protected_data.get("response_id")
         fingerprint = self._fingerprint(kind, payload)
         self._ensure_not_duplicate(
@@ -2509,6 +2512,153 @@ class CommunityService:
             conn.execute("DELETE FROM community_updates WHERE created_at<?", (now - 30 * 86400,))
             return count
 
+    def _available_helper_request_count(self, conn: sqlite3.Connection, user_id: int) -> int:
+        if self._role(conn, user_id)[0] not in {"owner", "superadmin"}:
+            return 0
+        return int(
+            conn.execute(
+                """SELECT COUNT(*) FROM community_role_requests q
+                   LEFT JOIN community_roles r ON r.user_id=q.user_id
+                   WHERE q.status='pending' AND COALESCE(r.active,0)=0
+                   AND q.user_id<>? AND (? IS NULL OR q.user_id<>?)""",
+                (user_id, self.owner_id, self.owner_id),
+            ).fetchone()[0]
+        )
+
+    def available_helper_request_count(self, user_id: int) -> int:
+        """Count pending helper applications only for their current role managers."""
+
+        with self.stores.transaction() as conn:
+            return self._available_helper_request_count(conn, user_id)
+
+    def _reminder_work_counts(
+        self, conn: sqlite3.Connection, user_id: int, now: float
+    ) -> dict[str, int]:
+        if self._role(conn, user_id)[0] == "user":
+            return {"data": 0, "helpers": 0}
+        return {
+            "data": self._available_queue_count(conn, now),
+            "helpers": self._available_helper_request_count(conn, user_id),
+        }
+
+    def reminder_work_counts(self, user_id: int) -> dict[str, int]:
+        """Read the current user's available work breakdown in one transaction."""
+
+        with self.stores.transaction() as conn:
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            return self._reminder_work_counts(conn, user_id, now)
+
+    def reminder_invitation_candidates(self) -> tuple[int, ...]:
+        """Return never-asked current reviewers when the available queue has work.
+
+        An unfinished intent is deliberately final for automatic invitations:
+        a process may have stopped after delivery but before persisting success.
+        A confirmed skipped delivery can be reserved again on a later day.
+        """
+
+        with self.stores.transaction() as conn:
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            candidates = {
+                row[0] for row in conn.execute("SELECT user_id FROM community_roles WHERE active=1")
+            }
+            if self.owner_id is not None:
+                candidates.add(self.owner_id)
+            eligible = []
+            for user_id in sorted(candidates):
+                if self._role(conn, user_id)[0] == "user":
+                    continue
+                if not sum(self._reminder_work_counts(conn, user_id, now).values()):
+                    continue
+                preference = conn.execute(
+                    "SELECT digest,digest_choice_made FROM community_roles WHERE user_id=?",
+                    (user_id,),
+                ).fetchone()
+                if preference and (preference["digest"] or preference["digest_choice_made"]):
+                    continue
+                invitation = conn.execute(
+                    "SELECT state FROM community_reminder_invitations WHERE user_id=?", (user_id,)
+                ).fetchone()
+                if invitation is None or invitation["state"] == "skipped":
+                    eligible.append(user_id)
+            return tuple(eligible)
+
+    def reserve_reminder_invitation(self, user_id: int, day: str) -> tuple[int, int] | None:
+        """Reserve one initial prompt and its daily slot before contacting Telegram."""
+
+        with self.stores.transaction() as conn:
+            role, epoch = self._role(conn, user_id)
+            if role == "user":
+                return None
+            preference = conn.execute(
+                "SELECT digest,digest_choice_made FROM community_roles WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if preference and (preference["digest"] or preference["digest_choice_made"]):
+                return None
+            invitation = conn.execute(
+                "SELECT state,day FROM community_reminder_invitations WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if invitation and (invitation["state"] != "skipped" or invitation["day"] == day):
+                return None
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            count = sum(self._reminder_work_counts(conn, user_id, now).values())
+            if not count:
+                return None
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO community_digests VALUES(?,?,'invitation',?)",
+                (day, user_id, now),
+            )
+            if not cursor.rowcount:
+                return None
+            conn.execute(
+                """INSERT INTO community_reminder_invitations(
+                   user_id,day,role_epoch,state,created_at)
+                   VALUES(?,?,?,'intent',?) ON CONFLICT(user_id) DO UPDATE SET
+                   day=excluded.day,role_epoch=excluded.role_epoch,state='intent',
+                   created_at=excluded.created_at""",
+                (user_id, day, epoch, now),
+            )
+            return count, epoch
+
+    def refresh_reminder_invitation(self, user_id: int, day: str, epoch: int) -> int | None:
+        """Recheck invitation intent, current authority, preference and available work."""
+
+        with self.stores.transaction() as conn:
+            invitation = conn.execute(
+                """SELECT state FROM community_reminder_invitations
+                   WHERE user_id=? AND day=? AND role_epoch=?""",
+                (user_id, day, epoch),
+            ).fetchone()
+            role, current_epoch = self._role(conn, user_id)
+            preference = conn.execute(
+                "SELECT digest,digest_choice_made FROM community_roles WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if (
+                not invitation
+                or invitation["state"] != "intent"
+                or role == "user"
+                or current_epoch != epoch
+                or (preference and (preference["digest"] or preference["digest_choice_made"]))
+            ):
+                return None
+            now = time.time()
+            self._requeue_expired_clarifications(conn, now)
+            return sum(self._reminder_work_counts(conn, user_id, now).values()) or None
+
+    def finish_reminder_invitation(self, user_id: int, day: str, epoch: int, state: str) -> None:
+        """Finish only the matching intent, without retrying uncertain delivery."""
+
+        if state not in {"sent", "uncertain", "skipped"}:
+            raise ValueError("Invalid reminder invitation outcome")
+        with self.stores.transaction() as conn:
+            conn.execute(
+                """UPDATE community_reminder_invitations SET state=?
+                   WHERE user_id=? AND day=? AND role_epoch=? AND state='intent'""",
+                (state, user_id, day, epoch),
+            )
+
     def digest_candidates(self) -> tuple[int, ...]:
         """Return explicitly subscribed current reviewers, with no subscriber inference."""
 
@@ -2532,7 +2682,7 @@ class CommunityService:
             ).fetchone()
             now = time.time()
             self._requeue_expired_clarifications(conn, now)
-            count = self._available_queue_count(conn, now)
+            count = sum(self._reminder_work_counts(conn, user_id, now).values())
             if not row or not row[0] or not count:
                 return None
             cursor = conn.execute(
@@ -2557,7 +2707,7 @@ class CommunityService:
                 return None
             now = time.time()
             self._requeue_expired_clarifications(conn, now)
-            return self._available_queue_count(conn, now) or None
+            return sum(self._reminder_work_counts(conn, user_id, now).values()) or None
 
     def finish_digest(self, user_id: int, day: str, state: str) -> None:
         """Record delivery outcome without scheduling retries for uncertain sends."""

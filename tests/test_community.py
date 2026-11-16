@@ -403,7 +403,7 @@ def test_partner_form_derives_policy_and_reconciles_linked_exclusions(tmp_path):
     assert partners.list_offer_exclusions(offer.id) == ()
 
 
-def test_only_helpers_can_save_partnership_for_store_without_confirmed_mcc(tmp_path):
+def test_users_propose_and_helpers_review_partnerships_without_mcc(tmp_path):
     stores = StoreRepository(tmp_path / "partner-only-form.sqlite3")
     partners = PartnerRepository(stores)
     partners.initialize()
@@ -426,19 +426,19 @@ def test_only_helpers_can_save_partnership_for_store_without_confirmed_mcc(tmp_p
         "value": "5",
     }
 
-    with pytest.raises(AccessDenied, match="подтверждённым MCC"):
-        submit_form(service, 10, "partner_save", payload)
-
-    created = submit_form(service, 2, "partner_save", payload)
-    assert created.status == "approved"
+    created = submit_form(service, 10, "partner_save", payload)
+    assert created.status == "pending"
+    assert partners.list_offers(brand_id) == ()
+    claimed = service.claim(2, created.id, created.version)
+    service.review(2, claimed.id, claimed.version, "approved")
     offer = partners.list_offers(brand_id)[0]
     edited = {**payload, "offer_id": offer.id, "value": "6"}
 
-    with pytest.raises(AccessDenied, match="подтверждённым MCC"):
-        submit_form(service, 11, "partner_save", edited)
-
-    updated = submit_form(service, 2, "partner_save", edited)
-    assert updated.status == "approved"
+    updated = submit_form(service, 11, "partner_save", edited)
+    assert updated.status == "pending"
+    assert partners.list_offers(brand_id)[0].tiers[0].value == 5
+    claimed = service.claim(2, updated.id, updated.version)
+    service.review(2, claimed.id, claimed.version, "approved")
     assert partners.list_offers(brand_id)[0].tiers[0].value == 6
 
 

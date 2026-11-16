@@ -18,6 +18,7 @@ from mcc_bot.community_handlers import (
     ADD,
     APPLICATION_PENDING,
     CANCEL_DRAFT,
+    FEEDBACK,
     GUIDE,
     INFO,
     LEGACY_MINE,
@@ -277,7 +278,7 @@ def test_partner_editor_lists_only_cards_with_explicit_policy(flow):
     assert "Карта с fallback" not in labels
 
 
-def test_user_partner_editor_explains_empty_store_restriction(flow):
+def test_user_partner_editor_accepts_store_without_mcc(flow):
     service = flow.application.bot_data["community"]
     catalog = SimpleNamespace(
         cards=(
@@ -291,17 +292,14 @@ def test_user_partner_editor_explains_empty_store_restriction(flow):
     )
     service.catalog = catalog
     flow.application.bot_data["catalog"] = catalog
-    service.stores.create_partner_store("Partner-only exception", "any", actor_id=1)
+    brand_id = service.stores.create_partner_store(
+        "Partner-only exception", "any", actor_id=1
+    ).brand_id
 
     start_data(flow, kind="partner")
     draft_click(flow, "form_field:brand_id")
-    rejected = send(flow, "Partner-only exception")
-
-    assert (
-        "только для магазина с подтверждённым MCC"
-        in rejected.effective_message.reply_text.await_args.args[0]
-    )
-    assert service.draft(10).data["values"].get("brand_id") is None
+    send(flow, "Partner-only exception")
+    assert service.draft(10).data["values"]["brand_id"] == brand_id
 
 
 def test_operation_menu_deletes_last_mcc_but_keeps_store_searchable(flow):
@@ -343,13 +341,14 @@ def test_helper_edits_claimed_payload_in_the_same_editor(flow):
     assert service.stores.get_brand(brand_id).name == "Fixed by helper"
 
 
-def test_persistent_role_keyboard_and_durable_start_resume(flow):
+def test_collapsible_role_keyboard_and_durable_start_resume(flow):
     service = flow.application.bot_data["community"]
-    assert keyboard_for(service, 10).is_persistent
+    assert not keyboard_for(service, 10).is_persistent
     assert [button.text for row in keyboard_for(service, 10).keyboard for button in row] == [
         INFO,
         SUGGEST,
         VOLUNTEER,
+        FEEDBACK,
         GUIDE,
     ]
     assert [button.text for row in keyboard_for(service, 2).keyboard for button in row] == [
@@ -357,6 +356,7 @@ def test_persistent_role_keyboard_and_durable_start_resume(flow):
         ADD,
         QUEUE,
         MANAGE,
+        FEEDBACK,
         GUIDE,
     ]
     start_data(flow)
@@ -403,7 +403,7 @@ def test_unified_add_chooser_and_single_cancel_keyboard(flow):
         for call in cancelled.effective_message.reply_text.await_args_list
         if hasattr(call.kwargs.get("reply_markup"), "keyboard")
     )
-    assert restored.keyboard[-1][0].text == GUIDE
+    assert [button.text for button in restored.keyboard[-1]] == [FEEDBACK, GUIDE]
 
     click(flow, "add:store_mcc")
     assert flow.application.bot_data["community"].draft(10).data["form"] == "mcc_save"
@@ -688,7 +688,7 @@ def test_existing_review_editor_is_locked_and_restores_role_menu_once(flow):
         if hasattr(call.kwargs.get("reply_markup"), "keyboard")
     ]
     assert len(restored) == 1
-    assert restored[0].keyboard[-1][0].text == GUIDE
+    assert [button.text for button in restored[0].keyboard[-1]] == [FEEDBACK, GUIDE]
 
     reopened = service.proposal(2, proposal.id)
     click(flow, f"q:{reopened.id}:{reopened.version}:edit", 2)
@@ -782,6 +782,7 @@ def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
         ADD,
         QUEUE,
         MANAGE,
+        FEEDBACK,
         GUIDE,
     ]
 

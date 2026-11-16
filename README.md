@@ -198,11 +198,41 @@ explicit choice to add another variant or replace the incorrect code. Duplicate
 confirmations add evidence, not duplicate facts. Reverts preserve independent
 evidence and reject stale structural reversions.
 
-Subadmins may opt into one daily pending-work digest at **20:00 Europe/Minsk**.
-Opt-in defaults off and does not control queue access. Empty queue or no
-subscribers means no messages. A durable daily delivery record prevents restart
-duplicates; uncertain sends are not automatically retried, so a rare digest may
-be missed. No backlog of previous days is sent.
+Current helpers and superadmins receive a one-time silent invitation to enable
+reminders when unclaimed data proposals need review. Owners and superadmins also
+see pending helper applications; helpers never receive those application counts.
+The invitation is checked once a minute and offers explicit yes/no buttons.
+Existing daily subscribers keep their consent. Legacy disabled settings have no
+refusal history, so those users may receive this initial choice once.
+
+After consent, pending-work reminders arrive silently at **20:00 Europe/Minsk**.
+No available work means no message. Declining or disabling reminders preserves
+the helper's role and bot access; playful ban wording has no moderation effect. Settings
+can be changed in management or through the reminder's buttons without disturbing
+an active form. Explicit refusal persists across restarts and role changes.
+
+Durable invitation and daily records prevent restart duplicates and prevent an
+invitation plus a daily reminder on the same day. Uncertain sends are not retried;
+confirmed skips may be reconsidered on a later day. No previous-day backlog is sent.
+
+All users can open **💬 Отзыв админу** from the main reply keyboard. The separate
+feedback form accepts up to 3000 text characters and ten photos (including photo
+captions), supports clearing content, and requires an explicit Send action.
+Cancellation discards only the draft; no feedback is delivered before submission.
+Other forms must be finished or cancelled first. The main menu returns on exit.
+
+Feedback is sent privately and silently to the configured owner, with the sender's
+Telegram name/username and photos. References and text remain in private SQLite
+tables, separate from the public store catalog, community audit and moderation queue;
+photos are not downloaded. Input update IDs and frozen submissions prevent duplicate
+content and duplicate owner deliveries. Confirmed failures allow retrying only unsent
+parts; ambiguous sends are preserved for reconciliation without automatic retry.
+
+All users can propose card partnerships through **➕ Предложить данные** →
+**🤝 Партнёрство по карте**, including stores without a known MCC and new stores.
+Ordinary users' proposals stay private and pending until a helper approves them;
+creating a new store and its partnership is atomic at approval. Helper publication,
+card-policy validation and protection against moving an existing offer stay unchanged.
 
 Screenshots are stored only as Telegram file references, not downloaded files.
 Users must redact names, balances, card/account details and unrelated operations.

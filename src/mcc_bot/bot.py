@@ -34,6 +34,12 @@ from .community_handlers import handle_media as handle_community_media
 from .community_handlers import handle_text as handle_community_text
 from .config import BotSettings, SettingsError
 from .descriptions import DescriptionCatalog
+from .feedback import FeedbackRepository
+from .feedback_handlers import callback as feedback_callback
+from .feedback_handlers import guard as feedback_guard
+from .feedback_handlers import handle_media as handle_feedback_media
+from .feedback_handlers import handle_text as handle_feedback_text
+from .feedback_handlers import resume as resume_feedback
 from .form_rollout import FormFlowRollout
 from .formatting import format_match_pages, split_message
 from .notifications import install_jobs
@@ -85,7 +91,8 @@ async def _reply(update: Update, text: str) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the current role-aware menu and short lookup instructions."""
 
-    await show_menu(update, context)
+    if not await resume_feedback(update, context):
+        await show_menu(update, context)
 
 
 async def _lookup_and_reply(
@@ -189,6 +196,8 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     message = update.effective_message
     if message is None or not isinstance(message.text, str):
+        return
+    if await handle_feedback_text(update, context):
         return
     if await handle_community_text(update, context):
         return
@@ -309,10 +318,15 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def lookup_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Pass screenshots only to an active contribution or clarification form."""
+    """Route pictures to the active feedback or contribution form."""
 
+    if await handle_feedback_media(update, context):
+        return
     if not await handle_community_media(update, context):
-        await _reply(update, "Для отправки скриншота сначала нажмите «Предложить данные».")
+        await _reply(
+            update,
+            "Для отправки картинки сначала откройте предложение данных или «💬 Отзыв админу».",
+        )
 
 
 async def expired_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -586,6 +600,8 @@ def build_application(settings: BotSettings) -> Application:
         catalog=catalog,
     )
     community.initialize()
+    feedback = FeedbackRepository(stores)
+    feedback.initialize()
     application = (
         ApplicationBuilder().token(settings.token).post_init(_configure_bot_commands).build()
     )
@@ -595,12 +611,14 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["stores"] = stores
     application.bot_data["partners"] = partners
     application.bot_data["community"] = community
+    application.bot_data["feedback"] = feedback
     application.bot_data["form_flow_v2"] = FormFlowRollout(
         user_ids=settings.form_flow_v2_user_ids,
         all_users=settings.form_flow_v2_all_users,
     )
-    application.add_handler(TypeHandler(Update, remember_chat), group=-2)
-    application.add_handler(TypeHandler(Update, enforce_blocked_access), group=-1)
+    application.add_handler(TypeHandler(Update, remember_chat), group=-3)
+    application.add_handler(TypeHandler(Update, enforce_blocked_access), group=-2)
+    application.add_handler(TypeHandler(Update, feedback_guard), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(CallbackQueryHandler(toggle_details, pattern=r"^mcc_details:"))
@@ -610,6 +628,7 @@ def build_application(settings: BotSettings) -> Application:
         CallbackQueryHandler(unblock_callback, pattern=r"^(?:community:)?unblock:")
     )
     application.add_handler(CallbackQueryHandler(community_callback, pattern=r"^community:"))
+    application.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^feedback:"))
     application.add_handler(CallbackQueryHandler(expired_callback))
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, lookup_media))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_text))
