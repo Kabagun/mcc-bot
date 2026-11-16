@@ -452,6 +452,17 @@ class UserRegistry:
                 changed += cursor.rowcount
         return changed
 
+    def private_recipient(self, chat_id: int) -> ChatRecipient | None:
+        """Look up a known private contact even when excluded from broadcasts."""
+        if not _is_private_chat_id(chat_id):
+            return None
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT chat_id,username,first_name,last_name FROM telegram_chats WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return ChatRecipient(**dict(row)) if row is not None else None
+
     def recipients(self) -> tuple[ChatRecipient, ...]:
         """Return eligible recipients and profiles in stable order."""
 

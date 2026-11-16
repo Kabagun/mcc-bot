@@ -50,7 +50,10 @@ from .stores import Brand, StoreRepository
 from .users import BlockedChat, UserRegistry
 
 LOGGER = logging.getLogger(__name__)
-REPEAT_BLOCK_WARNING = "Если вы заблокируете бота в Telegram, доступ к боту будет закрыт навсегда."
+REPEAT_BLOCK_WARNING = (
+    "Если вы заблокируете бота в Telegram, доступ к боту будет заблокирован. "
+    "Разблокировка — 5 BYN через администратора."
+)
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
 RESULT_TOO_LONG = (
@@ -451,6 +454,19 @@ async def _notify_unblock_reviewers(context: ContextTypes.DEFAULT_TYPE, chat: Bl
             LOGGER.info("Could not deliver an unblock request to a reviewer")
 
 
+def _permanent_ban_message(context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Show the configured owner's current contact and the manual unban price."""
+    data = context.application.bot_data
+    owner_id = getattr(data.get("community"), "owner_id", None)
+    recipient = data["user_registry"].private_recipient(owner_id) if owner_id else None
+    contact = f" @{recipient.username}" if recipient and recipient.username else ""
+    return (
+        "🚫 Доступ к боту заблокирован.\n\n"
+        "Разблокировка — 5 BYN.\n"
+        f"Напишите администратору{contact}."
+    )
+
+
 async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Limit a blocked private chat to the unblock request conversation."""
 
@@ -471,10 +487,10 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     if query is not None:
         await query.answer()
-        if query.data == "unblock:request":
-            if blocked.permanent:
-                await query.edit_message_text("Доступ к боту закрыт навсегда.")
-            elif registry.begin_appeal(chat.id):
+        if blocked.permanent:
+            await query.edit_message_text(_permanent_ban_message(context))
+        elif query.data == "unblock:request":
+            if registry.begin_appeal(chat.id):
                 await query.edit_message_text(
                     "Расскажите, почему вы заблокировали бота и хотите снова им пользоваться. "
                     "Ответьте одним сообщением (5-500 символов).\n\n" + REPEAT_BLOCK_WARNING
@@ -506,7 +522,7 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
                 await _notify_unblock_reviewers(context, appeal)
         raise ApplicationHandlerStop
     if blocked.permanent:
-        await message.reply_text("Доступ к боту закрыт навсегда.")
+        await message.reply_text(_permanent_ban_message(context))
     elif blocked.appeal_state == "pending":
         await message.reply_text("Ваш запрос на разблокировку рассматривается.")
     else:

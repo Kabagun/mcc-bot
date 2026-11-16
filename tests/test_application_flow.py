@@ -184,14 +184,14 @@ def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app
             await app.process_update(tapped(app, "unblock:approve:101", user_id=102, sequence=103))
             assert registry.blocked_chat(101) is None
             assert any("Доступ восстановлен" in data["text"] for data in rendered(calls))
-            assert any("навсегда" in data["text"] for data in rendered(calls))
+            assert any("5 BYN" in data["text"] for data in rendered(calls))
             calls.clear()
             await app.process_update(incoming(app, "5411", sequence=4))
             assert "Beta Card" in rendered(calls)[-1]["text"]
             registry.mark_forbidden(101, Forbidden("bot was blocked by the user"))
             calls.clear()
             await app.process_update(incoming(app, "/start", sequence=5))
-            assert "навсегда" in rendered(calls)[-1]["text"]
+            assert "5 BYN" in rendered(calls)[-1]["text"]
             assert "reply_markup" not in rendered(calls)[-1]
 
     asyncio.run(scenario())
