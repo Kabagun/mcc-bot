@@ -20,11 +20,14 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
 from .stores import StoreRepository, normalize_location, normalize_store_name
+
+if TYPE_CHECKING:
+    from .users import ChatAccessState, UserRegistry
 
 LEASE_SECONDS = 15 * 60
 CLARIFICATION_SECONDS = 24 * 60 * 60
@@ -424,6 +427,42 @@ class CommunityService:
             or actor_role == "owner"
             or self._superadmin_promoter(conn, user_id) == actor_id
         )
+
+    def _can_manage_access(self, conn: sqlite3.Connection, actor_id: int, target_id: int) -> bool:
+        actor_role = self._role(conn, actor_id)[0]
+        target_role = self._role(conn, target_id)[0]
+        return (
+            actor_role in {"owner", "superadmin"}
+            and actor_id != target_id
+            and target_role != "owner"
+            and self._can_manage_role(conn, actor_id, actor_role, target_id, target_role)
+        )
+
+    def can_manage_access(self, actor_id: int, target_id: int) -> bool:
+        with self.stores.connection() as conn:
+            return self._can_manage_access(conn, actor_id, target_id)
+
+    def set_bot_access(
+        self,
+        registry: UserRegistry,
+        actor_id: int,
+        target_id: int,
+        *,
+        banned: bool,
+        expected_revision: int,
+    ) -> ChatAccessState:
+        """Hold the role write lock while rechecking authority and committing access."""
+        with self.stores.transaction() as conn:
+            if not self._can_manage_access(conn, actor_id, target_id):
+                raise AccessDenied("Вы не можете изменить доступ этого пользователя.")
+            if registry.blocked_chat(actor_id) is not None:
+                raise AccessDenied("Ваш доступ к боту ограничен.")
+            return registry.set_manual_access(
+                target_id,
+                banned=banned,
+                actor_id=actor_id,
+                expected_revision=expected_revision,
+            )
 
     def set_role(
         self,

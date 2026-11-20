@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -37,6 +40,7 @@ from .notifications import (
     reminder_preference_message,
 )
 from .stores import BrandMccGroup, normalize_store_name
+from .users import ChatAccessState, ChatRecipient, StaleAccessState
 
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
@@ -53,6 +57,7 @@ MANAGE_HISTORY = "📜 История изменений"
 MANAGE_DIGEST_ON = "🔕 Включить напоминания в 20:00"
 MANAGE_DIGEST_OFF = "🔔 Отключить напоминания"
 MANAGE_ROLES = "👥 Помощники и заявки"
+MANAGE_ACCESS = "🚫 Бан по нику или ID"
 MAIN_MENU = "⬅️ Главное меню"
 CANCEL_DRAFT = "❌ Отменить"
 OPTIONAL_FIELDS = "Необязательные поля"
@@ -280,6 +285,7 @@ def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKe
     )
     if service.role(user_id) in {"owner", "superadmin"}:
         rows.append([(MANAGE_ROLES, "roles:0")])
+        rows.append([(MANAGE_ACCESS, "access_lookup")])
         return InlineKeyboardMarkup(
             [
                 *_keyboard(rows).inline_keyboard,
@@ -367,6 +373,9 @@ async def _close_draft(
 ) -> None:
     """Discard a draft and restore its brand card when it has a live origin."""
 
+    if draft.stage == "access_lookup":
+        await _finish_access_lookup(update, context, service, draft, "Поиск отменён.")
+        return
     if draft.data.get("review_edit"):
         proposal_id = draft.data["review_edit"]["proposal_id"]
         bound = service.editor_message(draft.user_id, draft.id)
@@ -416,6 +425,9 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     service = _service(context)
     draft = service.draft(user_id)
+    if draft and draft.stage == "access_lookup":
+        await _render_draft(update, service, draft, context=context)
+        return
     if draft:
         actions = [("Продолжить", f"d:{draft.id}:{draft.version}:resume")]
         if not draft.data.get("draft_mode"):
@@ -880,6 +892,14 @@ async def _render_draft(
     context: ContextTypes.DEFAULT_TYPE | None = None,
 ) -> None:
     stage, data = draft.stage, draft.data
+    if stage == "access_lookup" and context is not None:
+        text = "🔎 Найти пользователя\n\nОтправьте @ник или Telegram ID."
+        if notice:
+            text += "\n\n" + notice
+        await _render_durable_form_message(
+            update, context, service, draft, text, InlineKeyboardMarkup([])
+        )
+        return
     if stage in {"reason", "review_preview"}:
         service.validate_review(draft.user_id, data["proposal_id"], data["proposal_version"])
     rows: list[list[tuple[str, str]]] = []
@@ -1613,6 +1633,251 @@ async def _role_list(
         "Помощники и заявки" if candidates else "Заявок и помощников пока нет.",
         _keyboard(rows),
     )
+
+
+def _role_card(
+    context: ContextTypes.DEFAULT_TYPE,
+    candidate: dict[str, Any],
+    *,
+    notice: str = "",
+) -> tuple[str, InlineKeyboardMarkup]:
+    target_id, epoch = candidate["user_id"], candidate["epoch"]
+    if not candidate["active"]:
+        state = "Заявка в помощники"
+        rows = [[("Назначить помощником", f"role:{target_id}:{epoch}:admin")]]
+        rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
+    elif candidate["role"] == "superadmin":
+        state = "Действующий суперадминистратор"
+        rows = (
+            [
+                [("Понизить до помощника", f"role:{target_id}:{epoch}:admin")],
+                [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
+            ]
+            if candidate["can_manage"]
+            else []
+        )
+    else:
+        state = "Действующий помощник"
+        rows = [
+            [("Повысить до суперадмина", f"role:{target_id}:{epoch}:superadmin")],
+            [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
+        ]
+    text = f"{state}\n\n{_role_identity(candidate)}"
+    access = context.application.bot_data["user_registry"].access_state(target_id)
+    if access is not None:
+        text += f"\n{_access_status(access)}."
+        if candidate["can_manage"]:
+            rows.append(_access_button(access, "r"))
+    rows.append([("⬅️ К списку", "roles:0")])
+    return (f"{notice}\n\n{text}" if notice else text), _keyboard(rows)
+
+
+@dataclass(frozen=True, slots=True)
+class _AccessConfirmation:
+    token: str
+    target_id: int
+    revision: int
+    banned: bool
+    origin: str
+
+
+def _access_status(state: ChatAccessState) -> str:
+    return "Доступ к боту заблокирован" if state.active else "Доступ к боту открыт"
+
+
+def _access_button(state: ChatAccessState, origin: str) -> list[tuple[str, str]]:
+    label = "✅ Разбанить" if state.active else "🚫 Забанить"
+    return [(label, f"access_confirm:{state.chat_id}:{int(not state.active)}:{origin}")]
+
+
+def _access_card(
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    actor_id: int,
+    recipient: ChatRecipient,
+    state: ChatAccessState,
+    origin: str,
+    *,
+    notice: str = "",
+) -> tuple[str, InlineKeyboardMarkup]:
+    target_id = recipient.chat_id
+    if origin == "r":
+        candidate = next(
+            (item for item in service.role_candidates(actor_id) if item["user_id"] == target_id),
+            None,
+        )
+        if candidate is not None:
+            return _role_card(context, candidate, notice=notice)
+    identity = _role_identity(
+        {
+            "user_id": target_id,
+            "username": recipient.username,
+            "first_name": recipient.first_name,
+            "last_name": recipient.last_name,
+        }
+    )
+    rows = []
+    if service.can_manage_access(actor_id, target_id):
+        rows.append(_access_button(state, origin))
+    back = "roles:0" if origin == "r" else "manage"
+    rows.append([("⬅️ Назад", back)])
+    header = f"{notice}\n\n" if notice else ""
+    return f"{header}{_access_status(state)}.\n\n{identity}", _keyboard(rows)
+
+
+def _access_identity(
+    context: ContextTypes.DEFAULT_TYPE, target_id: int
+) -> tuple[ChatRecipient, ChatAccessState]:
+    registry = context.application.bot_data["user_registry"]
+    recipient = registry.private_recipient(target_id)
+    state = registry.access_state(target_id) if recipient is not None else None
+    if recipient is None or state is None:
+        raise CommunityError("Пользователь не найден среди тех, кто писал боту.")
+    return recipient, state
+
+
+async def _finish_access_lookup(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    draft: Draft,
+    text: str,
+    markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    bound = service.editor_message(draft.user_id, draft.id)
+    service.cancel_draft(draft.user_id, draft.id, draft.version)
+    if bound is not None:
+        with suppress(TelegramError):
+            await context.bot.delete_message(chat_id=bound[0], message_id=bound[1])
+    await _say_with_restored_menu(update, text, keyboard_for(service, draft.user_id), markup)
+
+
+async def _consume_access_lookup(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    draft: Draft,
+    text: str,
+) -> None:
+    if service.role(draft.user_id) not in {"owner", "superadmin"}:
+        await _finish_access_lookup(
+            update, context, service, draft, "Доступ к управлению изменился."
+        )
+        return
+    registry = context.application.bot_data["user_registry"]
+    try:
+        if re.fullmatch(r"[0-9]{1,19}", text) and 0 < int(text) < 2**63:
+            target_id = int(text)
+        elif re.fullmatch(r"@?[A-Za-z0-9_]{1,32}", text) and not text.isdecimal():
+            matches = registry.find_private_chats_by_username(text)
+            if len(matches) > 1:
+                raise CommunityError("Этот ник есть у нескольких записей. Введите Telegram ID.")
+            if not matches:
+                raise CommunityError("Пользователь не найден среди тех, кто писал боту.")
+            target_id = matches[0].chat_id
+            try:
+                chat = await context.bot.get_chat(target_id, connect_timeout=5, read_timeout=5)
+            except TelegramError as error:
+                raise CommunityError(
+                    "Не удалось сверить ник в Telegram. Введите Telegram ID."
+                ) from error
+            if (
+                chat.type != "private"
+                or chat.id != target_id
+                or (chat.username or "").casefold() != text.removeprefix("@").casefold()
+            ):
+                raise CommunityError("Ник пользователя изменился. Введите Telegram ID.")
+        else:
+            raise CommunityError("Введите @ник или положительный числовой Telegram ID.")
+        recipient, state = _access_identity(context, target_id)
+    except CommunityError as error:
+        await _render_draft(update, service, draft, notice=str(error), context=context)
+        return
+    card, markup = _access_card(context, service, draft.user_id, recipient, state, "m")
+    await _finish_access_lookup(update, context, service, draft, card, markup)
+
+
+async def _access_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    user_id: int,
+    parts: list[str],
+) -> None:
+    if service.role(user_id) not in {"owner", "superadmin"}:
+        raise CommunityError("Управление доступом доступно владельцу и суперадминам.")
+    action = parts[0]
+    if action == "access_lookup" and len(parts) == 1:
+        draft = service.draft(user_id)
+        if draft is None:
+            draft = service.begin(
+                user_id, stage="access_lookup", data={"draft_mode": True}, privileged=True
+            )
+        elif draft.stage != "access_lookup":
+            raise CommunityError("Завершите текущее действие или нажмите «❌ Отменить».")
+        context.user_data.pop("access_confirmation", None)
+        await _render_draft(update, service, draft, context=context)
+        return
+    if action == "access_apply" and len(parts) == 2:
+        pending = context.user_data.get("access_confirmation")
+        if not isinstance(pending, _AccessConfirmation) or pending.token != parts[1]:
+            raise StaleAction("Подтверждение устарело. Откройте карточку пользователя заново.")
+        context.user_data.pop("access_confirmation")
+        try:
+            state = service.set_bot_access(
+                context.application.bot_data["user_registry"],
+                user_id,
+                pending.target_id,
+                banned=pending.banned,
+                expected_revision=pending.revision,
+            )
+        except StaleAccessState as error:
+            raise StaleAction(
+                "Доступ уже изменился. Откройте карточку пользователя заново."
+            ) from error
+        recipient, _state = _access_identity(context, pending.target_id)
+        notice = "Пользователь забанен." if state.active else "Пользователь разбанен."
+        card, markup = _access_card(
+            context, service, user_id, recipient, state, pending.origin, notice=notice
+        )
+    elif action == "access_card" and len(parts) == 3 and parts[2] in {"m", "r"}:
+        context.user_data.pop("access_confirmation", None)
+        recipient, state = _access_identity(context, int(parts[1]))
+        card, markup = _access_card(context, service, user_id, recipient, state, parts[2])
+    elif (
+        action == "access_confirm"
+        and len(parts) == 4
+        and parts[2] in {"0", "1"}
+        and parts[3] in {"m", "r"}
+    ):
+        target_id, banned, origin = int(parts[1]), parts[2] == "1", parts[3]
+        if not service.can_manage_access(user_id, target_id):
+            raise CommunityError("Вы не можете изменить доступ этого пользователя.")
+        recipient, state = _access_identity(context, target_id)
+        context.user_data.pop("access_confirmation", None)
+        if state.active == banned:
+            card, markup = _access_card(context, service, user_id, recipient, state, origin)
+        else:
+            pending = _AccessConfirmation(
+                secrets.token_urlsafe(9), target_id, state.revision, banned, origin
+            )
+            context.user_data["access_confirmation"] = pending
+            verb = "Забанить" if banned else "Разбанить"
+            target = (
+                f"@{recipient.username} · ID {target_id}"
+                if recipient.username
+                else f"ID {target_id}"
+            )
+            card = f"{verb} пользователя {target}?"
+            markup = _keyboard(
+                [
+                    [(f"Да, {verb.lower()}", f"access_apply:{pending.token}")],
+                    [("⬅️ Назад", f"access_card:{target_id}:{origin}")],
+                ]
+            )
+    else:
+        raise StaleAction("Кнопка устарела. Откройте управление заново.")
+    await _say_inline(update, card, markup)
 
 
 async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> None:
@@ -2588,6 +2853,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
         return False
     service = _service(context)
     try:
+        draft = service.draft(user_id)
+        if draft is not None and draft.stage == "access_lookup":
+            if text == CANCEL_DRAFT:
+                await _close_draft(update, context, service, draft)
+            else:
+                await _consume_access_lookup(update, context, service, draft, text)
+            return True
         if text == INFO:
             catalog = context.application.bot_data["catalog"]
             await _say(
@@ -3701,6 +3973,8 @@ async def _dispatch_callback(
         await _review_callback(update, context, service, user_id, parts[1:])
     elif action == "manage":
         await _management(update, service, user_id)
+    elif action.startswith("access_"):
+        await _access_callback(update, context, service, user_id, parts)
     elif action == "recent":
         offset = _history_offset(parts[1]) if len(parts) == 2 else 0
         await _recent_history(update, service, user_id, offset)
@@ -3781,28 +4055,8 @@ async def _dispatch_callback(
         )
         if candidate is None:
             raise StaleAction("Заявка или роль уже изменилась.")
-        if not candidate["active"]:
-            state = "Заявка в помощники"
-            rows = [[("Назначить помощником", f"role:{target_id}:{epoch}:admin")]]
-            rows.append([("Отклонить заявку", f"decline:{target_id}:{epoch}")])
-        elif candidate["role"] == "superadmin":
-            state = "Действующий суперадминистратор"
-            rows = (
-                [
-                    [("Понизить до помощника", f"role:{target_id}:{epoch}:admin")],
-                    [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
-                ]
-                if candidate["can_manage"]
-                else []
-            )
-        else:
-            state = "Действующий помощник"
-            rows = [
-                [("Повысить до суперадмина", f"role:{target_id}:{epoch}:superadmin")],
-                [("Отозвать доступ", f"role:{target_id}:{epoch}:none")],
-            ]
-        rows.append([("⬅️ К списку", "roles:0")])
-        await _say_inline(update, f"{state}\n\n{_role_identity(candidate)}", _keyboard(rows))
+        text, markup = _role_card(context, candidate)
+        await _say_inline(update, text, markup)
     elif action == "role":
         if len(parts) != 4 or parts[3] not in {"0", "1", "none", "admin", "superadmin"}:
             raise CommunityError("Некорректная роль.")

@@ -36,6 +36,10 @@ class BroadcastSafetyError(RuntimeError):
     """A release cannot safely proceed without operator reconciliation."""
 
 
+class StaleAccessState(ValueError):
+    """A moderation confirmation no longer matches the current access revision."""
+
+
 @dataclass(frozen=True, slots=True)
 class BroadcastResult:
     """Delivery counters for one broadcast attempt."""
@@ -101,6 +105,17 @@ class BlockedChat:
     appeal_state: str
     appeal_text: str | None
     permanent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChatAccessState:
+    """Current access state for one registered private chat, including its generation."""
+
+    chat_id: int
+    active: bool
+    permanent: bool
+    appeal_state: str
+    revision: int
 
 
 def _identity_text(value: Any, *, maximum: int) -> str | None:
@@ -175,11 +190,9 @@ def _ban_chat(connection: sqlite3.Connection, chat_id: int) -> None:
 
     connection.execute("INSERT OR IGNORE INTO telegram_chats(chat_id) VALUES(?)", (chat_id,))
     connection.execute(
-        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state)
-           VALUES(?,1,CURRENT_TIMESTAMP,1,'permanent') ON CONFLICT(chat_id) DO UPDATE SET
-           active=1,permanent=1,appeal_state='permanent'
-           WHERE blocked_chats.active<>1 OR blocked_chats.permanent<>1
-           OR blocked_chats.appeal_state<>'permanent'""",
+        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state,revision)
+           VALUES(?,1,CURRENT_TIMESTAMP,1,'permanent',1) ON CONFLICT(chat_id) DO UPDATE SET
+           active=1,permanent=1,appeal_state='permanent',revision=blocked_chats.revision+1""",
         (chat_id,),
     )
 
@@ -200,10 +213,11 @@ def _block_chat(
     # A fresh generic failure must not borrow second-resolution broadcast proof
     # from an earlier block, even when both incidents occur in the same second.
     connection.execute(
-        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state)
-           VALUES(?,1,strftime('%Y-%m-%d %H:%M:%f','now'),?,?)
+        """INSERT INTO blocked_chats(chat_id,active,blocked_at,permanent,appeal_state,revision)
+           VALUES(?,1,strftime('%Y-%m-%d %H:%M:%f','now'),?,?,1)
            ON CONFLICT(chat_id) DO UPDATE SET
            active=1,permanent=excluded.permanent,appeal_state=excluded.appeal_state,
+           revision=blocked_chats.revision+1,
            blocked_at=strftime('%Y-%m-%d %H:%M:%f','now'),
            appeal_text=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_text ELSE NULL END,
            appeal_at=CASE WHEN excluded.permanent=1 THEN blocked_chats.appeal_at ELSE NULL END,
@@ -319,9 +333,26 @@ class UserRegistry:
                     """ALTER TABLE blocked_chats ADD COLUMN permanent INTEGER NOT NULL
                        DEFAULT 0 CHECK(permanent IN (0, 1))"""
                 )
+            if "revision" not in blocked_columns:
+                connection.execute(
+                    """ALTER TABLE blocked_chats ADD COLUMN revision INTEGER NOT NULL
+                       DEFAULT 0 CHECK(revision>=0)"""
+                )
             connection.execute(
-                """INSERT OR IGNORE INTO blocked_chats(chat_id)
-                   SELECT DISTINCT f.chat_id FROM broadcast_failures f
+                """CREATE TABLE IF NOT EXISTS manual_access_actions (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   actor_id INTEGER NOT NULL,
+                   target_chat_id INTEGER NOT NULL REFERENCES telegram_chats(chat_id),
+                   action TEXT NOT NULL CHECK(action IN ('ban','unban')),
+                   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+                   revision INTEGER NOT NULL,
+                   UNIQUE(target_chat_id,revision))"""
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO blocked_chats(
+                   chat_id,active,blocked_at,permanent,appeal_state,revision)
+                   SELECT DISTINCT f.chat_id,1,CURRENT_TIMESTAMP,0,'none',1
+                   FROM broadcast_failures f
                    JOIN broadcast_runs r ON r.id=f.run_id
                    WHERE r.status='completed' AND r.id=(
                        SELECT MAX(id) FROM broadcast_runs WHERE status='completed'
@@ -620,6 +651,91 @@ class UserRegistry:
         with closing(self._connect()) as connection, connection:
             _ban_chat(connection, chat_id)
 
+    def find_private_chats_by_username(self, username: str) -> tuple[ChatRecipient, ...]:
+        """Return all exact case-insensitive matches, including blocked accounts.
+
+        Remembered usernames can be outdated or reassigned. Multiple registered
+        matches are deliberately returned rather than guessing a single target.
+        """
+
+        value = username.strip().removeprefix("@") if isinstance(username, str) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,32}", value):
+            raise ValueError("A valid exact Telegram username is required")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """SELECT chat_id,username,first_name,last_name FROM telegram_chats
+                   WHERE chat_id>0 AND username=? COLLATE NOCASE ORDER BY chat_id""",
+                (value,),
+            ).fetchall()
+        return tuple(ChatRecipient(**dict(row)) for row in rows)
+
+    @staticmethod
+    def _access_state(connection: sqlite3.Connection, chat_id: int) -> ChatAccessState | None:
+        row = connection.execute(
+            """SELECT c.chat_id,COALESCE(b.active,0) AS active,
+               COALESCE(b.permanent,0) AS permanent,COALESCE(b.appeal_state,'none') AS appeal_state,
+               COALESCE(b.revision,0) AS revision FROM telegram_chats c
+               LEFT JOIN blocked_chats b ON b.chat_id=c.chat_id WHERE c.chat_id=?""",
+            (chat_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ChatAccessState(
+            row["chat_id"],
+            bool(row["active"]),
+            bool(row["permanent"]),
+            row["appeal_state"],
+            row["revision"],
+        )
+
+    def access_state(self, chat_id: int) -> ChatAccessState | None:
+        """Read a registered private account's access generation without changing it."""
+
+        if not _is_private_chat_id(chat_id):
+            raise ValueError("A registered private chat is required")
+        with closing(self._connect()) as connection:
+            return self._access_state(connection, chat_id)
+
+    def set_manual_access(
+        self, chat_id: int, *, banned: bool, actor_id: int, expected_revision: int
+    ) -> ChatAccessState:
+        """Apply an authorized caller's confirmed choice and append its audit atomically.
+
+        The repository does not determine moderator roles or authority. The caller
+        must authorize actor and target before supplying the captured revision.
+        """
+
+        if not _is_private_chat_id(chat_id) or not _is_private_chat_id(actor_id):
+            raise ValueError("Valid private actor and target accounts are required")
+        if type(banned) is not bool or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("A boolean access choice and valid revision are required")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._access_state(connection, chat_id)
+            if current is None:
+                raise ValueError("The target private chat is not registered")
+            if current.revision != expected_revision:
+                raise StaleAccessState("Access changed; review the target again before confirming")
+            if banned:
+                _ban_chat(connection, chat_id)
+            else:
+                connection.execute(
+                    """INSERT INTO blocked_chats(
+                       chat_id,active,blocked_at,permanent,appeal_state,resolved_at,resolved_by,revision)
+                       VALUES(?,0,CURRENT_TIMESTAMP,0,'approved',CURRENT_TIMESTAMP,?,1)
+                       ON CONFLICT(chat_id) DO UPDATE SET active=0,permanent=0,
+                       appeal_state='approved',resolved_at=CURRENT_TIMESTAMP,
+                       resolved_by=excluded.resolved_by,revision=blocked_chats.revision+1""",
+                    (chat_id, actor_id),
+                )
+            result = self._access_state(connection, chat_id)
+            connection.execute(
+                """INSERT INTO manual_access_actions(actor_id,target_chat_id,action,revision)
+                   VALUES(?,?,?,?)""",
+                (actor_id, chat_id, "ban" if banned else "unban", result.revision),
+            )
+            return result
+
     def mark_forbidden(self, chat_id: int, error: Forbidden | str | None = None) -> None:
         """Block a private chat; confirmed user blocks are permanent immediately."""
 
@@ -691,7 +807,7 @@ class UserRegistry:
 
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
-                """UPDATE blocked_chats SET appeal_state='awaiting_reason',
+                """UPDATE blocked_chats SET appeal_state='awaiting_reason',revision=revision+1,
                    appeal_text=NULL, appeal_at=NULL
                    WHERE chat_id=? AND active=1 AND permanent=0
                    AND appeal_state IN ('none','rejected','awaiting_reason')""",
@@ -707,7 +823,7 @@ class UserRegistry:
             raise ValueError("Расскажите причину в 5-500 символах.")
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
-                """UPDATE blocked_chats SET appeal_state='pending',
+                """UPDATE blocked_chats SET appeal_state='pending',revision=revision+1,
                    appeal_text=?, appeal_at=CURRENT_TIMESTAMP
                    WHERE chat_id=? AND active=1 AND permanent=0
                    AND appeal_state='awaiting_reason'""",
@@ -720,7 +836,7 @@ class UserRegistry:
 
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
-                """UPDATE blocked_chats SET active=?, appeal_state=?,
+                """UPDATE blocked_chats SET active=?, appeal_state=?,revision=revision+1,
                    resolved_at=CURRENT_TIMESTAMP,resolved_by=?
                    WHERE chat_id=? AND active=1 AND permanent=0 AND appeal_state='pending'""",
                 (0 if approve else 1, "approved" if approve else "rejected", reviewer_id, chat_id),

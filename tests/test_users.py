@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +12,7 @@ from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 
 from mcc_bot.users import (
     BroadcastSafetyError,
+    StaleAccessState,
     UserRegistry,
     broadcast_message,
     is_user_block_error,
@@ -96,8 +98,11 @@ def test_user_registry_additively_migrates_legacy_schema(tmp_path) -> None:
         "broadcast_failures",
         "broadcast_releases",
         "broadcast_release_deliveries",
+        "manual_access_actions",
     } <= tables
     assert registry.blocked_chat(10) is None
+    assert registry.access_state(10).revision == 0
+    assert registry.access_state(10).appeal_state == "approved"
     registry.mark_forbidden(10)
     assert not registry.blocked_chat(10).permanent
     registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
@@ -810,3 +815,232 @@ def test_backfill_requires_confirmed_evidence_from_current_block_period(
     assert registry.ban_known_blockers() == expected_count
     assert registry.blocked_chat(10).permanent is bool(expected_count)
     assert registry.ban_known_blockers() == 0
+
+
+def test_exact_username_lookup_includes_bans_and_surfaces_case_insensitive_ambiguity(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "Synthetic_User", "Synthetic")
+    registry.remember(20, "synthetic_user", "Other synthetic")
+    registry.remember(30, "syntheticXuser", "Near match")
+    registry.remember(40, "synthetic_user_extra", "Prefix match")
+    registry.remember(-1001, "synthetic_user", "Group")
+    registry.ban(10)
+
+    matches = registry.find_private_chats_by_username("  @SYNTHETIC_USER  ")
+
+    assert [match.chat_id for match in matches] == [10, 20]
+    assert matches[0].username == "Synthetic_User"
+    assert registry.find_private_chats_by_username("unknown") == ()
+    registry.remember(20, None, "No username")
+    assert [
+        match.chat_id for match in registry.find_private_chats_by_username("synthetic_user")
+    ] == [10]
+
+
+def test_exact_username_lookup_accepts_full_length_username_without_wildcards(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "x" * 32)
+
+    assert registry.find_private_chats_by_username("@" + "X" * 32)[0].chat_id == 10
+    for invalid in ("", "@", "with spaces", "x" * 33, "synthetic%", "@@synthetic", None):
+        with pytest.raises(ValueError):
+            registry.find_private_chats_by_username(invalid)
+
+
+def _manual_actions(registry):
+    with sqlite3.connect(registry.path) as connection:
+        return connection.execute(
+            """SELECT actor_id,target_chat_id,action,created_at,revision
+               FROM manual_access_actions ORDER BY id"""
+        ).fetchall()
+
+
+def test_manual_toggle_records_append_only_history_and_survives_restart(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10, "synthetic", "Synthetic")
+    initial = registry.access_state(10)
+    assert (initial.active, initial.permanent, initial.appeal_state, initial.revision) == (
+        False,
+        False,
+        "none",
+        0,
+    )
+
+    banned = registry.set_manual_access(
+        10, banned=True, actor_id=1, expected_revision=initial.revision
+    )
+    restored = registry.set_manual_access(
+        10, banned=False, actor_id=2, expected_revision=banned.revision
+    )
+    rebanned = registry.set_manual_access(
+        10, banned=True, actor_id=1, expected_revision=restored.revision
+    )
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+
+    assert (banned.active, banned.permanent, banned.revision) == (True, True, 1)
+    assert (restored.active, restored.permanent, restored.appeal_state, restored.revision) == (
+        False,
+        False,
+        "approved",
+        2,
+    )
+    assert restarted.access_state(10) == rebanned
+    assert rebanned.revision == 3
+    assert _block_audit(restarted, 10)[4] == 2
+    actions = _manual_actions(restarted)
+    assert [(row[0], row[1], row[2], row[4]) for row in actions] == [
+        (1, 10, "ban", 1),
+        (2, 10, "unban", 2),
+        (1, 10, "ban", 3),
+    ]
+    assert all(row[3] for row in actions)
+    assert restarted.blocked_chat(10).permanent
+
+
+def test_manual_unban_can_restore_autobanned_account_without_losing_appeal_metadata(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    registry.begin_appeal(10)
+    registry.submit_appeal(10, "Synthetic historical appeal")
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
+    before = _block_audit(registry, 10)
+    state = registry.access_state(10)
+
+    restored = registry.set_manual_access(
+        10, banned=False, actor_id=2, expected_revision=state.revision
+    )
+
+    assert not restored.active and not restored.permanent
+    assert restored.appeal_state == "approved"
+    assert registry.blocked_chat(10) is None
+    assert registry.chat_ids() == (10,)
+    audit = _block_audit(registry, 10)
+    assert audit[:3] == before[:3]
+    assert audit[3] and audit[4] == 2
+    registry.initialize()
+    assert registry.access_state(10) == restored
+    assert registry.ban_known_blockers() == 0
+
+
+def test_stale_confirmation_rejects_state_cycle_and_new_auto_ban(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10)
+    registry.ban(10)
+    original_ban = registry.access_state(10)
+    unbanned = registry.set_manual_access(
+        10, banned=False, actor_id=1, expected_revision=original_ban.revision
+    )
+    registry.mark_forbidden(10, Forbidden("bot was blocked by the user"))
+    current = registry.access_state(10)
+    assert current.active == original_ban.active
+    assert current.permanent == original_ban.permanent
+    assert current.revision > unbanned.revision > original_ban.revision
+
+    for stale_revision in (original_ban.revision, unbanned.revision):
+        with pytest.raises(StaleAccessState):
+            registry.set_manual_access(
+                10, banned=False, actor_id=1, expected_revision=stale_revision
+            )
+    assert registry.access_state(10) == current
+    assert len(_manual_actions(registry)) == 1
+
+
+def test_repeat_auto_ban_invalidates_open_unban_confirmation(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.ban(10)
+    preview = registry.access_state(10)
+
+    registry.ban(10)
+
+    with pytest.raises(StaleAccessState):
+        registry.set_manual_access(10, banned=False, actor_id=1, expected_revision=preview.revision)
+    assert registry.access_state(10).revision > preview.revision
+    assert _manual_actions(registry) == []
+
+
+def test_appeal_resolution_invalidates_previous_manual_confirmation(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.mark_forbidden(10)
+    before_appeal = registry.access_state(10)
+    registry.begin_appeal(10)
+    registry.submit_appeal(10, "Synthetic valid appeal")
+    preview = registry.access_state(10)
+    registry.resolve_appeal(10, approve=True, reviewer_id=1)
+
+    assert preview.revision > before_appeal.revision
+    assert registry.access_state(10).revision > preview.revision
+    with pytest.raises(StaleAccessState):
+        registry.set_manual_access(10, banned=True, actor_id=1, expected_revision=preview.revision)
+    assert not registry.access_state(10).active
+
+
+def test_manual_access_requires_known_target_and_valid_ids_but_does_not_authorize_roles(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    assert registry.access_state(10) is None
+    with pytest.raises(ValueError, match="not registered"):
+        registry.set_manual_access(10, banned=True, actor_id=1, expected_revision=0)
+    assert registry.chat_ids() == ()
+    registry.remember(10)
+    for kwargs in (
+        {"banned": True, "actor_id": -1, "expected_revision": 0},
+        {"banned": True, "actor_id": True, "expected_revision": 0},
+        {"banned": "yes", "actor_id": 1, "expected_revision": 0},
+        {"banned": True, "actor_id": 1, "expected_revision": True},
+        {"banned": True, "actor_id": 1, "expected_revision": -1},
+    ):
+        with pytest.raises(ValueError):
+            registry.set_manual_access(10, **kwargs)
+    for invalid_id in (-1001, 0, True, "10"):
+        with pytest.raises(ValueError):
+            registry.access_state(invalid_id)
+        with pytest.raises(ValueError):
+            registry.set_manual_access(invalid_id, banned=True, actor_id=1, expected_revision=0)
+    assert _manual_actions(registry) == []
+    # The service/UI layer must authorize this actor; persistence does not infer roles.
+    assert registry.set_manual_access(10, banned=True, actor_id=999, expected_revision=0).permanent
+
+
+def test_concurrent_manual_confirmations_have_one_winner(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10)
+
+    def confirm(_):
+        try:
+            return registry.set_manual_access(10, banned=True, actor_id=1, expected_revision=0)
+        except StaleAccessState:
+            return None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(confirm, range(3)))
+
+    assert sum(result is not None for result in results) == 1
+    assert len(_manual_actions(registry)) == 1
+    assert registry.access_state(10).revision == 1
+
+
+def test_manual_audit_failure_rolls_back_access_and_revision(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.remember(10)
+    before = registry.access_state(10)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            """CREATE TRIGGER synthetic_audit_failure BEFORE INSERT ON manual_access_actions
+               BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="synthetic audit failure"):
+        registry.set_manual_access(10, banned=True, actor_id=1, expected_revision=before.revision)
+
+    assert registry.access_state(10) == before
+    assert _manual_actions(registry) == []

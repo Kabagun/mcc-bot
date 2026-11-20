@@ -24,6 +24,7 @@ from mcc_bot.community_handlers import (
     LEGACY_MINE,
     MAIN_MENU,
     MANAGE,
+    MANAGE_ACCESS,
     MANAGE_DIGEST_OFF,
     MANAGE_DIGEST_ON,
     MANAGE_HISTORY,
@@ -769,7 +770,13 @@ def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
     ]
     assert [
         button.text for row in management_keyboard_for(service, 1).inline_keyboard for button in row
-    ] == [MANAGE_HISTORY, MANAGE_DIGEST_ON, MANAGE_ROLES, "🚫 Заявки на разблокировку"]
+    ] == [
+        MANAGE_HISTORY,
+        MANAGE_DIGEST_ON,
+        MANAGE_ROLES,
+        MANAGE_ACCESS,
+        "🚫 Заявки на разблокировку",
+    ]
 
     toggled = click(flow, f"digest:1:{service.role_epoch(2)}", 2)
     assert service.digest_enabled(2)

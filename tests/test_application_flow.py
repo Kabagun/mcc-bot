@@ -27,6 +27,15 @@ def telegram_app(tmp_path, catalog_path, monkeypatch):
         calls.append((action, data))
         if action == "getMe":
             result = {"id": 999, "is_bot": True, "first_name": "Test", "username": "mcc_test_bot"}
+        elif action == "getChat":
+            result = {
+                "id": data["chat_id"],
+                "type": "private",
+                "username": "synthetic_user",
+                "first_name": "Test",
+                "accent_color_id": 0,
+                "max_reaction_count": 1,
+            }
         elif action in {"sendMessage", "editMessageText"}:
             result = {
                 "message_id": int(data.get("message_id", len(calls))),
@@ -87,6 +96,104 @@ def tapped(app, data, *, user_id=101, sequence=100, message_id=80):
 
 def rendered(calls):
     return [data for action, data in calls if action in {"sendMessage", "editMessageText"}]
+
+
+def _last_inline_button(calls, text):
+    for message in reversed(rendered(calls)):
+        rows = message.get("reply_markup", {}).get("inline_keyboard", [])
+        for row in rows:
+            for button in row:
+                if text in button["text"]:
+                    return button["callback_data"]
+    raise AssertionError(f"Button not found: {text}")
+
+
+def test_superadmin_bans_by_username_and_unbans_by_id_through_bot(telegram_app):
+    app, calls = telegram_app
+    registry = app.bot_data["user_registry"]
+    community = app.bot_data["community"]
+    community.set_role(42, 102, True)
+    community.set_role(42, 102, True, role="superadmin")
+    registry.remember(101, "synthetic_user", "Test")
+    registry.remember(104, "old_username", "Test")
+
+    async def scenario():
+        async with app:
+            await app.process_update(incoming(app, "⚙️ Управление", user_id=102))
+            lookup = _last_inline_button(calls, "Бан по нику или ID")
+            await app.process_update(tapped(app, lookup, user_id=102))
+            assert "Отправьте @ник или Telegram ID" in rendered(calls)[-1]["text"]
+            await app.process_update(incoming(app, "@old_username", user_id=102, sequence=10))
+            assert "Ник пользователя изменился" in rendered(calls)[-1]["text"]
+            assert registry.blocked_chat(104) is None
+            await app.process_update(incoming(app, "@SYNTHETIC_USER", user_id=102, sequence=2))
+            assert "Telegram ID: 101" in rendered(calls)[-1]["text"]
+            await app.process_update(
+                tapped(app, _last_inline_button(calls, "Забанить"), user_id=102)
+            )
+            assert registry.blocked_chat(101) is None
+            apply = _last_inline_button(calls, "Да, забанить")
+            await app.process_update(tapped(app, apply, user_id=102))
+            assert registry.blocked_chat(101).permanent
+            assert 101 not in registry.chat_ids()
+            await app.process_update(incoming(app, "5411", user_id=101, sequence=3))
+            assert "Доступ к боту заблокирован" in rendered(calls)[-1]["text"]
+
+            await app.process_update(tapped(app, lookup, user_id=102))
+            await app.process_update(incoming(app, "101", user_id=102, sequence=4))
+            await app.process_update(
+                tapped(app, _last_inline_button(calls, "Разбанить"), user_id=102)
+            )
+            await app.process_update(
+                tapped(app, _last_inline_button(calls, "Да, разбанить"), user_id=102)
+            )
+            assert registry.blocked_chat(101) is None
+            await app.process_update(tapped(app, apply, user_id=102))
+            assert "Подтверждение устарело" in rendered(calls)[-1]["text"]
+            await app.process_update(incoming(app, "5411", user_id=101, sequence=5))
+            assert "Beta Card" in rendered(calls)[-1]["text"]
+
+    asyncio.run(scenario())
+
+
+def test_ban_from_helpers_card_rechecks_moderator_authority(telegram_app):
+    app, calls = telegram_app
+    registry = app.bot_data["user_registry"]
+    community = app.bot_data["community"]
+    for user_id in (101, 102, 103):
+        registry.remember(user_id, f"synthetic_{user_id}")
+        community.refresh_role_profile(user_id, f"synthetic_{user_id}", "Test")
+        community.set_role(42, user_id, True)
+    community.set_role(42, 102, True, role="superadmin")
+    community.set_role(42, 103, True, role="superadmin")
+
+    async def scenario():
+        async with app:
+            await app.process_update(tapped(app, "community:roles:0", user_id=102))
+            helper = _last_inline_button(calls, "@synthetic_101")
+            await app.process_update(tapped(app, helper, user_id=102))
+            confirm = _last_inline_button(calls, "Забанить")
+            await app.process_update(tapped(app, confirm, user_id=102))
+            blocked = _last_inline_button(calls, "Да, забанить")
+            await app.process_update(tapped(app, blocked, user_id=102))
+            assert community.role(101) == "admin" and registry.blocked_chat(101).permanent
+            assert "Действующий помощник" in rendered(calls)[-1]["text"]
+            unban = _last_inline_button(calls, "Разбанить")
+            await app.process_update(tapped(app, unban, user_id=102))
+            unblock = _last_inline_button(calls, "Да, разбанить")
+
+            for target_id in (42, 102, 103):
+                await app.process_update(
+                    tapped(app, f"community:access_confirm:{target_id}:1:m", user_id=102)
+                )
+                assert "Вы не можете изменить доступ" in rendered(calls)[-1]["text"]
+                assert registry.blocked_chat(target_id) is None
+            community.set_role(42, 102, True, role="admin")
+            await app.process_update(tapped(app, unblock, user_id=102))
+            assert "владельцу и суперадминам" in rendered(calls)[-1]["text"]
+            assert registry.blocked_chat(101).permanent
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("user_id", [42, 102])
