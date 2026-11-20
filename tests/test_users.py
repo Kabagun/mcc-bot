@@ -11,6 +11,10 @@ import pytest
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 
 from mcc_bot.users import (
+    UNBAN_CHECKOUT_RESERVATION_SECONDS,
+    UNBAN_CURRENCY,
+    UNBAN_INVOICE_PREFIX,
+    UNBAN_PRICE_XTR,
     BroadcastSafetyError,
     StaleAccessState,
     UserRegistry,
@@ -1044,3 +1048,315 @@ def test_manual_audit_failure_rolls_back_access_and_revision(tmp_path):
 
     assert registry.access_state(10) == before
     assert _manual_actions(registry) == []
+
+
+def _unban_registry(tmp_path):
+    registry = UserRegistry(tmp_path / "users.sqlite3")
+    registry.initialize()
+    registry.ban(10)
+    return registry
+
+
+def _accepted_checkout(registry, *, query_id="synthetic-query"):
+    payload = registry.issue_unban_invoice(10)
+    assert registry.reserve_unban_checkout(10, payload, UNBAN_CURRENCY, UNBAN_PRICE_XTR, query_id)
+    return payload
+
+
+def _pay(registry, payload, charge_id="synthetic-charge", *, payer=10, amount=100, currency="XTR"):
+    return registry.settle_unban_payment(payer, payload, currency, amount, charge_id)
+
+
+def _payments(registry):
+    with sqlite3.connect(registry.path) as connection:
+        return connection.execute(
+            """SELECT charge_id,user_id,currency,amount,state,applied_revision,created_at
+               FROM paid_unban_payments ORDER BY id"""
+        ).fetchall()
+
+
+def test_paid_unban_invoice_is_bound_reused_and_survives_restart(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = registry.issue_unban_invoice(10)
+
+    assert payload.startswith(UNBAN_INVOICE_PREFIX)
+    assert len(payload.encode()) <= 128
+    assert registry.issue_unban_invoice(10) == payload
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+    assert restarted.issue_unban_invoice(10) == payload
+    with sqlite3.connect(registry.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM paid_unban_invoices").fetchone()[0] == 1
+
+
+def test_invoice_is_not_issued_for_unknown_unblocked_or_temporary_accounts(tmp_path):
+    registry = _unban_registry(tmp_path)
+    registry.mark_forbidden(20)
+    registry.remember(30)
+
+    for user_id in (20, 30, 40, -1001, 0, True):
+        assert registry.issue_unban_invoice(user_id) is None
+
+
+def test_old_invoice_cannot_checkout_after_unban_reban_cycle(tmp_path):
+    registry = _unban_registry(tmp_path)
+    original_revision = registry.access_state(10).revision
+    original_payload = registry.issue_unban_invoice(10)
+    registry.set_manual_access(10, banned=False, actor_id=1, expected_revision=original_revision)
+    registry.ban(10)
+
+    current_payload = registry.issue_unban_invoice(10)
+    assert current_payload != original_payload
+    assert not registry.reserve_unban_checkout(10, original_payload, "XTR", 100, "synthetic-query")
+    assert registry.reserve_unban_checkout(10, current_payload, "XTR", 100, "synthetic-query")
+
+
+@pytest.mark.parametrize(
+    ("payer", "currency", "amount", "query_id"),
+    [
+        (20, "XTR", 100, "q"),
+        (10, "USD", 100, "q"),
+        (10, "XTR", 99, "q"),
+        (10, "XTR", True, "q"),
+        (10, "XTR", 100, ""),
+    ],
+)
+def test_checkout_rejects_wrong_payer_currency_price_and_invalid_query(
+    tmp_path, payer, currency, amount, query_id
+):
+    registry = _unban_registry(tmp_path)
+    payload = registry.issue_unban_invoice(10)
+
+    assert not registry.reserve_unban_checkout(payer, payload, currency, amount, query_id)
+    with sqlite3.connect(registry.path) as connection:
+        assert (
+            connection.execute("SELECT checkout_query_id FROM paid_unban_invoices").fetchone()[0]
+            is None
+        )
+
+
+def test_checkout_reservation_is_idempotent_and_expires_for_another_query(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = registry.issue_unban_invoice(10)
+    with patch("mcc_bot.users.time.time", return_value=1000):
+        assert registry.reserve_unban_checkout(10, payload, "XTR", 100, "first-query")
+        assert registry.reserve_unban_checkout(10, payload, "XTR", 100, "first-query")
+        assert not registry.reserve_unban_checkout(10, payload, "XTR", 100, "second-query")
+    with patch("mcc_bot.users.time.time", return_value=1000 + UNBAN_CHECKOUT_RESERVATION_SECONDS):
+        assert registry.reserve_unban_checkout(10, payload, "XTR", 100, "second-query")
+        assert not registry.reserve_unban_checkout(10, payload, "XTR", 100, "first-query")
+
+
+def test_concurrent_invoice_and_checkout_requests_have_one_reservation(tmp_path):
+    registry = _unban_registry(tmp_path)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        invoices = list(executor.map(lambda _: registry.issue_unban_invoice(10), range(3)))
+    assert len(set(invoices)) == 1
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(
+            executor.map(
+                lambda number: registry.reserve_unban_checkout(
+                    10, invoices[0], "XTR", 100, f"query-{number}"
+                ),
+                range(3),
+            )
+        )
+    assert results.count(True) == 1
+
+
+def test_paid_unban_restores_access_and_records_payment_in_same_commit(tmp_path):
+    registry = _unban_registry(tmp_path)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            """UPDATE blocked_chats SET appeal_text='Synthetic past appeal',
+               appeal_at='2000-01-01',resolved_at='2000-01-02',resolved_by=1"""
+        )
+    before = registry.access_state(10)
+    old_audit = _block_audit(registry, 10)
+    payload = _accepted_checkout(registry)
+
+    assert _pay(registry, payload) == "applied"
+
+    current = registry.access_state(10)
+    assert (current.active, current.permanent, current.appeal_state) == (False, False, "approved")
+    assert current.revision == before.revision + 1
+    assert registry.chat_ids() == (10,)
+    assert _block_audit(registry, 10)[:3] == old_audit[:3]
+    assert _block_audit(registry, 10)[4] is None
+    assert _manual_actions(registry) == []
+    payment = _payments(registry)[0]
+    assert payment[:6] == ("synthetic-charge", 10, "XTR", 100, "applied", current.revision)
+    assert payment[6]
+
+
+def test_duplicate_charge_never_lifts_later_ban_after_restart(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    assert _pay(registry, payload) == "applied"
+    registry.ban(10)
+    later_ban = registry.access_state(10)
+    restarted = UserRegistry(registry.path)
+    restarted.initialize()
+
+    assert _pay(restarted, payload) == "duplicate_applied"
+    assert restarted.access_state(10) == later_ban
+    assert len(_payments(restarted)) == 1
+
+
+@pytest.mark.parametrize("change", ["manual_ban", "auto_ban", "temporary_ban"])
+def test_confirmed_accepted_payment_fulfills_even_after_moderation_changed_ban(tmp_path, change):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    current = registry.access_state(10)
+    if change == "manual_ban":
+        registry.set_manual_access(10, banned=True, actor_id=1, expected_revision=current.revision)
+    elif change == "auto_ban":
+        registry.ban(10)
+    else:
+        registry.set_manual_access(10, banned=False, actor_id=1, expected_revision=current.revision)
+        registry.mark_forbidden(10)
+    changed = registry.access_state(10)
+
+    assert _pay(registry, payload) == "applied"
+
+    restored = registry.access_state(10)
+    assert not restored.active and not restored.permanent
+    assert restored.revision == changed.revision + 1
+
+
+def test_already_unblocked_payment_is_applied_without_touching_access_revision_or_metadata(
+    tmp_path,
+):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    before = registry.access_state(10)
+    unblocked = registry.set_manual_access(
+        10, banned=False, actor_id=1, expected_revision=before.revision
+    )
+    metadata = _block_audit(registry, 10)
+
+    assert _pay(registry, payload) == "applied"
+
+    assert registry.access_state(10) == unblocked
+    assert _block_audit(registry, 10) == metadata
+    assert _payments(registry)[0][5] == unblocked.revision
+    assert len(_manual_actions(registry)) == 1
+
+
+def test_different_valid_real_charges_on_one_accepted_invoice_are_each_fulfilled(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    assert _pay(registry, payload, "first-charge") == "applied"
+    registry.ban(10)
+
+    assert _pay(registry, payload, "second-charge") == "applied"
+
+    assert not registry.access_state(10).active
+    assert [row[0] for row in _payments(registry)] == ["first-charge", "second-charge"]
+    registry.ban(10)
+    final_ban = registry.access_state(10)
+    assert _pay(registry, payload, "first-charge") == "duplicate_applied"
+    assert _pay(registry, payload, "second-charge") == "duplicate_applied"
+    assert registry.access_state(10) == final_ban
+
+
+def test_concurrent_duplicate_charge_events_apply_once(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    before = registry.access_state(10)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        outcomes = list(executor.map(lambda _: _pay(registry, payload), range(3)))
+
+    assert outcomes.count("applied") == 1
+    assert outcomes.count("duplicate_applied") == 2
+    assert registry.access_state(10).revision == before.revision + 1
+    assert len(_payments(registry)) == 1
+
+
+def test_concurrent_different_paid_charges_record_both_without_unnecessary_state_mutation(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    before = registry.access_state(10)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(
+            executor.map(lambda charge: _pay(registry, payload, charge), ("charge-a", "charge-b"))
+        )
+
+    assert outcomes == ["applied", "applied"]
+    assert registry.access_state(10).revision == before.revision + 1
+    assert len(_payments(registry)) == 2
+
+
+@pytest.mark.parametrize("anomaly", ["wrong_payer", "wrong_amount", "wrong_currency", "unknown"])
+def test_anomalous_receipt_is_private_review_only_with_no_access_change(tmp_path, anomaly):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    before = registry.access_state(10)
+    kwargs = {}
+    if anomaly == "wrong_payer":
+        kwargs["payer"] = 20
+    elif anomaly == "wrong_amount":
+        kwargs["amount"] = 99
+    elif anomaly == "wrong_currency":
+        kwargs["currency"] = "USD"
+    elif anomaly == "unknown":
+        payload = UNBAN_INVOICE_PREFIX + "synthetic-unknown"
+
+    assert _pay(registry, payload, **kwargs) == "needs_review"
+    assert _pay(registry, payload, **kwargs) == "duplicate_needs_review"
+
+    assert registry.access_state(10) == before
+    assert _payments(registry)[0][4] == "needs_review"
+    assert len(_payments(registry)) == 1
+
+
+def test_trusted_successful_payment_fulfills_issued_invoice_without_checkout_history(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = registry.issue_unban_invoice(10)
+    registry.ban(10)
+    before = registry.access_state(10)
+
+    assert not registry.reserve_unban_checkout(10, payload, "XTR", 100, "late-query")
+    assert _pay(registry, payload) == "applied"
+    assert not registry.access_state(10).active
+    assert registry.access_state(10).revision == before.revision + 1
+
+
+def test_replayed_charge_with_changed_bindings_cannot_overwrite_payment_or_unban(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    assert _pay(registry, payload) == "applied"
+    registry.ban(10)
+    before = registry.access_state(10)
+    ledger = _payments(registry)
+
+    assert _pay(registry, payload, payer=20) == "ignored"
+    assert _pay(registry, payload, amount=101) == "ignored"
+    assert _pay(registry, UNBAN_INVOICE_PREFIX + "changed") == "ignored"
+    assert _pay(registry, "unrelated:payload") == "ignored"
+    assert registry.access_state(10) == before
+    assert _payments(registry) == ledger
+
+
+def test_payment_audit_and_access_change_roll_back_together(tmp_path):
+    registry = _unban_registry(tmp_path)
+    payload = _accepted_checkout(registry)
+    before = registry.access_state(10)
+    with sqlite3.connect(registry.path) as connection:
+        connection.execute(
+            """CREATE TRIGGER synthetic_unban_failure BEFORE UPDATE ON blocked_chats
+               BEGIN SELECT RAISE(ABORT,'synthetic payment failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="synthetic payment failure"):
+        _pay(registry, payload)
+
+    assert registry.access_state(10) == before
+    assert _payments(registry) == []
+    with sqlite3.connect(registry.path) as connection:
+        assert (
+            connection.execute("SELECT settled_charge_id FROM paid_unban_invoices").fetchone()[0]
+            is None
+        )
+        connection.execute("DROP TRIGGER synthetic_unban_failure")
+    assert _pay(registry, payload) == "applied"

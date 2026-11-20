@@ -47,12 +47,13 @@ from .notifications import install_jobs
 from .partner_rewards import PartnerRepository
 from .store_handlers import handle_store_callback, search_stores
 from .stores import Brand, StoreRepository
+from .unban_payments import UNBAN_PRICE, UNBAN_TEXT, install_unban_payments, unban_payment_keyboard
 from .users import BlockedChat, UserRegistry
 
 LOGGER = logging.getLogger(__name__)
 REPEAT_BLOCK_WARNING = (
     "Если вы заблокируете бота в Telegram, доступ к боту будет заблокирован. "
-    "Разблокировка — 5 BYN через администратора."
+    f"Разблокировка — {UNBAN_PRICE}."
 )
 DETAILS_CALLBACK = re.compile(r"mcc_details:([0-9]{4}):(0|[1-9][0-9]{0,5}):([01])")
 MCC_LOOKUP_CALLBACK = re.compile(r"mcc_lookup:([0-9]{4})")
@@ -454,19 +455,6 @@ async def _notify_unblock_reviewers(context: ContextTypes.DEFAULT_TYPE, chat: Bl
             LOGGER.info("Could not deliver an unblock request to a reviewer")
 
 
-def _permanent_ban_message(context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Show the configured owner's current contact and the manual unban price."""
-    data = context.application.bot_data
-    owner_id = getattr(data.get("community"), "owner_id", None)
-    recipient = data["user_registry"].private_recipient(owner_id) if owner_id else None
-    contact = f" @{recipient.username}" if recipient and recipient.username else ""
-    return (
-        "🚫 Доступ к боту заблокирован.\n\n"
-        "Разблокировка — 5 BYN.\n"
-        f"Напишите администратору{contact}."
-    )
-
-
 async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Limit a blocked private chat to the unblock request conversation."""
 
@@ -488,7 +476,7 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
     if query is not None:
         await query.answer()
         if blocked.permanent:
-            await query.edit_message_text(_permanent_ban_message(context))
+            await query.edit_message_text(UNBAN_TEXT, reply_markup=unban_payment_keyboard())
         elif query.data == "unblock:request":
             if registry.begin_appeal(chat.id):
                 await query.edit_message_text(
@@ -522,7 +510,7 @@ async def enforce_blocked_access(update: Update, context: ContextTypes.DEFAULT_T
                 await _notify_unblock_reviewers(context, appeal)
         raise ApplicationHandlerStop
     if blocked.permanent:
-        await message.reply_text(_permanent_ban_message(context))
+        await message.reply_text(UNBAN_TEXT, reply_markup=unban_payment_keyboard())
     elif blocked.appeal_state == "pending":
         await message.reply_text("Ваш запрос на разблокировку рассматривается.")
     else:
@@ -654,6 +642,7 @@ def build_application(settings: BotSettings) -> Application:
         user_ids=settings.form_flow_v2_user_ids,
         all_users=settings.form_flow_v2_all_users,
     )
+    install_unban_payments(application)
     application.add_handler(
         ChatMemberHandler(record_bot_membership, ChatMemberHandler.MY_CHAT_MEMBER), group=-4
     )

@@ -234,12 +234,14 @@ Ordinary users' proposals stay private and pending until a helper approves them;
 creating a new store and its partnership is atomic at approval. Helper publication,
 card-policy validation and protection against moving an existing offer stay unchanged.
 
-Blocking the bot in Telegram closes access until the administrator restores it. A private
+Blocking the bot in Telegram closes access. A private
 `my_chat_member` block event or an explicit `bot was blocked by the user` Forbidden
 response records that ban immediately. Unblocking the bot in Telegram does not
-clear the ban or enable an appeal. The blocked screen displays the 5 BYN unban
-price and the configured owner's current Telegram username from the private registry.
-The user contacts the administrator; the screen does not process payments.
+clear the ban or enable an appeal. The blocked screen opens a private Telegram Stars
+invoice for 100 Stars. A confirmed payment automatically restores bot access to the
+paying account. Payment receipts and access changes are recorded together in the user
+registry so a replay cannot restore access twice. Payment support links to the configured
+owner from the ban screen and remains available through `/paysupport`.
 Generic Forbidden responses and transport
 failures are not evidence that a user blocked the bot. The private membership
 event semantics are documented in the [Telegram Bot API](https://core.telegram.org/bots/api#update).

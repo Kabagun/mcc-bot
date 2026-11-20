@@ -40,7 +40,7 @@ from .notifications import (
     reminder_preference_message,
 )
 from .stores import BrandMccGroup, normalize_store_name
-from .users import ChatAccessState, ChatRecipient, StaleAccessState
+from .users import UNBAN_PRICE_XTR, ChatAccessState, ChatRecipient, StaleAccessState
 
 LOGGER = logging.getLogger(__name__)
 INFO = "ℹ️ Информация по картам"
@@ -516,7 +516,7 @@ def _guide_text(service: CommunityService, user_id: int) -> str:
             "\n\nЧтобы выйти из формы, нажмите <b>«❌ Отменить»</b> внизу. "
             "После сохранения или отмены вернётся главное меню."
             "\n\nЕсли вы блокируете бота в Telegram, доступ к боту блокируется. "
-            "Разблокировка через администратора — 5 BYN."
+            f"Разблокировка — {UNBAN_PRICE_XTR} ⭐ в боте."
         )
     )
 

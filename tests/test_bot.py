@@ -685,7 +685,7 @@ def test_application_registers_details_callback_handler(
         if isinstance(handler, CommandHandler)
         for command in handler.commands
     }
-    assert commands == {"start"}
+    assert commands == {"start", "paysupport"}
     patterns = {
         handler.pattern.pattern
         for handler in handlers
@@ -698,4 +698,5 @@ def test_application_registers_details_callback_handler(
         "^community:",
         "^feedback:",
         "^(?:community:)?unblock:",
+        "^unban_stars:(?:buy|support)$",
     }

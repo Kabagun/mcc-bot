@@ -58,7 +58,6 @@ def membership(
 def test_private_block_event_bans_immediately_and_unblock_does_not_restore_access(telegram_app):
     app, calls = telegram_app
     registry = app.bot_data["user_registry"]
-    registry.remember(42, "synthetic_admin")
     app.bot_data["community"].set_role(42, 101, True)
 
     async def scenario():
@@ -77,14 +76,16 @@ def test_private_block_event_bans_immediately_and_unblock_does_not_restore_acces
             await app.process_update(incoming(app, "📋 Разобрать очередь", sequence=83))
             assert rendered(calls)[-1]["text"] == (
                 "🚫 Доступ к боту заблокирован.\n\n"
-                "Разблокировка — 5 BYN.\n"
-                "Напишите администратору @synthetic_admin."
+                "Разблокировка — 100 ⭐. Доступ восстановится сразу после оплаты."
             )
-            assert "reply_markup" not in rendered(calls)[-1]
+            assert rendered(calls)[-1]["reply_markup"]["inline_keyboard"][0][0] == {
+                "text": "Оплатить 100 ⭐",
+                "callback_data": "unban_stars:buy",
+            }
             calls.clear()
             await app.process_update(tapped(app, "community:queue:0", sequence=84))
-            assert "5 BYN" in rendered(calls)[-1]["text"]
-            assert "@synthetic_admin" in rendered(calls)[-1]["text"]
+            assert "100 ⭐" in rendered(calls)[-1]["text"]
+            assert "Поддержка по оплате" in str(rendered(calls)[-1]["reply_markup"])
             assert all(recipient.chat_id != 101 for recipient in registry.recipients())
 
     asyncio.run(scenario())

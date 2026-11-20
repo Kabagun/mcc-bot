@@ -7,7 +7,9 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,10 @@ from telegram import Bot
 from telegram.error import BadRequest, ChatMigrated, Forbidden, RetryAfter, TelegramError
 
 LOGGER = logging.getLogger(__name__)
+UNBAN_PRICE_XTR = 100
+UNBAN_CURRENCY = "XTR"
+UNBAN_INVOICE_PREFIX = "unban:"
+UNBAN_CHECKOUT_RESERVATION_SECONDS = 300
 _MISSING = object()
 _TOKEN_PATTERN = re.compile(r"bot\d+:[A-Za-z0-9_-]+", re.IGNORECASE)
 _TELEGRAM_ID_CONTEXT_PATTERN = re.compile(
@@ -347,6 +353,25 @@ class UserRegistry:
                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
                    revision INTEGER NOT NULL,
                    UNIQUE(target_chat_id,revision))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS paid_unban_invoices (
+                   payload TEXT PRIMARY KEY,
+                   user_id INTEGER NOT NULL REFERENCES telegram_chats(chat_id),
+                   ban_revision INTEGER NOT NULL,
+                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   checkout_query_id TEXT, checkout_reserved_at REAL,
+                   settled_charge_id TEXT,
+                   UNIQUE(user_id,ban_revision))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS paid_unban_payments (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   charge_id TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL,
+                   payload TEXT NOT NULL, currency TEXT NOT NULL, amount INTEGER NOT NULL,
+                   state TEXT NOT NULL CHECK(state IN ('applied','needs_review')),
+                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   applied_revision INTEGER)"""
             )
             connection.execute(
                 """INSERT OR IGNORE INTO blocked_chats(
@@ -745,6 +770,169 @@ class UserRegistry:
             return
         with closing(self._connect()) as connection, connection:
             _block_chat(connection, chat_id, error)
+
+    def issue_unban_invoice(self, chat_id: int) -> str | None:
+        """Reuse a random invoice bound only to the current permanent-ban generation."""
+
+        if not _is_private_chat_id(chat_id):
+            return None
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._access_state(connection, chat_id)
+            if current is None or not current.active or not current.permanent:
+                return None
+            previous = connection.execute(
+                """SELECT payload,settled_charge_id FROM paid_unban_invoices
+                   WHERE user_id=? AND ban_revision=?""",
+                (chat_id, current.revision),
+            ).fetchone()
+            if previous is not None:
+                return previous["payload"] if previous["settled_charge_id"] is None else None
+            payload = UNBAN_INVOICE_PREFIX + secrets.token_urlsafe(24)
+            connection.execute(
+                "INSERT INTO paid_unban_invoices(payload,user_id,ban_revision) VALUES(?,?,?)",
+                (payload, chat_id, current.revision),
+            )
+            return payload
+
+    @staticmethod
+    def _payment_reference(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and 0 < len(value) <= 1024
+            and not any(ord(char) < 33 for char in value)
+        )
+
+    def reserve_unban_checkout(
+        self, chat_id: int, payload: str, currency: str, amount: int, query_id: str
+    ) -> bool:
+        """Approve one checkout reservation per invoice for five minutes.
+
+        The same query is idempotent. A different query may replace a reservation
+        after the timeout. Since an earlier approved checkout may pay late,
+        each distinct valid successful charge is fulfilled if it pays later.
+        """
+
+        if (
+            not _is_private_chat_id(chat_id)
+            or not self._payment_reference(payload)
+            or not self._payment_reference(query_id)
+            or currency != UNBAN_CURRENCY
+            or type(amount) is not int
+            or amount != UNBAN_PRICE_XTR
+        ):
+            return False
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            invoice = connection.execute(
+                "SELECT * FROM paid_unban_invoices WHERE payload=?", (payload,)
+            ).fetchone()
+            current = self._access_state(connection, chat_id)
+            if (
+                invoice is None
+                or invoice["user_id"] != chat_id
+                or invoice["settled_charge_id"] is not None
+                or current is None
+                or not current.active
+                or not current.permanent
+                or current.revision != invoice["ban_revision"]
+            ):
+                return False
+            if invoice["checkout_query_id"] == query_id:
+                return True
+            now = time.time()
+            if (
+                invoice["checkout_query_id"] is not None
+                and now - invoice["checkout_reserved_at"] < UNBAN_CHECKOUT_RESERVATION_SECONDS
+            ):
+                return False
+            connection.execute(
+                """UPDATE paid_unban_invoices SET checkout_query_id=?,checkout_reserved_at=?
+                   WHERE payload=?""",
+                (query_id, now, payload),
+            )
+            return True
+
+    def settle_unban_payment(
+        self, chat_id: int, payload: str, currency: str, amount: int, charge_id: str
+    ) -> str:
+        """Fulfill each valid confirmed charge once, including a delayed checkout payment.
+
+        Invoke only for Telegram's trusted successful-payment event. The issued
+        invoice binds its payer; a later moderation change cannot revoke
+        fulfillment of its real payment. Duplicate charge events never lift a later
+        ban. Anomalies remain in private support audit; no refunds are performed.
+        """
+
+        if (
+            not _is_private_chat_id(chat_id)
+            or not self._payment_reference(charge_id)
+            or not isinstance(payload, str)
+            or not payload.startswith(UNBAN_INVOICE_PREFIX)
+            or len(payload) > 1024
+            or not isinstance(currency, str)
+            or not 0 < len(currency) <= 16
+            or type(amount) is not int
+            or amount <= 0
+        ):
+            return "ignored"
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                "SELECT * FROM paid_unban_payments WHERE charge_id=?", (charge_id,)
+            ).fetchone()
+            if previous is not None:
+                if (
+                    previous["user_id"] != chat_id
+                    or previous["payload"] != payload
+                    or previous["currency"] != currency
+                    or previous["amount"] != amount
+                ):
+                    return "ignored"
+                return (
+                    "duplicate_applied"
+                    if previous["state"] == "applied"
+                    else "duplicate_needs_review"
+                )
+            invoice = connection.execute(
+                "SELECT * FROM paid_unban_invoices WHERE payload=?", (payload,)
+            ).fetchone()
+            current = self._access_state(connection, chat_id)
+            applies = bool(
+                currency == UNBAN_CURRENCY
+                and amount == UNBAN_PRICE_XTR
+                and invoice is not None
+                and invoice["user_id"] == chat_id
+            )
+            changes_access = (
+                applies and current is not None and (current.active or current.permanent)
+            )
+            resulting_revision = (
+                current.revision + int(bool(changes_access))
+                if applies and current is not None
+                else None
+            )
+            state = "applied" if applies else "needs_review"
+            connection.execute(
+                """INSERT INTO paid_unban_payments(
+                   charge_id,user_id,payload,currency,amount,state,applied_revision)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (charge_id, chat_id, payload, currency, amount, state, resulting_revision),
+            )
+            if changes_access:
+                connection.execute(
+                    """UPDATE blocked_chats SET active=0,permanent=0,appeal_state='approved',
+                       resolved_at=CURRENT_TIMESTAMP,resolved_by=NULL,revision=revision+1
+                       WHERE chat_id=?""",
+                    (chat_id,),
+                )
+            if applies:
+                connection.execute(
+                    """UPDATE paid_unban_invoices SET
+                       settled_charge_id=COALESCE(settled_charge_id,?) WHERE payload=?""",
+                    (charge_id, payload),
+                )
+            return state
 
     def ban_known_blockers(self) -> int:
         """Promote current active blocks backed by a confirmed Forbidden audit record.

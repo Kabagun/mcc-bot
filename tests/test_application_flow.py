@@ -36,12 +36,12 @@ def telegram_app(tmp_path, catalog_path, monkeypatch):
                 "accent_color_id": 0,
                 "max_reaction_count": 1,
             }
-        elif action in {"sendMessage", "editMessageText"}:
+        elif action in {"sendMessage", "editMessageText", "sendInvoice"}:
             result = {
                 "message_id": int(data.get("message_id", len(calls))),
                 "date": 1,
                 "chat": {"id": data["chat_id"], "type": "private"},
-                "text": data["text"],
+                "text": data.get("text", data.get("title")),
             }
         else:
             result = True
@@ -291,15 +291,15 @@ def test_blocked_user_can_only_request_and_receive_unblock_decision(telegram_app
             await app.process_update(tapped(app, "unblock:approve:101", user_id=102, sequence=103))
             assert registry.blocked_chat(101) is None
             assert any("Доступ восстановлен" in data["text"] for data in rendered(calls))
-            assert any("5 BYN" in data["text"] for data in rendered(calls))
+            assert any("100 ⭐" in data["text"] for data in rendered(calls))
             calls.clear()
             await app.process_update(incoming(app, "5411", sequence=4))
             assert "Beta Card" in rendered(calls)[-1]["text"]
             registry.mark_forbidden(101, Forbidden("bot was blocked by the user"))
             calls.clear()
             await app.process_update(incoming(app, "/start", sequence=5))
-            assert "5 BYN" in rendered(calls)[-1]["text"]
-            assert "reply_markup" not in rendered(calls)[-1]
+            assert "100 ⭐" in rendered(calls)[-1]["text"]
+            assert _last_inline_button(calls, "Оплатить 100 ⭐") == "unban_stars:buy"
 
     asyncio.run(scenario())
 
