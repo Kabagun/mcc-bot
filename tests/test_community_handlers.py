@@ -40,7 +40,8 @@ from mcc_bot.community_handlers import (
     management_keyboard_for,
     show_menu,
 )
-from mcc_bot.partner_rewards import PartnerRepository
+from mcc_bot.form_rollout import FormFlowRollout
+from mcc_bot.partner_rewards import PartnerOfferInput, PartnerRepository, PartnerTierInput
 from mcc_bot.stores import StoreRepository
 from mcc_bot.users import UserRegistry
 
@@ -277,6 +278,73 @@ def test_partner_editor_lists_only_cards_with_explicit_policy(flow):
 
     assert "Настроенная карта" in labels
     assert "Карта с fallback" not in labels
+
+
+def test_partner_editor_recovers_cached_buttons_in_the_same_message(flow):
+    service = flow.application.bot_data["community"]
+    partners = PartnerRepository(service.stores)
+    partners.initialize()
+    card = SimpleNamespace(
+        id="card-a",
+        name="Карта A",
+        partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+        partner_policy_explicit=True,
+    )
+    service.partners = partners
+    service.catalog = SimpleNamespace(cards=(card,))
+    flow.application.bot_data.update(
+        catalog=service.catalog, form_flow_v2=FormFlowRollout(all_users=True)
+    )
+    brand = service.stores.brand_for_merchant(merchant(flow, "Partner shop"))
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand.id,
+            card.id,
+            "any",
+            "total",
+            "cash",
+            (PartnerTierInput(Decimal("2.5"), min_purchase=Decimal(10)),),
+            source_url="https://example.test/shop",
+        ),
+        actor_id=1,
+    )
+    click(flow, f"edit:{brand.id}", 2)
+    draft_click(flow, "menu_more", 2)
+    draft_click(flow, "menu_partner_edit:0", 2)
+    opened = service.draft(2)
+    service.bind_editor_message(2, opened.id, 2, 500)
+    flow.bot.delete_message = AsyncMock()
+    flow.bot.edit_message_text = AsyncMock()
+
+    def tap(draft, action, *, unchanged=False):
+        event = update(2, data=f"community:d:{draft.id}:{draft.version}:{action}")
+        event.callback_query.message.chat_id = 2
+        event.callback_query.message.message_id = 500
+        event.callback_query.edit_message_text = AsyncMock(
+            side_effect=BadRequest("Message is not modified") if unchanged else None
+        )
+        asyncio.run(callback(event, flow))
+        return event.callback_query.edit_message_text.await_args.args[0]
+
+    tap(opened, "form_field:channel")
+    selector = service.draft(2)
+    tap(selector, "form_channel:any")
+    summary = service.draft(2)
+    for cached in (selector, summary):
+        text = tap(cached, "form_channel:any", unchanged=True)
+        assert "Выберите поле" in text and "Кнопка" not in text
+        assert service.draft(2) == summary
+    flow.bot.delete_message.assert_not_awaited()
+    flow.bot.send_message.assert_not_awaited()
+
+    tap(summary, "form_more")
+    expanded = service.draft(2)
+    tap(summary, "form_save", unchanged=True)
+    assert service.draft(2) == expanded
+    assert "Отправьте сумму" in tap(summary, "form_field:min_purchase")
+    send(flow, "12", 2)
+    draft_click(flow, "form_save", 2)
+    assert partners.get_offer(offer.id).tiers[0].min_purchase == Decimal(12)
 
 
 def test_user_partner_editor_accepts_store_without_mcc(flow):

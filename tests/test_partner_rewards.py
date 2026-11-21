@@ -3,12 +3,13 @@ from __future__ import annotations
 # Russian user-facing copy is intentional.
 # ruff: noqa: RUF001
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
-from mcc_bot.catalog import CardCatalog
+from mcc_bot.catalog import CardCatalog, MoneyAmount, RewardCap
 from mcc_bot.formatting import format_matches, format_moneyback
 from mcc_bot.partner_rewards import (
     PartnerExclusionInput,
@@ -16,6 +17,7 @@ from mcc_bot.partner_rewards import (
     PartnerRepository,
     PartnerTierInput,
     format_partner_offer_condition,
+    format_partner_offer_context,
     resolve_store_matches,
 )
 from mcc_bot.stores import StoreError, StoreRepository
@@ -492,7 +494,9 @@ def test_additional_points_are_composed_displayed_once_and_ranked(tmp_path) -> N
     assert "Витамин Д — 3% + 5% баллами" in rendered
     assert "сумма от" not in rendered and "по 31.10.2026" not in rendered
     expanded = format_matches("1234", resolved, {"1234": "Покупка"}, details=True)
-    assert ("сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026") in expanded
+    assert "не больше 50 баллов за операцию · по 31.10.2026" in expanded
+    assert "Баллы: мин. платёж 100 BYN · макс. в месяц не указан" in expanded
+    assert expanded.count("100 BYN") == 1
     assert "Партнёрское предложение" not in rendered
     assert "Только при онлайн-оплате" not in rendered
 
@@ -533,8 +537,91 @@ def test_actionable_partner_condition_stays_in_compact_context(tmp_path) -> None
 
     assert vitamin.context_lines == (
         "Требуется подключить бесплатную функцию «Партнёрская сеть» · "
-        "сумма от 100 BYN · не больше 50 баллов за операцию · по 31.10.2026",
+        "не больше 50 баллов за операцию · по 31.10.2026",
     )
+
+
+@pytest.mark.parametrize(
+    "minimum,expected_terms",
+    [
+        (Decimal("10"), "Мин. платёж 10 BYN"),
+        (None, "Мин. платёж не указан"),
+        (Decimal("0"), "Без минимума"),
+    ],
+)
+def test_partner_details_report_selected_minimum_once_and_preserve_constraints(
+    tmp_path, minimum, expected_terms
+) -> None:
+    _stores, partners, brand_id = _repositories(tmp_path)
+    offer = partners.create_offer(
+        _offer(
+            brand_id,
+            card_id="cactus_mtbank",
+            mode="total",
+            reward_kind="cash",
+            tiers=(
+                PartnerTierInput(
+                    Decimal("5"),
+                    min_purchase=minimum,
+                    max_purchase=Decimal("100"),
+                    per_transaction_cap=Decimal("2"),
+                ),
+            ),
+            conditions="Только после активации предложения.",
+        ),
+        actor_id=1,
+    )
+    catalog = _catalog(tmp_path)
+    raw = format_matches("5411", catalog.lookup("5411"), details=True)
+    resolved = resolve_store_matches(
+        catalog, partners, brand_id, "online", "5411", on_date=date(2026, 8, 30)
+    )
+    match = next(match for match in resolved if match.card.id == "cactus_mtbank")
+    rendered = format_matches("5411", (match,), details=True)
+
+    assert f"{expected_terms} · макс. в месяц не указан" in rendered
+    assert "Только после активации предложения" in rendered
+    assert "сумма до 100 BYN" in rendered
+    assert "не больше 2 BYN за операцию" in rendered
+    assert "по 31.10.2026" in rendered
+    assert "сумма от" not in rendered
+    if minimum == Decimal("10"):
+        assert rendered.count("10 BYN") == 1
+        assert "Мин. платёж не указан" not in rendered
+        assert "сумма 10–100 BYN" in format_partner_offer_context(offer, offer.tiers[0])
+    assert format_matches("5411", catalog.lookup("5411"), details=True) == raw
+
+
+def test_additional_partner_minimum_does_not_replace_base_terms(tmp_path) -> None:
+    _stores, partners, brand_id = _repositories(tmp_path)
+    partners.create_offer(
+        _offer(
+            brand_id,
+            card_id="cactus_mtbank",
+            mode="additional",
+            reward_kind="cash",
+            tiers=(PartnerTierInput(Decimal("2"), min_purchase=Decimal("10")),),
+        ),
+        actor_id=1,
+    )
+    catalog = _catalog(tmp_path)
+    card = next(card for card in catalog.cards if card.id == "cactus_mtbank")
+    base_program = replace(
+        card.reward_programs[0],
+        minimum_payment=MoneyAmount(Decimal("3"), "BYN"),
+        maximum_reward=RewardCap(Decimal("50"), "currency", "BYN"),
+    )
+    catalog = CardCatalog(cards=(replace(card, reward_programs=(base_program,)),))
+    resolved = resolve_store_matches(
+        catalog, partners, brand_id, "online", "5411", on_date=date(2026, 8, 30)
+    )
+    rendered = format_matches("5411", resolved, details=True)
+
+    assert "Деньги: мин. платёж 3 BYN · макс. 50 BYN/мес." in rendered
+    assert "Деньги: мин. платёж 10 BYN · макс. в месяц не указан" in rendered
+    assert rendered.count("10 BYN") == 1
+    assert "мин. платёж не указан" not in rendered
+    assert len(resolved[0].components) == 2
 
 
 def test_points_exclusion_falls_back_to_ordinary_money_with_reason(tmp_path) -> None:

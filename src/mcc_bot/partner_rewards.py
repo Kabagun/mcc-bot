@@ -20,6 +20,7 @@ from decimal import Decimal
 from .catalog import (
     CardCatalog,
     CardMatch,
+    MoneyAmount,
     RewardComponent,
     RewardProgram,
 )
@@ -1107,7 +1108,9 @@ class PartnerRepository:
         return exclusion, True
 
 
-def _partner_program(offer: PartnerOffer) -> RewardProgram:
+def _partner_program(offer: PartnerOffer, tier: PartnerTier) -> RewardProgram:
+    """Expose the selected tier's payment minimum in the effective program terms."""
+
     return RewardProgram(
         id=f"partner:{offer.id}",
         kind=offer.reward_kind,
@@ -1115,7 +1118,9 @@ def _partner_program(offer: PartnerOffer) -> RewardProgram:
         offers=(),
         default_value=None,
         excluded_mccs=frozenset(),
-        minimum_payment=None,
+        minimum_payment=(
+            MoneyAmount(tier.min_purchase, "BYN") if tier.min_purchase is not None else None
+        ),
         maximum_reward=None,
         monthly_maximum_not_defined=False,
         maximum_reward_alternatives=(),
@@ -1144,7 +1149,9 @@ def format_partner_offer_condition(offer: PartnerOffer) -> str:
     )
 
 
-def format_partner_offer_context(offer: PartnerOffer, tier: PartnerTier) -> str:
+def format_partner_offer_context(
+    offer: PartnerOffer, tier: PartnerTier, *, include_minimum: bool = True
+) -> str:
     """Render only purchase constraints that matter for the selected store MCC."""
 
     details = []
@@ -1158,11 +1165,11 @@ def format_partner_offer_context(offer: PartnerOffer, tier: PartnerTier) -> str:
     }
     if condition and normalized_condition not in redundant_conditions:
         details.append(condition)
-    if tier.min_purchase is not None and tier.max_purchase is not None:
+    if include_minimum and tier.min_purchase is not None and tier.max_purchase is not None:
         details.append(
             f"сумма {_display_decimal(tier.min_purchase)}–{_display_decimal(tier.max_purchase)} BYN"  # noqa: RUF001
         )
-    elif tier.min_purchase is not None:
+    elif include_minimum and tier.min_purchase is not None:
         details.append(f"сумма от {_display_decimal(tier.min_purchase)} BYN")
     elif tier.max_purchase is not None:
         details.append(f"сумма до {_display_decimal(tier.max_purchase)} BYN")
@@ -1249,8 +1256,12 @@ def resolve_store_matches(
                 display_kind=" баллами" if offer.reward_kind == "points" else " деньгами",
             )
             components.append(component)
-            card = replace(card, reward_programs=(*card.reward_programs, _partner_program(offer)))
-            offer_context = format_partner_offer_context(offer, tier)
+            card = replace(
+                card, reward_programs=(*card.reward_programs, _partner_program(offer, tier))
+            )
+            # The lower bound now belongs to the program's detail terms. Keep
+            # other purchase constraints in context without repeating it.
+            offer_context = format_partner_offer_context(offer, tier, include_minimum=False)
             if offer_context:
                 context_lines.append(offer_context)
         if components:

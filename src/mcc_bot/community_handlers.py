@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 from .community import (
@@ -2401,6 +2401,16 @@ def _form_rows(
     return rows
 
 
+def _callback_message_key(update: Update) -> tuple[int, int] | None:
+    message = getattr(update.callback_query, "message", None)
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(message, "chat_id", getattr(chat, "id", None))
+    message_id = getattr(message, "message_id", None)
+    if isinstance(chat_id, int) and isinstance(message_id, int):
+        return chat_id, message_id
+    return None
+
+
 async def _render_durable_form_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2414,19 +2424,19 @@ async def _render_durable_form_message(
     bound = service.editor_message(draft.user_id, draft.id)
     if bound is not None:
         query = update.callback_query
-        query_message = getattr(query, "message", None) if query is not None else None
-        query_chat = getattr(query_message, "chat", None)
-        query_chat_id = getattr(query_message, "chat_id", getattr(query_chat, "id", None))
-        query_message_id = getattr(query_message, "message_id", None)
         try:
-            if (query_chat_id, query_message_id) == bound and hasattr(query, "edit_message_text"):
+            if _callback_message_key(update) == bound and hasattr(query, "edit_message_text"):
                 await query.edit_message_text(text, reply_markup=markup)
             else:
                 await context.bot.edit_message_text(
                     chat_id=bound[0], message_id=bound[1], text=text, reply_markup=markup
                 )
             return
-        except TelegramError:
+        except TelegramError as error:
+            if isinstance(error, BadRequest) and error.message.lower().startswith(
+                "message is not modified"
+            ):
+                return
             LOGGER.info("Could not update bound contribution editor; replacing it safely")
         try:
             await context.bot.delete_message(chat_id=bound[0], message_id=bound[1])
@@ -3517,7 +3527,8 @@ async def _form_editor_callback(
         await _finish_form_submission(update, context, service, draft)
         return
     else:
-        raise StaleAction("Кнопка не относится к редактору.")
+        await _render_form_editor(update, context, service, draft)
+        return
     draft = service.advance(draft.user_id, draft.id, draft.version, "form_editor", data)
     await _render_form_editor(update, context, service, draft)
 
@@ -3948,8 +3959,28 @@ async def _dispatch_callback(
         await _render_draft(update, service, draft, context=context)
     elif action == "d":
         draft = service.draft(user_id)
-        if draft is None or draft.id != parts[1] or draft.version != int(parts[2]):
+        draft_version = int(parts[2])
+        if draft is None or draft.id != parts[1]:
             raise StaleAction("Кнопка устарела. Продолжите текущий шаг или откройте меню.")
+        if draft_version != draft.version:
+            bound = _callback_message_key(update)
+            if (
+                draft_version >= draft.version
+                or draft.stage != "form_editor"
+                or bound is None
+                or service.editor_message(user_id, draft.id) != bound
+            ):
+                raise StaleAction("Кнопка устарела. Продолжите текущий шаг или откройте меню.")
+            # A quick tap may carry the prior keyboard version for this same message.
+            # Recover only field navigation still offered by the current screen.
+            field_action = ":".join(parts[3:])
+            if not field_action.startswith("form_field:") or not any(
+                item == field_action
+                for row in _form_rows(context, service, draft)
+                for _label, item in row
+            ):
+                await _render_form_editor(update, context, service, draft)
+                return
         await _draft_callback(update, context, service, draft, parts[3:])
     elif action in {"mine", "own", "cancel"}:
         raise StaleAction("Кнопка устарела. Откройте /start.")
