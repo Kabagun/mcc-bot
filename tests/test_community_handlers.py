@@ -1699,11 +1699,10 @@ def test_grouped_editor_replaces_notes_and_removes_both_channels_atomically(flow
     draft_click(flow, "mcc_actions", 2)
     draft_click(flow, "fact:both:5812", 2)
     draft_click(flow, "fact_note", 2)
-    send(flow, "Общая подпись", 2)
+    note = "Код проверен при оплате на кассе и при заказе через сайт магазина"
+    send(flow, note, 2)
     draft_click(flow, "submit", 2)
-    assert all(
-        service.stores.list_mcc(value)[0].note == "Общая подпись" for value in (offline, online)
-    )
+    assert all(service.stores.list_mcc(value)[0].note == note for value in (offline, online))
 
     click(flow, f"edit:{brand.id}", 2)
     draft_click(flow, "mcc_actions", 2)

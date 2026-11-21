@@ -679,17 +679,19 @@ def test_brand_merge_adopts_note_and_conflicting_notes_require_manual_edit(repos
 
 def test_note_validation_replace_and_audited_group_edit(repository):
     merchant = add(repository, mcc=None)
-    with pytest.raises(StoreError, match="48"):
+    with pytest.raises(StoreError, match="100"):
         repository.apply_change(
             "add_mcc",
-            {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "x" * 49},
+            {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "x" * 101},
             1,
         )
+    long_note = "x" * 100
     repository.apply_change(
         "add_mcc",
-        {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "old"},
+        {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": long_note},
         2,
     )
+    assert repository.list_mcc(merchant.merchant_id)[0].note == long_note
     edit = repository.apply_change(
         "edit_mcc_note",
         {"merchant_id": merchant.merchant_id, "mcc": "5411", "note": "new"},

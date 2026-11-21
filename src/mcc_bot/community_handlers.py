@@ -24,7 +24,6 @@ from .community import (
     MAX_LOCATION,
     MAX_MEDIA_BYTES,
     MAX_NAME,
-    MAX_NOTE,
     CommunityError,
     CommunityService,
     Draft,
@@ -39,7 +38,7 @@ from .notifications import (
     reminder_choice_keyboard,
     reminder_preference_message,
 )
-from .stores import BrandMccGroup, normalize_store_name
+from .stores import MAX_MCC_NOTE_LENGTH, BrandMccGroup, normalize_store_name
 from .users import UNBAN_PRICE_XTR, ChatAccessState, ChatRecipient, StaleAccessState
 
 LOGGER = logging.getLogger(__name__)
@@ -1055,7 +1054,7 @@ async def _render_draft(
         current = data.get("note", "")
         text = (
             f"Текущая подпись: {current or 'отсутствует'}\n\n"
-            f"Введите новую подпись к MCC (до {MAX_NOTE} символов). Её увидят все."
+            f"Введите новую подпись к MCC (до {MAX_MCC_NOTE_LENGTH} символов). Её увидят все."
         )
         rows = [[("🗑 Убрать подпись", "skip")]] if current else [[("Без подписи", "skip")]]
     elif stage == "private_comment":
@@ -1250,7 +1249,7 @@ async def _render_draft(
         for number, (channel, fact) in enumerate(page, start=offset + 1):
             text += (
                 f"\n{number}. {_channel_title(channel)} · MCC {fact.mcc} — "
-                f"{_short_fact_note(getattr(fact, 'note', ''), MAX_NOTE)}"
+                f"{_short_fact_note(getattr(fact, 'note', ''), MAX_MCC_NOTE_LENGTH)}"
             )
             rows.append(
                 [
@@ -2315,7 +2314,10 @@ def _form_prompt(key: str) -> str:
         "value": "Отправьте размер выгоды в процентах, например 5 или 2,5.",
         "aliases": "Отправьте названия через запятую. Чтобы очистить поле, отправьте «-».",
         "location": "Отправьте адрес или описание места. Чтобы очистить поле, отправьте «-».",
-        "note": "Отправьте подпись к MCC. Чтобы очистить поле, отправьте «-».",
+        "note": (
+            f"Отправьте подпись к MCC (до {MAX_MCC_NOTE_LENGTH} символов). "
+            "Чтобы очистить поле, отправьте «-»."
+        ),
         "conditions": "Отправьте условия. Чтобы очистить поле, отправьте «-».",
         "starts_on": "Отправьте дату в формате ГГГГ-ММ-ДД или «-».",
         "ends_on": "Отправьте дату в формате ГГГГ-ММ-ДД или «-».",
@@ -2779,7 +2781,8 @@ def _consume_form_text(
         if text == "-":
             values.pop(field, None)
         else:
-            values[field] = clean_text(text, maximum=MAX_NOTE if field == "note" else 1000)
+            maximum = MAX_MCC_NOTE_LENGTH if field == "note" else 1000
+            values[field] = clean_text(text, maximum=maximum)
     else:
         raise CommunityError("Поле больше недоступно.")
     data.update(values=values, active_field=None, dirty=True)
@@ -3097,7 +3100,7 @@ def _consume_text(
         _sync_mcc_payload(data)
         stage = "note_choice"
     elif stage == "note":
-        data["note"] = clean_text(text, maximum=MAX_NOTE)
+        data["note"] = clean_text(text, maximum=MAX_MCC_NOTE_LENGTH)
         data["dirty"] = True
         _sync_mcc_payload(data)
         stage = "preview"

@@ -26,6 +26,8 @@ from typing import Any
 from .catalog import normalize_mcc
 from .reviewed_store_policy import filter_observations as apply_reviewed_store_policy
 
+MAX_MCC_NOTE_LENGTH = 100
+
 
 class StoreError(ValueError):
     """Invalid merchant change or missing entity."""
@@ -273,8 +275,8 @@ def _aliases(value: Any) -> list[str]:
 def _note(value: Any) -> str:
     """Validate a short public MCC note; an empty note is meaningful."""
 
-    if not isinstance(value, str) or len(value.strip()) > 48:
-        raise StoreError("Примечание должно содержать не более 48 символов")
+    if not isinstance(value, str) or len(value.strip()) > MAX_MCC_NOTE_LENGTH:
+        raise StoreError(f"Подпись к MCC — не больше {MAX_MCC_NOTE_LENGTH} символов.")
     value = value.strip()
     if any(unicodedata.category(char).startswith("C") for char in value):
         raise StoreError("Примечание содержит недопустимые символы")

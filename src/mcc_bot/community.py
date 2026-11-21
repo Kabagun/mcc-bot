@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
-from .stores import StoreRepository, normalize_location, normalize_store_name
+from .stores import MAX_MCC_NOTE_LENGTH, StoreRepository, normalize_location, normalize_store_name
 
 if TYPE_CHECKING:
     from .users import ChatAccessState, UserRegistry
@@ -35,7 +35,6 @@ MEDIA_RETENTION_SECONDS = 5 * 86400
 MAX_COMMENT = 1000
 MAX_NAME = 160
 MAX_LOCATION = 500
-MAX_NOTE = 48
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
 FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
 MCC_KINDS = frozenset({"add_merchant", "add_mcc", "add_mcc_both", "replace_mcc"})
@@ -1179,10 +1178,12 @@ class CommunityService:
             elif key == "note":
                 if (
                     not isinstance(value, str)
-                    or len(value.strip()) > MAX_NOTE
+                    or len(value.strip()) > MAX_MCC_NOTE_LENGTH
                     or any(ord(ch) < 32 for ch in value)
                 ):
-                    raise CommunityError(f"Подпись к MCC — не больше {MAX_NOTE} символов.")
+                    raise CommunityError(
+                        f"Подпись к MCC — не больше {MAX_MCC_NOTE_LENGTH} символов."
+                    )
                 result[key] = value.strip()
             elif key == "aliases":
                 if not isinstance(value, list) or len(value) > 20:
