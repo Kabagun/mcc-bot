@@ -26,7 +26,7 @@ from typing import Any
 from .catalog import normalize_mcc
 from .reviewed_store_policy import filter_observations as apply_reviewed_store_policy
 
-MAX_MCC_NOTE_LENGTH = 100
+MAX_MCC_NOTE_LENGTH = 255
 
 
 class StoreError(ValueError):

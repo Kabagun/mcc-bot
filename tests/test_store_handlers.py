@@ -4,6 +4,7 @@ from __future__ import annotations
 # ruff: noqa: RUF001
 import asyncio
 from dataclasses import replace
+from html import escape, unescape
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -462,6 +463,36 @@ def test_same_mcc_with_different_notes_is_one_row_with_channel_details(setup):
         if button.callback_data.startswith("store:cards:")
     ]
     assert callbacks == [f"store:cards:{brand.id}:both:5411:0:0"]
+
+
+def test_brand_pages_fit_full_long_mcc_notes(setup):
+    repository, offline, update, context = setup
+    brand = repository.brand_for_merchant(offline)
+    online = repository.apply_change(
+        "add_merchant", {"brand_id": brand.id, "name": brand.name, "channel": "online"}, 1
+    ).merchant_id
+    notes = []
+    for mcc in ("5411", "5812", "5814", "5912", "5945", "5999"):
+        for merchant_id, emoji in ((offline, "😀"), (online, "🚚")):
+            note = f"{mcc} <&> " + emoji * 246
+            notes.append(note)
+            kind = "edit_mcc_note" if mcc == "5411" and merchant_id == offline else "add_mcc"
+            repository.apply_change(kind, {"merchant_id": merchant_id, "mcc": mcc, "note": note}, 1)
+
+    asyncio.run(search_stores(update, context, "Евроопт"))
+    first = update.effective_message.reply_text.await_args
+    next_page = next(
+        button for button in buttons(first.kwargs["reply_markup"]) if button.text == "→"
+    )
+    update.callback_query.data = next_page.callback_data
+    asyncio.run(handle_store_callback(update, context))
+    last = update.callback_query.edit_message_text.await_args
+
+    for message in (first.args[0], last.args[0]):
+        assert len(unescape(message).encode("utf-16-le")) // 2 <= 4096
+    for note in notes:
+        assert (first.args[0] + last.args[0]).count(escape(note)) == 1
+    assert not any(button.text == "→" for button in buttons(last.kwargs["reply_markup"]))
 
 
 def test_brand_card_hides_a_channel_after_its_last_fact_is_removed(setup):

@@ -9,14 +9,14 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from .formatting import format_match_pages
+from .formatting import MAX_TELEGRAM_MESSAGE_LENGTH, _telegram_length, format_match_pages
 from .partner_rewards import format_partner_offer_condition, resolve_store_matches
 from .stores import StoreRepository, normalize_store_name
 
@@ -24,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 _PAGE_SIZE = 8
 _WARNING = "MCC может отличаться у разных касс и способов оплаты."
 _CHANNELS = ("offline", "online")
+_DISPLAY_SCOPES = ("both", *_CHANNELS)
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,8 @@ def _card_callback(brand_id: int, channel: str, mcc: str, page: int, details: bo
 def _fact_label(fact, descriptions) -> str:
     note = getattr(fact, "note", "")
     if note:
+        if len(note) > 100:
+            note = note[:99].rstrip() + "…"
         return f"MCC {fact.mcc} · {note}"
     description = descriptions.get(fact.mcc) or "описание не найдено"
     return f"MCC {fact.mcc} — {description}"
@@ -134,6 +137,32 @@ def _fact_label(fact, descriptions) -> str:
 
 def _channel_choice_label(channel: str) -> str:
     return "🌐 Онлайн" if channel == "online" else "🏬 Офлайн"
+
+
+def _fact_line(fact) -> str:
+    channel_notes = tuple(getattr(fact, "channel_notes", ()))
+    if len({value for _channel, value in channel_notes}) > 1:
+        note = " · ".join(
+            f"{_channel_choice_label(channel)} {escape(value) if value else 'без подписи'}"
+            for channel, value in channel_notes
+        )
+    else:
+        note = escape(getattr(fact, "note", ""))
+    return f"\n• MCC {fact.mcc}" + (f" — {note}" if note else "")
+
+
+def _fact_pages(facts, max_length: int):
+    pages = [[]]
+    used = 0
+    for fact in facts:
+        line = _fact_line(fact)
+        length = _telegram_length(unescape(line))
+        if pages[-1] and (len(pages[-1]) == _PAGE_SIZE or used + length > max_length):
+            pages.append([])
+            used = 0
+        pages[-1].append((fact, line))
+        used += length
+    return pages
 
 
 def _resolved_matches(context, brand_id: int, channel: str, mcc: str):
@@ -165,10 +194,6 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
     admin = private and _is_admin(context, user_id)
     descriptions = context.application.bot_data["descriptions"]
     facts = tuple(_brand_fact_groups(repository, brand.id))
-    count = max(1, (len(facts) + _PAGE_SIZE - 1) // _PAGE_SIZE)
-    page = min(max(0, page), count - 1)
-    shown = facts[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
-
     text = _header(brand)
     location_getter = getattr(repository, "brand_location_summary", None)
     location = (
@@ -181,23 +206,20 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
         if len(compact) > 160:
             compact = compact[:159].rstrip() + "…"
         text += f"\n📍 {escape(compact)}"
+    footer = f"\n\n<i>{_WARNING}</i>"
+    headings = {scope: f"\n\n<b>{_channel_label(scope)}</b>" for scope in _DISPLAY_SCOPES}
+    overhead = _telegram_length(unescape(text + footer + "".join(headings.values())))
+    pages = _fact_pages(facts, MAX_TELEGRAM_MESSAGE_LENGTH - overhead)
+    count = len(pages)
+    page = min(max(0, page), count - 1)
     rows: list[list[InlineKeyboardButton]] = []
-    for scope in ("both", "offline", "online"):
-        scoped_facts = [fact for fact in shown if fact.channel == scope]
+    for scope, heading in headings.items():
+        scoped_facts = [(fact, line) for fact, line in pages[page] if fact.channel == scope]
         if not scoped_facts:
             continue
-        text += "\n\n<b>" + _channel_label(scope) + "</b>"
-        for fact in scoped_facts:
-            note = getattr(fact, "note", "")
-            channel_notes = tuple(getattr(fact, "channel_notes", ()))
-            if channel_notes and len({value for _channel, value in channel_notes}) > 1:
-                rendered_notes = " · ".join(
-                    f"{_channel_choice_label(channel)} {escape(value) if value else 'без подписи'}"
-                    for channel, value in channel_notes
-                )
-                text += f"\n• MCC {fact.mcc} — {rendered_notes}"
-            else:
-                text += f"\n• MCC {fact.mcc}" + (f" — {escape(note)}" if note else "")
+        text += heading
+        for fact, line in scoped_facts:
+            text += line
             if scope == "both":
                 channel_matches = {
                     channel: _resolved_matches(context, brand.id, channel, fact.mcc)
@@ -264,7 +286,7 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 if condition:
                     text += f"\n  {escape(condition)}"
             text += "\n\n⚠️ MCC магазина пока не указан; перед оплатой проверьте его в банке."
-    text += f"\n\n<i>{_WARNING}</i>"
+    text += footer
     if private:
         rows.append(
             [

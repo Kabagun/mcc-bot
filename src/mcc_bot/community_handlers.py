@@ -1249,7 +1249,7 @@ async def _render_draft(
         for number, (channel, fact) in enumerate(page, start=offset + 1):
             text += (
                 f"\n{number}. {_channel_title(channel)} · MCC {fact.mcc} — "
-                f"{_short_fact_note(getattr(fact, 'note', ''), MAX_MCC_NOTE_LENGTH)}"
+                f"{_short_fact_note(getattr(fact, 'note', ''), 100)}"
             )
             rows.append(
                 [
