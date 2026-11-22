@@ -142,6 +142,7 @@ class RewardProgram:
     foreign_value: Decimal | None
     unit: str = "percent"
     currency: str | None = None
+    limit_note: str = ""
 
     def offer_map(self) -> dict[str, RewardOffer]:
         """Return explicit offers indexed by normalized MCC."""

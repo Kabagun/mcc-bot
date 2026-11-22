@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
@@ -30,6 +31,7 @@ from .stores import StoreRepository
 CHANNELS = frozenset({"offline", "online", "any"})
 MODES = frozenset({"additional", "total"})
 REWARD_KINDS = frozenset({"cash", "points"})
+MAX_PARTNER_LIMIT_NOTE = 255
 MCC_RE = re.compile(r"[0-9]{4}")
 _NETWORK_WIDE_KOMMUNARKA_COMBO_KEY = "paritet:122633:paritet_combo:offline"
 
@@ -58,6 +60,7 @@ class PartnerTierInput:
     per_transaction_cap: Decimal | None = None
     starts_on: date | None = None
     ends_on: date | None = None
+    limit_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +111,7 @@ class PartnerTier:
     per_transaction_cap: Decimal | None
     starts_on: date | None
     ends_on: date | None
+    limit_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +203,16 @@ def _validate_decimal(value: Decimal | None, field: str) -> None:
         raise PartnerRewardError(f"{field} должен быть неотрицательным Decimal")
 
 
+def normalize_partner_limit_note(note: str) -> str:
+    """Validate and trim a single-line public partner limit description."""
+
+    if not isinstance(note, str) or len(note.strip()) > MAX_PARTNER_LIMIT_NOTE:
+        raise PartnerRewardError(f"Описание лимитов — до {MAX_PARTNER_LIMIT_NOTE} символов")
+    if any(unicodedata.category(char).startswith(("C", "Zl", "Zp")) for char in note):
+        raise PartnerRewardError("Описание лимитов содержит недопустимые символы")
+    return note.strip()
+
+
 def _validate_dates(starts_on: date | None, ends_on: date | None, field: str) -> None:
     if starts_on is not None and not isinstance(starts_on, date):
         raise PartnerRewardError(f"{field}.starts_on должен быть датой")
@@ -227,6 +241,8 @@ def _validate_offer(payload: PartnerOfferInput) -> None:
         _validate_decimal(tier.min_purchase, f"tiers[{index}].min_purchase")
         _validate_decimal(tier.max_purchase, f"tiers[{index}].max_purchase")
         _validate_decimal(tier.per_transaction_cap, f"tiers[{index}].per_transaction_cap")
+        if normalize_partner_limit_note(tier.limit_note) and tier.per_transaction_cap is not None:
+            raise PartnerRewardError(f"tiers[{index}]: укажите сумму или описание лимитов")
         _validate_dates(tier.starts_on, tier.ends_on, f"tiers[{index}]")
         if (
             tier.min_purchase is not None
@@ -309,6 +325,7 @@ class PartnerRepository:
                     per_transaction_cap TEXT,
                     starts_on TEXT,
                     ends_on TEXT,
+                    limit_note TEXT NOT NULL DEFAULT '',
                     UNIQUE(offer_id,position)
                 )""",
                 """CREATE TABLE IF NOT EXISTS partner_exclusions (
@@ -345,6 +362,13 @@ class PartnerRepository:
             )
             for statement in statements:
                 connection.execute(statement)
+            tier_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(partner_offer_tiers)")
+            }
+            if "limit_note" not in tier_columns:
+                connection.execute(
+                    "ALTER TABLE partner_offer_tiers ADD COLUMN limit_note TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 """UPDATE partner_offers SET conditions='',updated_at=CURRENT_TIMESTAMP
                    WHERE source_key=? AND card_id='paritet_combo' AND conditions<>''""",
@@ -430,6 +454,7 @@ class PartnerRepository:
                 per_transaction_cap=_decimal_value(item["per_transaction_cap"]),
                 starts_on=_date_value(item["starts_on"]),
                 ends_on=_date_value(item["ends_on"]),
+                limit_note=item["limit_note"],
             )
             for item in connection.execute(
                 "SELECT * FROM partner_offer_tiers WHERE offer_id=? ORDER BY position,id",
@@ -476,8 +501,9 @@ class PartnerRepository:
     ) -> None:
         connection.executemany(
             """INSERT INTO partner_offer_tiers
-            (offer_id,position,value,min_purchase,max_purchase,per_transaction_cap,starts_on,ends_on)
-            VALUES(?,?,?,?,?,?,?,?)""",
+            (offer_id,position,value,min_purchase,max_purchase,per_transaction_cap,starts_on,ends_on,
+             limit_note)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
             [
                 (
                     offer_id,
@@ -488,10 +514,19 @@ class PartnerRepository:
                     _decimal_text(tier.per_transaction_cap),
                     _date_text(tier.starts_on),
                     _date_text(tier.ends_on),
+                    tier.limit_note.strip(),
                 )
                 for position, tier in enumerate(tiers)
             ],
         )
+
+    @staticmethod
+    def _offer_snapshot(offer: PartnerOffer) -> dict:
+        snapshot = asdict(offer)
+        for tier in snapshot["tiers"]:
+            if not tier["limit_note"]:
+                del tier["limit_note"]
+        return snapshot
 
     @staticmethod
     def _audit(
@@ -554,7 +589,7 @@ class PartnerRepository:
             self._insert_tiers(current, offer_id, payload.tiers)
             row = current.execute("SELECT * FROM partner_offers WHERE id=?", (offer_id,)).fetchone()
             offer = self._offer_from_row(current, row)
-            self._audit(current, "offer", offer_id, "create", actor_id, asdict(offer))
+            self._audit(current, "offer", offer_id, "create", actor_id, self._offer_snapshot(offer))
             for exclusion in payload.exclusions:
                 self.create_exclusion(
                     exclusion,
@@ -620,7 +655,7 @@ class PartnerRepository:
                 offer_id,
                 "update",
                 actor_id,
-                {"before": asdict(before), "after": asdict(result)},
+                {"before": self._offer_snapshot(before), "after": self._offer_snapshot(result)},
             )
             return result
 
@@ -648,7 +683,7 @@ class PartnerRepository:
                 updated_at=CURRENT_TIMESTAMP WHERE offer_id=? AND archived=0""",
                 (actor_id, offer_id),
             )
-            self._audit(current, "offer", offer_id, "delete", actor_id, asdict(offer))
+            self._audit(current, "offer", offer_id, "delete", actor_id, self._offer_snapshot(offer))
             return True
 
     def restore_offer(
@@ -672,7 +707,9 @@ class PartnerRepository:
             )
             result = self.get_offer(offer_id, include_archived=True, connection=current)
             assert result is not None
-            self._audit(current, "offer", offer_id, "restore", actor_id, asdict(result))
+            self._audit(
+                current, "offer", offer_id, "restore", actor_id, self._offer_snapshot(result)
+            )
             return result
 
     def get_offer(
@@ -1109,7 +1146,7 @@ class PartnerRepository:
 
 
 def _partner_program(offer: PartnerOffer, tier: PartnerTier) -> RewardProgram:
-    """Expose the selected tier's payment minimum in the effective program terms."""
+    """Expose the selected tier's payment minimum and limits in the program terms."""
 
     return RewardProgram(
         id=f"partner:{offer.id}",
@@ -1126,6 +1163,7 @@ def _partner_program(offer: PartnerOffer, tier: PartnerTier) -> RewardProgram:
         maximum_reward_alternatives=(),
         domestic_country=None,
         foreign_value=None,
+        limit_note=tier.limit_note,
     )
 
 
@@ -1150,7 +1188,11 @@ def format_partner_offer_condition(offer: PartnerOffer) -> str:
 
 
 def format_partner_offer_context(
-    offer: PartnerOffer, tier: PartnerTier, *, include_minimum: bool = True
+    offer: PartnerOffer,
+    tier: PartnerTier,
+    *,
+    include_minimum: bool = True,
+    include_limit_note: bool = True,
 ) -> str:
     """Render only purchase constraints that matter for the selected store MCC."""
 
@@ -1176,6 +1218,8 @@ def format_partner_offer_context(
     if tier.per_transaction_cap is not None:
         unit = "баллов" if offer.reward_kind == "points" else "BYN"
         details.append(f"не больше {_display_decimal(tier.per_transaction_cap)} {unit} за операцию")
+    if include_limit_note and tier.limit_note:
+        details.append(f"Лимиты: {tier.limit_note}")
     ends_on = tier.ends_on or offer.ends_on
     if ends_on:
         details.append(f"по {ends_on.strftime('%d.%m.%Y')}")
@@ -1244,9 +1288,9 @@ def resolve_store_matches(
             card = replace(
                 card, reward_programs=(*card.reward_programs, _partner_program(offer, tier))
             )
-            # The lower bound now belongs to the program's detail terms. Keep
-            # other purchase constraints in context without repeating it.
-            offer_context = format_partner_offer_context(offer, tier, include_minimum=False)
+            offer_context = format_partner_offer_context(
+                offer, tier, include_minimum=False, include_limit_note=False
+            )
             if offer_context:
                 context_lines.append(offer_context)
         if components:

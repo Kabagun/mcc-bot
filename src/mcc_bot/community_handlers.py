@@ -32,6 +32,8 @@ from .community import (
     Proposal,
     StaleAction,
     clean_text,
+    partner_limit_parts,
+    partner_limit_value,
 )
 from .erip import EXCLUSION_CHOICES, MAX_EXCLUSIONS, normalize_branch, parse_rate
 from .erip import KIND as ERIP_KIND
@@ -802,6 +804,10 @@ def _display_payload(service: CommunityService, kind: str, payload: dict[str, An
     if kind == "add_mcc_both":
         parts.append("Способ оплаты: 🏬🌐 Офлайн и онлайн")
         parts.append("Существующие подписи останутся без изменений.")
+    if kind == "partner_save" and payload.get("per_transaction_cap") is not None:
+        amount, note = partner_limit_parts(payload["per_transaction_cap"])
+        limit = f"{format(amount, 'f')} за операцию" if amount is not None else note
+        parts.append(f"Лимиты — {limit}")
     if payload.get("source_url"):
         parts.append("Официальная ссылка: " + payload["source_url"])
     return "\n".join(parts)
@@ -2350,7 +2356,7 @@ def _form_fields(
                 ("ends_on", "Дата окончания", False),
                 ("min_purchase", "Минимальная покупка", False),
                 ("max_purchase", "Максимальная покупка", False),
-                ("per_transaction_cap", "Лимит за операцию", False),
+                ("per_transaction_cap", "Лимиты", False),
                 ("excluded_mccs", "Исключённые MCC", False),
                 ("source_url", "Источник", False),
                 ("screenshot", "Скриншот", False),
@@ -2666,7 +2672,11 @@ def _form_prompt(key: str) -> str:
         "ends_on": "Отправьте дату в формате ГГГГ-ММ-ДД или «-».",
         "min_purchase": "Отправьте сумму или «-».",
         "max_purchase": "Отправьте сумму или «-».",
-        "per_transaction_cap": "Отправьте лимит за операцию или «-».",
+        "per_transaction_cap": (
+            "Опишите лимиты словами. Например, «До 15 BYN в месяц, из них до 5 BYN "
+            "за мобильную связь». Одно число означает лимит за операцию. "
+            "Чтобы очистить, отправьте «-»."
+        ),
         "excluded_mccs": "Отправьте MCC через запятую или «-».",
         "source_url": "Отправьте полную ссылку http:// или https:// либо «-».",
         "screenshot": "Пришлите скриншот фотографией Telegram.",
@@ -3194,7 +3204,12 @@ def _consume_form_text(
             except ValueError as exc:
                 raise CommunityError("Введите дату в формате ГГГГ-ММ-ДД.") from exc
             values[field] = text
-    elif field in {"value", "min_purchase", "max_purchase", "per_transaction_cap"}:
+    elif field == "per_transaction_cap":
+        if text == "-":
+            values.pop(field, None)
+        else:
+            values[field] = partner_limit_value(*partner_limit_parts(text))
+    elif field in {"value", "min_purchase", "max_purchase"}:
         if text == "-" and field != "value":
             values.pop(field, None)
         else:
@@ -4122,10 +4137,8 @@ def _menu_data(service: CommunityService, brand_id: int) -> dict[str, Any]:
                         if tier.max_purchase is not None
                         else None
                     ),
-                    "per_transaction_cap": (
-                        format(tier.per_transaction_cap.normalize(), "f")
-                        if tier.per_transaction_cap is not None
-                        else None
+                    "per_transaction_cap": partner_limit_value(
+                        tier.per_transaction_cap, tier.limit_note
                     ),
                     "excluded_mccs": [
                         item.mcc for item in partners.list_offer_exclusions(offer.id) if item.mcc

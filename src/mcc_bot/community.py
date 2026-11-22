@@ -28,6 +28,11 @@ from .erip import KIND as ERIP_KIND
 from .erip import EripError, EripRepository
 from .erip import validate as validate_erip
 from .helper_activity import HelperActivityRepository
+from .partner_rewards import (
+    MAX_PARTNER_LIMIT_NOTE,
+    PartnerRewardError,
+    normalize_partner_limit_note,
+)
 from .stores import MAX_MCC_NOTE_LENGTH, StoreRepository, normalize_location, normalize_store_name
 
 if TYPE_CHECKING:
@@ -144,6 +149,41 @@ def clean_text(value: str, *, maximum: int = MAX_COMMENT) -> str:
     if not value or len(value) > maximum or any(ord(ch) < 32 and ch != "\n" for ch in value):
         raise CommunityError(f"Введите текст длиной от 1 до {maximum} символов.")
     return value
+
+
+def partner_limit_parts(value: Any) -> tuple[Decimal | None, str]:
+    """Read one editor limit as a numeric cap or a plain-language condition."""
+
+    if value is None:
+        return None, ""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        raise CommunityError("Укажите сумму или пояснение к лимиту.")
+    try:
+        text = normalize_partner_limit_note(str(value).replace("\r\n", "\n").replace("\n", " "))
+    except PartnerRewardError as exc:
+        raise CommunityError(str(exc)) from exc
+    if not text:
+        raise CommunityError("Укажите сумму или пояснение к лимиту.")
+    try:
+        amount = Decimal(text.replace(",", "."))
+    except InvalidOperation:
+        return None, text
+    if not amount.is_finite() or amount < 0:
+        raise CommunityError("Сумма лимита должна быть неотрицательным числом.")
+    if amount.is_zero():
+        return Decimal(0), ""
+    if abs(amount.adjusted()) >= MAX_PARTNER_LIMIT_NOTE:
+        raise CommunityError("Сумма лимита слишком длинная.")
+    amount = amount.normalize()
+    if len(format(amount, "f")) > MAX_PARTNER_LIMIT_NOTE:
+        raise CommunityError("Сумма лимита слишком длинная.")
+    return amount, ""
+
+
+def partner_limit_value(amount: Decimal | None, note: str) -> str | None:
+    """Serialize a stored limit for the contribution form and its proposal."""
+
+    return format(amount.normalize(), "f") if amount is not None else note or None
 
 
 def _identity_text(value: Any, *, maximum: int) -> str | None:
@@ -1307,7 +1347,6 @@ class CommunityService:
             elif kind == "partner_save" and key in {
                 "min_purchase",
                 "max_purchase",
-                "per_transaction_cap",
             }:
                 if value is not None:
                     try:
@@ -1317,6 +1356,8 @@ class CommunityService:
                     if not amount.is_finite() or amount < 0:
                         raise CommunityError("Сумма в партнёрстве не может быть отрицательной.")
                     result[key] = format(amount.normalize(), "f")
+            elif kind == "partner_save" and key == "per_transaction_cap":
+                result[key] = partner_limit_value(*partner_limit_parts(value))
             elif kind == "partner_save" and key in {"starts_on", "ends_on"}:
                 if value:
                     try:
@@ -1578,11 +1619,7 @@ class CommunityService:
                 if tier.max_purchase is not None
                 else None
             ),
-            "per_transaction_cap": (
-                format(tier.per_transaction_cap.normalize(), "f")
-                if tier.per_transaction_cap is not None
-                else None
-            ),
+            "per_transaction_cap": partner_limit_value(tier.per_transaction_cap, tier.limit_note),
             "excluded_mccs": sorted(
                 item.mcc
                 for item in self.partners.list_offer_exclusions(offer.id, connection=connection)
@@ -1793,6 +1830,7 @@ class CommunityService:
             )
             ends_on = date.fromisoformat(payload["ends_on"]) if payload.get("ends_on") else None
             source_url = payload.get("source_url", "")
+            transaction_cap, limit_note = partner_limit_parts(payload.get("per_transaction_cap"))
             offer_input = PartnerOfferInput(
                 brand_id=brand_id,
                 card_id=payload["card_id"],
@@ -1816,11 +1854,8 @@ class CommunityService:
                             if payload.get("max_purchase") is not None
                             else None
                         ),
-                        per_transaction_cap=(
-                            Decimal(payload["per_transaction_cap"])
-                            if payload.get("per_transaction_cap") is not None
-                            else None
-                        ),
+                        per_transaction_cap=transaction_cap,
+                        limit_note=limit_note,
                     ),
                 ),
                 exclusions=tuple(
@@ -2059,7 +2094,7 @@ class CommunityService:
             offer = self.partners.get_offer(offer_id, include_archived=True, connection=conn)
             if offer is None:
                 raise CommunityError("Партнёрство больше недоступно.")
-            result["offers"][str(offer_id)] = {
+            offer_snapshot = {
                 "brand_id": offer.brand_id,
                 "card_id": offer.card_id,
                 "channel": offer.channel,
@@ -2086,6 +2121,10 @@ class CommunityService:
                     for item in self.partners.list_offer_exclusions(offer_id, connection=conn)
                 ],
             }
+            limit_notes = [tier.limit_note for tier in offer.tiers]
+            if any(limit_notes):
+                offer_snapshot["limit_notes"] = limit_notes
+            result["offers"][str(offer_id)] = offer_snapshot
         return result
 
     def _protect_form_snapshot(

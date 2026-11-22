@@ -143,7 +143,9 @@ def _detail_program_terms(program: RewardProgram, *, generic: bool, has_card_lim
         minimum_label = f"мин. платёж {_format_decimal(minimum.amount)} {minimum.currency}"
     terms = [minimum_label]
     maximum = program.maximum_reward
-    if maximum is not None:
+    if program.limit_note:
+        terms.append(f"Лимиты: {program.limit_note}")
+    elif maximum is not None:
         if maximum.unlimited and not program.maximum_reward_alternatives:
             terms.append("без месячного лимита")
         else:

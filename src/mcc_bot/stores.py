@@ -2755,6 +2755,9 @@ class StoreRepository:
 
     @staticmethod
     def _partner_offer_signature(connection, row) -> tuple:
+        tiers = connection.execute(
+            "SELECT * FROM partner_offer_tiers WHERE offer_id=? ORDER BY position,id", (row["id"],)
+        )
         return (
             row["card_id"],
             row["channel"],
@@ -2765,13 +2768,17 @@ class StoreRepository:
             row["conditions"],
             row["source_url"],
             tuple(
-                tuple(item)
-                for item in connection.execute(
-                    """SELECT position,value,min_purchase,max_purchase,per_transaction_cap,
-                    starts_on,ends_on FROM partner_offer_tiers
-                    WHERE offer_id=? ORDER BY position,id""",
-                    (row["id"],),
+                (
+                    tier["position"],
+                    tier["value"],
+                    tier["min_purchase"],
+                    tier["max_purchase"],
+                    tier["per_transaction_cap"],
+                    tier["starts_on"],
+                    tier["ends_on"],
+                    tier.get("limit_note", ""),
                 )
+                for tier in map(dict, tiers)
             ),
         )
 

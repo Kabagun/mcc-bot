@@ -14,9 +14,11 @@ from mcc_bot.formatting import format_matches, format_moneyback
 from mcc_bot.partner_21vek_plushki import SOURCE_KEY, SOURCE_URL
 from mcc_bot.partner_21vek_plushki import apply as apply_open_ended_21vek_offer
 from mcc_bot.partner_rewards import (
+    MAX_PARTNER_LIMIT_NOTE,
     PartnerExclusionInput,
     PartnerOfferInput,
     PartnerRepository,
+    PartnerRewardError,
     PartnerTierInput,
     format_partner_offer_condition,
     format_partner_offer_context,
@@ -266,8 +268,15 @@ def test_brand_merge_rehomes_partner_rows_and_revert_restores_them(tmp_path) -> 
         )
 
 
+@pytest.mark.parametrize(
+    "tier",
+    [
+        PartnerTierInput(Decimal("5"), per_transaction_cap=Decimal("50")),
+        PartnerTierInput(Decimal("5"), limit_note="До 50 баллов в месяц"),
+    ],
+)
 def test_brand_merge_collapses_identical_partner_offers_and_revert_restores_them(
-    tmp_path,
+    tmp_path, tier
 ) -> None:
     stores = StoreRepository(tmp_path / "stores.sqlite3")
     stores.initialize()
@@ -281,10 +290,14 @@ def test_brand_merge_collapses_identical_partner_offers_and_revert_restores_them
     partners = PartnerRepository(stores)
     partners.initialize()
     source_offer = partners.create_offer(
-        _offer(source.brand_id, channel="offline"), actor_id=1, source_key="seed:source"
+        _offer(source.brand_id, channel="offline", tiers=(tier,)),
+        actor_id=1,
+        source_key="seed:source",
     )
     target_offer = partners.create_offer(
-        _offer(target.brand_id, channel="offline"), actor_id=1, source_key="seed:target"
+        _offer(target.brand_id, channel="offline", tiers=(tier,)),
+        actor_id=1,
+        source_key="seed:target",
     )
 
     merged = stores.apply_change(
@@ -299,9 +312,22 @@ def test_brand_merge_collapses_identical_partner_offers_and_revert_restores_them
     stores.apply_change("revert", {"audit_id": merged.audit_id}, 1)
     restored = partners.get_offer(source_offer.id, include_archived=True)
     assert restored is not None and restored.brand_id == source.brand_id and not restored.archived
+    assert restored.tiers[0].limit_note == tier.limit_note
 
 
-def test_brand_merge_blocks_conflicting_partner_rates_without_partial_writes(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("source_tier", "target_tier"),
+    [
+        (PartnerTierInput(Decimal("5")), PartnerTierInput(Decimal("9"))),
+        (
+            PartnerTierInput(Decimal("5"), limit_note="До 100 баллов в месяц"),
+            PartnerTierInput(Decimal("5"), limit_note="До 50 баллов в месяц"),
+        ),
+    ],
+)
+def test_brand_merge_blocks_conflicting_partner_terms_without_partial_writes(
+    tmp_path, source_tier, target_tier
+) -> None:
     stores = StoreRepository(tmp_path / "stores.sqlite3")
     stores.initialize()
     source = stores.apply_change(
@@ -314,13 +340,15 @@ def test_brand_merge_blocks_conflicting_partner_rates_without_partial_writes(tmp
     partners = PartnerRepository(stores)
     partners.initialize()
     source_offer = partners.create_offer(
-        _offer(source.brand_id, channel="offline"), actor_id=1, source_key="seed:source"
+        _offer(source.brand_id, channel="offline", tiers=(source_tier,)),
+        actor_id=1,
+        source_key="seed:source",
     )
     target_offer = partners.create_offer(
         _offer(
             target.brand_id,
             channel="offline",
-            tiers=(PartnerTierInput(Decimal("9")),),
+            tiers=(target_tier,),
         ),
         actor_id=1,
         source_key="seed:target",
@@ -358,6 +386,70 @@ def _offer(brand_id, **overrides) -> PartnerOfferInput:
     }
     values.update(overrides)
     return PartnerOfferInput(**values)
+
+
+def test_initialize_migrates_legacy_offer_tiers_without_changing_numeric_limits(tmp_path) -> None:
+    stores, partners, brand_id = _repositories(tmp_path)
+    offer = partners.create_offer(_offer(brand_id), actor_id=1)
+    with stores.transaction() as connection:
+        connection.execute("ALTER TABLE partner_offer_tiers DROP COLUMN limit_note")
+
+    partners.initialize()
+    partners.initialize()
+
+    assert partners.get_offer(offer.id) == offer
+    with stores.connection() as connection:
+        audit = connection.execute("SELECT snapshot_json FROM partner_audit").fetchone()
+        saved_tier = json.loads(audit["snapshot_json"])["tiers"][0]
+    assert saved_tier["per_transaction_cap"] == "50"
+    assert "limit_note" not in saved_tier
+
+
+def test_partner_limit_description_survives_update_and_renders_once(tmp_path) -> None:
+    stores, partners, brand_id = _repositories(tmp_path)
+    original = _offer(brand_id, mode="total", reward_kind="cash")
+    offer = partners.create_offer(original, actor_id=1)
+    note = "До 15 BYN в месяц, из них до 5 BYN за мобильную связь < 10 BYN"
+    tier = replace(original.tiers[0], per_transaction_cap=None, limit_note=f"  {note}  ")
+    updated = partners.update_offer(offer.id, replace(original, tiers=(tier,)), actor_id=2)
+
+    assert partners.get_offer(offer.id) == updated
+    assert updated.tiers[0].limit_note == note
+    assert partners.delete_offer(offer.id, actor_id=2)
+    assert partners.restore_offer(offer.id, actor_id=2) == updated
+    assert f"Лимиты: {note}" in format_partner_offer_context(updated, updated.tiers[0])
+    resolved = resolve_store_matches(
+        _catalog(tmp_path), partners, brand_id, "online", "1234", on_date=date(2026, 8, 30)
+    )
+    match = next(match for match in resolved if match.card.id == "vitamin_d")
+    rendered = format_matches("1234", (match,), details=True, html=True)
+    assert rendered.count(f"Лимиты: {note.replace('<', '&lt;')}") == 1
+    assert "макс. в месяц не указан" not in rendered
+    assert "Лимиты" not in format_matches("1234", (match,))
+    with stores.connection() as connection:
+        audit = connection.execute(
+            "SELECT snapshot_json FROM partner_audit WHERE action='update'"
+        ).fetchone()
+        saved = json.loads(audit["snapshot_json"])
+    assert "limit_note" not in saved["before"]["tiers"][0]
+    assert saved["after"]["tiers"][0]["limit_note"] == note
+
+
+@pytest.mark.parametrize(
+    ("cap", "note"),
+    [
+        (Decimal("0"), "До 5 BYN за мобильную связь"),
+        (None, "а" * (MAX_PARTNER_LIMIT_NOTE + 1)),
+        (None, "перевод\nстроки"),
+        (None, "управляющий\u202eсимвол"),
+    ],
+)
+def test_partner_limit_rejects_invalid_input(tmp_path, cap, note) -> None:
+    _stores, partners, brand_id = _repositories(tmp_path)
+    tier = PartnerTierInput(Decimal("5"), per_transaction_cap=cap, limit_note=note)
+
+    with pytest.raises(PartnerRewardError):
+        partners.create_offer(_offer(brand_id, tiers=(tier,)), actor_id=1)
 
 
 def test_21vek_vitamin_d_offer_stays_active_and_preserves_later_edits(tmp_path) -> None:

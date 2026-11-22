@@ -247,6 +247,17 @@ def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
     draft_click(flow, "form_channel:any")
     draft_click(flow, "form_field:value")
     send(flow, "5")
+    optional = draft_click(flow, "form_more")
+    assert [button.text for button in all_buttons(optional)].count("Лимиты") == 1
+    draft_click(flow, "form_field:per_transaction_cap")
+    send(flow, "5,5")
+    assert service.draft(10).data["values"]["per_transaction_cap"] == "5.5"
+    draft_click(flow, "form_field:per_transaction_cap")
+    send(flow, "-")
+    assert "per_transaction_cap" not in service.draft(10).data["values"]
+    draft_click(flow, "form_field:per_transaction_cap")
+    limit = "До 15 BYN в месяц, из них до 5 BYN за мобильную связь"
+    send(flow, limit)
     draft_click(flow, "form_save")
 
     proposal = service.own_proposals(10)[0]
@@ -255,6 +266,14 @@ def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
         "additional",
         "points",
     )
+    assert proposal.payload["per_transaction_cap"] == limit
+    review = click(flow, f"q:{proposal.id}:{proposal.version}:claim", 2)
+    assert f"Лимиты — {limit}" in review.effective_message.reply_text.await_args.args[0]
+    current = service.proposal(2, proposal.id)
+    click(flow, f"q:{proposal.id}:{current.version}:approve", 2)
+    (offer,) = partners.list_offers(brand_id)
+    assert offer.tiers[0].limit_note == limit
+    assert offer.tiers[0].per_transaction_cap is None
 
 
 def test_partner_editor_lists_only_cards_with_explicit_policy(flow):
@@ -305,7 +324,11 @@ def test_partner_editor_recovers_cached_buttons_in_the_same_message(flow):
             "any",
             "total",
             "cash",
-            (PartnerTierInput(Decimal("2.5"), min_purchase=Decimal(10)),),
+            (
+                PartnerTierInput(
+                    Decimal("2.5"), min_purchase=Decimal(10), limit_note="До 15 BYN в месяц"
+                ),
+            ),
             source_url="https://example.test/shop",
         ),
         actor_id=1,
@@ -347,6 +370,7 @@ def test_partner_editor_recovers_cached_buttons_in_the_same_message(flow):
     send(flow, "12", 2)
     draft_click(flow, "form_save", 2)
     assert partners.get_offer(offer.id).tiers[0].min_purchase == Decimal(12)
+    assert partners.get_offer(offer.id).tiers[0].limit_note == "До 15 BYN в месяц"
 
 
 @pytest.mark.parametrize(
