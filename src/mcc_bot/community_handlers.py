@@ -15,9 +15,15 @@ from datetime import date
 from decimal import Decimal
 from html import escape
 from typing import Any
-from urllib.parse import urlparse
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageEntity,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
@@ -34,6 +40,7 @@ from .community import (
     Proposal,
     StaleAction,
     clean_text,
+    normalize_source_url,
     partner_limit_parts,
     partner_limit_value,
 )
@@ -1289,8 +1296,8 @@ async def _render_draft(
             rows = [[("🔗 Указать официальную ссылку", "source")]]
     elif stage == "source_url":
         text = (
-            "Пришлите полную официальную ссылку на страницу с этими данными "
-            "(http:// или https://). Вместо ссылки можно сразу прислать скриншот фотографией."
+            "Пришлите одну ссылку на страницу с этими данными. "
+            "Можно также отправить скриншот фотографией."
         )
         rows = [[("📷 Приложить скриншот", "source_screenshot")]]
     elif stage == "note":
@@ -2727,7 +2734,7 @@ def _form_prompt(key: str) -> str:
             "Чтобы очистить, отправьте «-»."
         ),
         "excluded_mccs": "Отправьте MCC через запятую или «-».",
-        "source_url": "Отправьте полную ссылку http:// или https:// либо «-».",
+        "source_url": "Пришлите одну ссылку на источник. Чтобы убрать ссылку, отправьте «-».",
         "screenshot": "Пришлите скриншот фотографией Telegram.",
         "card_id": "Выберите карту кнопкой ниже.",
         "channel": "Выберите вариант кнопкой ниже.",
@@ -3240,10 +3247,8 @@ def _consume_form_text(
         if text == "-":
             values.pop(field, None)
         else:
-            parsed = urlparse(text)
-            if len(text) > 2048 or parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise CommunityError("Укажите полную ссылку с http:// или https://.")
-            values[field] = text
+            maximum = 1024 if data["form"] == ERIP_KIND else 2048
+            values[field] = normalize_source_url(text, maximum=maximum)
     elif field in {"starts_on", "ends_on"}:
         if text == "-":
             values.pop(field, None)
@@ -3322,6 +3327,16 @@ async def _request_helper_role(update: Update, service: CommunityService, user_i
         "подтверждения владельцем или суперадминистратором.",
         keyboard_for(service, user_id),
     )
+
+
+def _source_input(message: Message, text: str) -> str:
+    if not getattr(message, "entities", None):
+        return text
+    entities = message.parse_entities(types=[MessageEntity.URL, MessageEntity.TEXT_LINK])
+    urls = {entity.url or label for entity, label in entities.items()}
+    if len(urls) > 1:
+        raise CommunityError("Пришлите одну ссылку на источник.")
+    return next(iter(urls), text)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -3409,6 +3424,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
             if draft is None:
                 return False
             if draft.stage == "form_editor":
+                if draft.data.get("active_field") == "source_url":
+                    text = _source_input(message, text)
                 draft = _consume_form_text(service, draft, text, getattr(update, "update_id", None))
                 await _render_form_editor(update, context, service, draft)
                 return True
@@ -3426,6 +3443,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
                 service.cancel_draft(user_id, draft.id, draft.version)
                 await _say(update, "Редактор закрыт.", keyboard_for(service, user_id))
                 return False
+            if draft.stage in {"source_url", "partner_source"}:
+                text = _source_input(message, text)
             draft = _consume_text(service, draft, text, getattr(update, "update_id", None))
             await _render_draft(update, service, draft, context=context)
     except _ButtonOnlyInput as exc:
@@ -3599,12 +3618,7 @@ def _consume_text(
         _sync_mcc_payload(data)
         stage = "preview"
     elif stage in {"source_url", "partner_source"}:
-        if len(text) > 2048:
-            raise CommunityError("Официальная ссылка слишком длинная.")
-        parsed = urlparse(text)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise CommunityError("Укажите полную официальную ссылку с http:// или https://.")
-        data["source_url"] = text
+        data["source_url"] = normalize_source_url(text)
         data["dirty"] = True
         if data.get("flow_kind") == "partner":
             _sync_partner_payload(data)

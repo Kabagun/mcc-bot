@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 
@@ -220,7 +220,8 @@ def test_helper_uses_same_editor_and_publishes_directly(flow):
     assert flow.application.bot_data["community"].stores.search("Trusted editor shop").matches
 
 
-def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
+@pytest.mark.parametrize("source_url", [None, "https://bank.example/promotion"])
+def test_partner_editor_uses_static_card_policy_and_optional_source(flow, source_url):
     service = flow.application.bot_data["community"]
     partners = PartnerRepository(service.stores)
     partners.initialize()
@@ -258,10 +259,13 @@ def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
     draft_click(flow, "form_field:per_transaction_cap")
     limit = "До 15 BYN в месяц, из них до 5 BYN за мобильную связь"
     send(flow, limit)
+    if source_url:
+        draft_click(flow, "form_field:source_url")
+        send(flow, source_url)
     draft_click(flow, "form_save")
 
     proposal = service.own_proposals(10)[0]
-    assert "source_url" not in proposal.payload
+    assert proposal.payload.get("source_url") == source_url
     assert (proposal.payload["mode"], proposal.payload["reward_kind"]) == (
         "additional",
         "points",
@@ -274,6 +278,7 @@ def test_partner_editor_uses_static_card_policy_and_optional_source(flow):
     (offer,) = partners.list_offers(brand_id)
     assert offer.tiers[0].limit_note == limit
     assert offer.tiers[0].per_transaction_cap is None
+    assert offer.source_url == (source_url or "")
 
 
 def test_partner_editor_lists_only_cards_with_explicit_policy(flow):
@@ -371,6 +376,77 @@ def test_partner_editor_recovers_cached_buttons_in_the_same_message(flow):
     draft_click(flow, "form_save", 2)
     assert partners.get_offer(offer.id).tiers[0].min_purchase == Decimal(12)
     assert partners.get_offer(offer.id).tiers[0].limit_note == "До 15 BYN в месяц"
+
+
+@pytest.mark.parametrize("source_input", ["plain", "domain", "text_link", "url", "clear"])
+def test_helper_can_change_only_the_partnership_source(flow, source_input):
+    service = flow.application.bot_data["community"]
+    partners = PartnerRepository(service.stores)
+    partners.initialize()
+    card = SimpleNamespace(
+        id="card-a",
+        name="Карта A",
+        partner_policy=SimpleNamespace(mode="total", reward_kind="cash"),
+        partner_policy_explicit=True,
+    )
+    service.partners = partners
+    service.catalog = SimpleNamespace(cards=(card,))
+    flow.application.bot_data.update(
+        catalog=service.catalog, form_flow_v2=FormFlowRollout(all_users=True)
+    )
+    brand = service.stores.brand_for_merchant(merchant(flow, "Partner shop"))
+    offer = partners.create_offer(
+        PartnerOfferInput(
+            brand.id,
+            card.id,
+            "online",
+            "total",
+            "cash",
+            (PartnerTierInput(Decimal(5)),),
+            source_url="https://bank.example/old-terms",
+        ),
+        actor_id=1,
+    )
+    click(flow, f"edit:{brand.id}", 2)
+    draft_click(flow, "menu_more", 2)
+    draft_click(flow, "menu_partner_edit:0", 2)
+    draft_click(flow, "form_more", 2)
+    draft_click(flow, "form_field:source_url", 2)
+
+    wanted = "https://bank.example/new-terms?offer=5&p=1"
+    if source_input in {"text_link", "url"}:
+        label = "Условия акции" if source_input == "text_link" else wanted
+        event = update(2, text=f"📎  {label}\nПодробнее о партнёрстве")
+        entity = {"type": source_input, "offset": 4, "length": len(label)}
+        if source_input == "text_link":
+            entity["url"] = wanted
+        telegram_message = Message.de_json(
+            {
+                "message_id": 1,
+                "date": 0,
+                "chat": {"id": 2, "type": "private"},
+                "text": event.effective_message.text,
+                "entities": [entity],
+            },
+            None,
+        )
+        event.effective_message.entities = telegram_message.entities
+        event.effective_message.parse_entities = telegram_message.parse_entities
+        asyncio.run(handle_text(event, flow))
+    elif source_input == "clear":
+        wanted = ""
+        send(flow, "-", 2)
+    else:
+        if source_input == "domain":
+            send(flow, "ftp://bank.example/new-terms", 2)
+            assert service.draft(2).data["active_field"] == "source_url"
+        send(flow, wanted if source_input == "plain" else wanted.removeprefix("https://"), 2)
+    assert service.draft(2).data["active_field"] is None
+
+    saved = draft_click(flow, "form_save", 2)
+    assert "Изменения сохранены" in saved.effective_message.reply_text.await_args.args[0]
+    assert service.draft(2) is None
+    assert partners.get_offer(offer.id).source_url == wanted
 
 
 @pytest.mark.parametrize(

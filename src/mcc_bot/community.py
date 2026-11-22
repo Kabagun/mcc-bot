@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from .descriptions import DescriptionCatalog
 from .erip import KIND as ERIP_KIND
@@ -151,6 +151,35 @@ def clean_text(value: str, *, maximum: int = MAX_COMMENT) -> str:
     if not value or len(value) > maximum or any(ord(ch) < 32 and ch != "\n" for ch in value):
         raise CommunityError(f"Введите текст длиной от 1 до {maximum} символов.")
     return value
+
+
+def normalize_source_url(value: str, *, maximum: int = 2048) -> str:
+    """Validate a single web link, using HTTPS for a bare domain."""
+
+    url = value.strip()
+    has_scheme = re.match(r"[a-z][a-z0-9+.-]*://", url, re.IGNORECASE) is not None
+    if not has_scheme:
+        url = "https://" + url
+    if len(url) > maximum:
+        raise CommunityError(f"Ссылка на источник — до {maximum} символов.")
+    try:
+        if any(ch.isspace() or ord(ch) < 32 or ch in "<>\\\x7f" for ch in url):
+            raise ValueError
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.port == 0
+            or (not has_scheme and "." not in host)
+        ):
+            raise ValueError
+    except ValueError:
+        raise CommunityError(
+            "Пришлите одну ссылку на источник, например https://bank.by."
+        ) from None
+    return url
 
 
 def partner_limit_parts(value: Any) -> tuple[Decimal | None, str]:
@@ -1267,16 +1296,9 @@ class CommunityService:
                         raise CommunityError("Поле «Где находится» содержит недопустимые символы.")
                     result[key] = value or None
             elif key == "source_url":
-                if not isinstance(value, str) or len(value) > 2048:
-                    raise CommunityError("Официальная ссылка слишком длинная.")
-                value = value.strip()
-                if value:
-                    parsed = urlparse(value)
-                    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                        raise CommunityError(
-                            "Укажите полную официальную ссылку с http:// или https://."
-                        )
-                result[key] = value
+                if not isinstance(value, str):
+                    raise CommunityError("Пришлите ссылку на источник текстом.")
+                result[key] = normalize_source_url(value) if value.strip() else ""
             elif kind == "card_partnership" and key == "card_id":
                 result[key] = clean_text(value, maximum=160)
             elif kind == "card_partnership" and key == "mode":
@@ -1414,11 +1436,13 @@ class CommunityService:
 
     @staticmethod
     def _fingerprint(kind: str, payload: dict[str, Any]) -> str:
-        """Return a stable exact-effect fingerprint; sources/comments are not identity."""
+        """Return a stable fingerprint of the proposed change."""
 
         values = {
             key: value for key, value in payload.items() if key != "source_url" or kind == ERIP_KIND
         }
+        if kind == "partner_save" and "offer_id" in payload:
+            values["source_url"] = payload.get("source_url", "")
         if "name" in values:
             values["name"] = normalize_store_name(values["name"])
         if "aliases" in values:
@@ -1575,9 +1599,12 @@ class CommunityService:
             offer = self.partners.get_offer(
                 payload["offer_id"], include_archived=True, connection=conn
             )
-            if offer and self._partner_effect(
-                offer, connection=conn
-            ) == self._partner_effect_payload(payload):
+            if (
+                offer
+                and offer.source_url == payload.get("source_url", "")
+                and self._partner_effect(offer, connection=conn)
+                == self._partner_effect_payload(payload)
+            ):
                 raise CommunityError("Партнёрство уже подтверждено без изменений.")
 
     @staticmethod
