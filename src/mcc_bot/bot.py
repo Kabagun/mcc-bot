@@ -83,7 +83,9 @@ async def _configure_bot_commands(application: Application) -> None:
             [BotCommand(command="start", description="Начало и меню")]
         )
         await application.bot.set_my_name("Какой картой?")
-        await application.bot.set_my_short_description("Подскажет лучшую карту по магазину или MCC.")
+        await application.bot.set_my_short_description(
+            "Подскажет лучшую карту по магазину или MCC."
+        )
     except RetryAfter:
         LOGGER.warning("Telegram limited bot profile changes. Continuing startup.")
 
