@@ -208,6 +208,7 @@ async def _cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     service = context.application.bot_data["community"]
     service.requeue_expired_clarifications()
     service.expire_media()
+    service.helper_activity.prune()
 
 
 def install_jobs(application: Application) -> None:

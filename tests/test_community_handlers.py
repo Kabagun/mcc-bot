@@ -28,6 +28,7 @@ from mcc_bot.community_handlers import (
     MANAGE_ACCESS,
     MANAGE_DIGEST_OFF,
     MANAGE_DIGEST_ON,
+    MANAGE_HELPER_ACTIVITY,
     MANAGE_HISTORY,
     MANAGE_ROLES,
     QUEUE,
@@ -950,6 +951,7 @@ def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
         MANAGE_HISTORY,
         MANAGE_DIGEST_ON,
         MANAGE_ROLES,
+        MANAGE_HELPER_ACTIVITY,
         MANAGE_ACCESS,
         "🚫 Заявки на разблокировку",
     ]
@@ -968,6 +970,43 @@ def test_management_is_inline_and_never_replaces_the_persistent_menu(flow):
         FEEDBACK,
         GUIDE,
     ]
+
+
+def test_helper_activity_filters_out_old_reminder_state_and_only_opens_a_candidate(flow):
+    service = flow.application.bot_data["community"]
+    registry = flow.application.bot_data["user_registry"]
+    registry.remember(2)
+    service.set_role(1, 3, True)
+    service.refresh_role_profile(2, "fixture_candidate", "Candidate")
+    service.refresh_role_profile(3, "fixture_legacy", "Legacy")
+    service.set_digest(2, False)
+    service.set_digest(3, False)
+    with service.stores.transaction() as conn:
+        conn.execute("UPDATE community_role_events SET created_at=1")
+        conn.execute("UPDATE community_roles SET digest_choice_recorded_at=NULL WHERE user_id=3")
+
+    for user_id in (2, 3, 10):
+        asyncio.run(lookup_text(update(user_id, text="ЕРИП"), flow))
+    send(flow, GUIDE, 2)
+
+    report = click(flow, "helper_activity:all:0", 1)
+    text = report.effective_message.reply_text.await_args.args[0]
+    assert "@fixture_candidate" in text
+    assert "@fixture_legacy" in text
+    assert text.count("Поиск — 1 (1 дн.)") == 2
+    assert "выбор не подтверждён" in text
+    unauthorized = click(flow, "helper_activity:all:0", 2)
+    assert "доступна владельцу" in unauthorized.effective_message.reply_text.await_args.args[0]
+
+    shortlist = click(flow, "helper_activity:candidates:0", 1)
+    text = shortlist.effective_message.reply_text.await_args.args[0]
+    assert "@fixture_candidate" in text
+    assert "@fixture_legacy" not in text
+    result = click(flow, "helper_activity:candidates:random", 1)
+    assert "Кандидат для проверки" in result.effective_message.reply_text.await_args.args[0]
+    assert any(button.text == "🚫 Забанить" for button in all_buttons(result))
+    assert registry.blocked_chat(2) is None
+    assert service.role(2) == "admin"
 
 
 def test_management_section_callbacks_edit_the_current_message(flow):

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date
@@ -63,6 +64,7 @@ MANAGE_HISTORY = "📜 История изменений"
 MANAGE_DIGEST_ON = "🔕 Включить напоминания в 20:00"
 MANAGE_DIGEST_OFF = "🔔 Отключить напоминания"
 MANAGE_ROLES = "👥 Помощники и заявки"
+MANAGE_HELPER_ACTIVITY = "📊 Активность помощников"
 MANAGE_ACCESS = "🚫 Бан по нику или ID"
 MAIN_MENU = "⬅️ Главное меню"
 CANCEL_DRAFT = "❌ Отменить"
@@ -71,6 +73,8 @@ HIDE_OPTIONAL_FIELDS = "Скрыть необязательные поля"
 HISTORY_PAGE_SIZE = 10
 FACT_PAGE_SIZE = 10
 MAX_HISTORY_OFFSET = 1000000
+HELPER_ACTIVITY_DAYS = 30
+HELPER_ACTIVITY_PAGE_SIZE = 6
 KINDS = {
     "add_merchant": "Добавить магазин, способ оплаты и MCC",
     "add_mcc": "Добавить MCC",
@@ -291,6 +295,7 @@ def management_keyboard_for(service: CommunityService, user_id: int) -> InlineKe
     )
     if service.role(user_id) in {"owner", "superadmin"}:
         rows.append([(MANAGE_ROLES, "roles:0")])
+        rows.append([(MANAGE_HELPER_ACTIVITY, "helper_activity:all:0")])
         rows.append([(MANAGE_ACCESS, "access_lookup")])
         return InlineKeyboardMarkup(
             [
@@ -1768,6 +1773,106 @@ async def _management(update: Update, service: CommunityService, user_id: int) -
     await _say_inline(update, "Управление", management_keyboard_for(service, user_id))
 
 
+async def _helper_activity_view(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    user_id: int,
+    parts: list[str],
+) -> None:
+    if len(parts) != 3 or parts[1] not in {"all", "candidates"}:
+        raise CommunityError("Откройте статистику из меню управления.")
+    mode, page = parts[1:]
+    now = time.time()
+    try:
+        people = service.helper_activity.list_activity(
+            user_id, owner_id=service.owner_id, days=HELPER_ACTIVITY_DAYS, now=now
+        )
+    except PermissionError as exc:
+        raise CommunityError("Статистика доступна владельцу и суперадминистраторам.") from exc
+
+    if mode == "candidates":
+        registry = context.application.bot_data["user_registry"]
+        cutoff = now - HELPER_ACTIVITY_DAYS * 86400
+        people = tuple(
+            person
+            for person in people
+            if person.role == "admin"
+            and person.reminder_state == "disabled"
+            and person.role_since is not None
+            and person.role_since <= cutoff
+            and person.lookups > 0
+            and person.contributions == person.reviewed == person.clarifications == 0
+            and registry.blocked_chat(person.user_id) is None
+            and service.can_manage_access(user_id, person.user_id)
+        )
+    if page == "random" and mode == "candidates" and people:
+        target_id = secrets.choice(people).user_id
+        candidate = next(
+            (item for item in service.role_candidates(user_id) if item["user_id"] == target_id),
+            None,
+        )
+        if candidate is None or not candidate["active"] or candidate["role"] != "admin":
+            raise StaleAction("Список изменился. Откройте его заново.")
+        text, markup = _role_card(
+            context, candidate, notice="Кандидат для проверки", back="helper_activity:candidates:0"
+        )
+        await _say_inline(update, text, markup)
+        return
+
+    size = HELPER_ACTIVITY_PAGE_SIZE
+    offset = min(
+        _history_offset(page) if page != "random" else 0, max(0, (len(people) - 1) // size) * size
+    )
+    lines = [f"📊 Активность помощников · {HELPER_ACTIVITY_DAYS} дней"]
+    if mode == "candidates":
+        lines.append(
+            "Пользовались поиском, отключили напоминания и не вносили вклад за этот период."
+        )
+    else:
+        lines.append("Поиск и уточнения учитываются с запуска статистики.")
+    reminders = {
+        "enabled": "включены",
+        "disabled": "выключены",
+        "legacy_disabled": "выключены, выбор не подтверждён",
+        "unanswered": "выбор не сделан",
+    }
+    for person in people[offset : offset + size]:
+        identity = _role_identity(
+            {
+                "username": person.username,
+                "first_name": person.first_name,
+                "last_name": person.last_name,
+            },
+            compact=True,
+        )
+        role = "Суперадмин" if person.role == "superadmin" else "Помощник"
+        lines.append(
+            f"{identity} · {role}\n"
+            f"Поиск — {person.lookups} ({person.lookup_days} дн.)\n"
+            f"Правки — {person.contributions} (принято {person.published}) · "
+            f"Решения — {person.reviewed} · Уточнения — {person.clarifications}\n"
+            f"Напоминания — {reminders[person.reminder_state]}"
+        )
+    if not people:
+        lines.append("Подходящих помощников пока нет.")
+
+    arrows = []
+    if offset:
+        arrows.append(("←", f"helper_activity:{mode}:{max(0, offset - size)}"))
+    if len(people) > offset + size:
+        arrows.append(("→", f"helper_activity:{mode}:{offset + size}"))
+    rows = [arrows] if arrows else []
+    if mode == "all":
+        rows.append([("Без вклада и напоминаний", "helper_activity:candidates:0")])
+    else:
+        if people:
+            rows.append([("🎲 Случайный кандидат", "helper_activity:candidates:random")])
+        rows.append([("← Вся активность", "helper_activity:all:0")])
+    rows.append([("← К управлению", "manage")])
+    await _say_inline(update, "\n\n".join(lines), _keyboard(rows))
+
+
 async def _add_menu(update: Update, service: CommunityService, user_id: int) -> None:
     """Show the one role-aware entry point for all supported contribution kinds."""
 
@@ -1824,6 +1929,7 @@ def _role_card(
     candidate: dict[str, Any],
     *,
     notice: str = "",
+    back: str = "roles:0",
 ) -> tuple[str, InlineKeyboardMarkup]:
     target_id, epoch = candidate["user_id"], candidate["epoch"]
     if not candidate["active"]:
@@ -1852,7 +1958,7 @@ def _role_card(
         text += f"\n{_access_status(access)}."
         if candidate["can_manage"]:
             rows.append(_access_button(access, "r"))
-    rows.append([("⬅️ К списку", "roles:0")])
+    rows.append([("⬅️ К списку", back)])
     return (f"{notice}\n\n{text}" if notice else text), _keyboard(rows)
 
 
@@ -4374,6 +4480,8 @@ async def _dispatch_callback(
         await _review_callback(update, context, service, user_id, parts[1:])
     elif action == "manage":
         await _management(update, service, user_id)
+    elif action == "helper_activity":
+        await _helper_activity_view(update, context, service, user_id, parts)
     elif action.startswith("access_"):
         await _access_callback(update, context, service, user_id, parts)
     elif action == "recent":

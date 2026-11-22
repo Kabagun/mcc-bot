@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import sqlite3
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -214,10 +215,23 @@ async def lookup_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     value = message.text.strip()
     if not value:
         await unknown_command(update, context)
-    elif value.isascii() and value.isdecimal() and len(value) == 4:
+        return
+    if value.isascii() and value.isdecimal() and len(value) == 4:
         await _route_four_digit_text(update, context, value)
     else:
         await search_stores(update, context, value)
+    user = getattr(update, "effective_user", None)
+    community: CommunityService | None = context.application.bot_data.get("community")
+    if (
+        user is not None
+        and community is not None
+        and user.id != community.owner_id
+        and len(value) <= 180
+    ):
+        try:
+            community.helper_activity.record_lookup(user.id)
+        except sqlite3.Error:
+            LOGGER.warning("Could not update the helper search counter")
 
 
 def _exact_brand_matches(context: ContextTypes.DEFAULT_TYPE, query: str) -> tuple[Brand, ...]:

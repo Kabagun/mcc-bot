@@ -27,6 +27,7 @@ from .descriptions import DescriptionCatalog
 from .erip import KIND as ERIP_KIND
 from .erip import EripError, EripRepository
 from .erip import validate as validate_erip
+from .helper_activity import HelperActivityRepository
 from .stores import MAX_MCC_NOTE_LENGTH, StoreRepository, normalize_location, normalize_store_name
 
 if TYPE_CHECKING:
@@ -201,6 +202,7 @@ class CommunityService:
         self.partners = partners
         self.catalog = catalog
         self.erip = EripRepository(stores)
+        self.helper_activity = HelperActivityRepository(stores)
         source = DescriptionCatalog.from_file().labels if allowed_mccs is None else allowed_mccs
         self.allowed_mccs = frozenset(source)
 
@@ -215,6 +217,7 @@ class CommunityService:
         self.stores.initialize()
         with self.stores.transaction() as conn:
             self.erip.initialize(conn)
+            self.helper_activity.initialize(conn)
             for statement in (
                 """CREATE TABLE IF NOT EXISTS community_roles (
                     user_id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0,
@@ -286,6 +289,10 @@ class CommunityService:
                 # Existing subscribers already consented. A legacy zero cannot
                 # distinguish an explicit refusal from a never-displayed choice.
                 conn.execute("UPDATE community_roles SET digest_choice_made=1 WHERE digest=1")
+            if "digest_choice_recorded_at" not in role_columns:
+                conn.execute(
+                    "ALTER TABLE community_roles ADD COLUMN digest_choice_recorded_at REAL"
+                )
             role_event_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(community_role_events)")
             }
@@ -520,7 +527,12 @@ class CommunityService:
                 """INSERT INTO community_roles(user_id,active,epoch,digest,role)
                    VALUES(?,?,?,0,?)
                    ON CONFLICT(user_id) DO UPDATE SET active=excluded.active,
-                   epoch=excluded.epoch,digest=0,role=excluded.role""",
+                   epoch=excluded.epoch,role=excluded.role,
+                   digest_choice_made=CASE WHEN community_roles.digest=1
+                                           THEN 0 ELSE community_roles.digest_choice_made END,
+                   digest_choice_recorded_at=CASE WHEN community_roles.digest=1
+                       THEN NULL ELSE community_roles.digest_choice_recorded_at END,
+                   digest=0""",
                 (user_id, int(active), epoch + 1, role),
             )
             conn.execute(
@@ -719,10 +731,12 @@ class CommunityService:
             if expected_epoch is not None and self._role(conn, user_id)[1] != expected_epoch:
                 raise StaleAction("Доступ изменился. Откройте управление заново.")
             conn.execute(
-                """INSERT INTO community_roles(user_id,active,epoch,digest,digest_choice_made)
-                   VALUES(?,0,0,?,1) ON CONFLICT(user_id) DO UPDATE SET
-                   digest=excluded.digest,digest_choice_made=1""",
-                (user_id, int(enabled)),
+                """INSERT INTO community_roles(
+                   user_id,active,epoch,digest,digest_choice_made,digest_choice_recorded_at)
+                   VALUES(?,0,0,?,1,?) ON CONFLICT(user_id) DO UPDATE SET
+                   digest=excluded.digest,digest_choice_made=1,
+                   digest_choice_recorded_at=excluded.digest_choice_recorded_at""",
+                (user_id, int(enabled), time.time()),
             )
 
     def _discard_draft(self, conn: sqlite3.Connection, user_id: int) -> None:
@@ -2441,6 +2455,8 @@ class CommunityService:
             )
             if decision in FINAL_STATES:
                 self._expire_proposal_media(conn, proposal_id, now)
+            elif actor_id != self.owner_id:
+                self.helper_activity.record_clarification(conn, actor_id, now=now)
             return self._proposal(conn, proposal_id)
 
     def edit_review_payload(
