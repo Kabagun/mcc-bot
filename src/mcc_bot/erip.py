@@ -128,12 +128,20 @@ def reward_text(values: dict[str, Any]) -> str:
     return f"{values['rate'].replace('.', ',')}% {unit}"
 
 
+def is_legacy_bnb_rule(values: dict[str, Any]) -> bool:
+    return values["issuer"] == "БНБ-Банк" and values["card"] in {"1-2-3", "БНБ 123"}
+
+
 def card_title(values: dict[str, Any]) -> str:
+    if is_legacy_bnb_rule(values):
+        return "БНБ 123"
     return f"{values['card']} · {values['issuer']}"
 
 
 def describe(values: dict[str, Any], *, include_source: bool = False) -> str:
     lines = [card_title(values), "", reward_text(values), values["payment_channel"]]
+    if is_legacy_bnb_rule(values):
+        lines.append("Действует до перехода на «Взаимно!».")
     if values["limits"]:
         lines.append(values["limits"])
     if values["exclusions"]:

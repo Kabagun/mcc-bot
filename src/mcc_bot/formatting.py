@@ -319,6 +319,14 @@ def _match_header(
 def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> str:
     marker, name = match.card.emoji, match.card.name
     reward = format_moneyback(match)
+    if match.vzaimno_rates:
+        choices = " / ".join(
+            f"{_format_decimal(option.value)}% баллами за «{option.name}»"
+            for option in match.vzaimno_rates
+        )
+        reward = f"{choices} · если категория выбрана в «Искре»"
+    elif match.card.id == "bnb_1_2_3":
+        reward += " · до перехода на «Взаимно!»"
     if html:
         marker, name, reward = escape(marker), f"<b>{escape(name)}</b>", escape(reward)
     summary = f"{index}. {marker} {name} — {reward}"
@@ -329,6 +337,8 @@ def _match_block(match: CardMatch, index: int, *, details: bool, html: bool) -> 
         for line in match.context_lines
         if (compacted := format_cashback_context_line(line))
     ]
+    if len(match.vzaimno_rates) > 1:
+        context_lines.append("Из выбранных категорий применяется самая высокая ставка.")
     if html:
         context_lines = [escape(line) for line in context_lines]
     summary_lines = [summary, *(f"   {line}" for line in context_lines)]

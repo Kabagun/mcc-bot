@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+
+from .bnb_vzaimno import BNB_VZAIMNO_CARD_ID, VzaimnoRate, rate_options
 
 MCC_PATTERN = re.compile(r"(?:mcc[\s:=-]*)?([0-9]{4})", re.IGNORECASE)
 SUPPORTED_UNITS = frozenset({"percent", "currency"})
@@ -229,6 +232,7 @@ class CardMatch:
     mcc: str
     components: tuple[RewardComponent, ...]
     context_lines: tuple[str, ...] = ()
+    vzaimno_rates: tuple[VzaimnoRate, ...] = ()
 
     @property
     def gross_percent(self) -> Decimal:
@@ -824,12 +828,21 @@ class CardCatalog:
         _validate_reward_dimensions((*card_tuple, *disabled_cards))
         return cls(cards=card_tuple, disabled_cards=tuple(disabled_cards))
 
-    def lookup(self, raw_mcc: str) -> tuple[CardMatch, ...]:
+    def lookup(self, raw_mcc: str, *, on_date: date | None = None) -> tuple[CardMatch, ...]:
         """Return cards with at least one component, sorted by gross sum."""
 
         mcc = normalize_mcc(raw_mcc)
         matches: list[CardMatch] = []
         for card in self.cards:
+            if card.id == BNB_VZAIMNO_CARD_ID:
+                options = rate_options(mcc, on_date=on_date)
+                if options:
+                    program = card.reward_programs[0]
+                    best_rate = RewardComponent(
+                        program.id, program.kind, options[0].value, program.tax_exempt
+                    )
+                    matches.append(CardMatch(card, mcc, (best_rate,), vzaimno_rates=options))
+                continue
             components: list[RewardComponent] = []
             for program in card.reward_programs:
                 offer = _effective_program_offer(program, mcc)

@@ -407,6 +407,28 @@ def test_erip_group_cannot_open_a_correction_form(flow):
     assert service.draft(10) is None
 
 
+def test_erip_shows_separate_bnb_entries_with_a_conditional_points_rate(flow, monkeypatch):
+    service = flow.application.bot_data["community"]
+    service.catalog = SimpleNamespace(
+        cards=(SimpleNamespace(id="bnb_vzaimno", name="БНБ Взаимно!"),)
+    )
+    monkeypatch.setattr("mcc_bot.community_handlers.vzaimno_erip_rate", lambda: Decimal(2))
+    listed = click(flow, "erip_list")
+    labels = [button.text for button in all_buttons(listed)]
+    assert "БНБ 123 · 2%" in labels
+    assert "БНБ Взаимно! · 2% баллами" in labels
+
+    erip = click(flow, "erip_vzaimno", chat_type="group")
+    text = erip.effective_message.reply_text.await_args.args[0]
+    assert "2% баллами за платежи от 10 BYN" in text
+    assert "Выберите категорию «ЕРИП»" in text
+    assert "До 5 баллов" in text and "До 10 баллов" in text
+
+    monkeypatch.setattr("mcc_bot.community_handlers.vzaimno_erip_rate", lambda: None)
+    unknown = click(flow, "erip_vzaimno")
+    assert "2%" not in unknown.effective_message.reply_text.await_args.args[0]
+
+
 def test_erip_updates_use_the_shared_review_queue(flow):
     service = flow.application.bot_data["community"]
     rule = next(item for item in service.erip.list_rules() if item.values["card"] == "Бархат")

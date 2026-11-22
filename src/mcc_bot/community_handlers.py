@@ -22,6 +22,8 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
+from .bnb_vzaimno import BNB_VZAIMNO_CARD_ID
+from .bnb_vzaimno import erip_rate as vzaimno_erip_rate
 from .community import (
     MAX_LOCATION,
     MAX_MEDIA_BYTES,
@@ -453,6 +455,19 @@ async def show_erip_list(update: Update, service: CommunityService, page: int = 
         if rate != "0":
             label += f" · {rate}%"
         rows.append([(label, f"erip_card:{rule.id}")])
+    if page == 0:
+        card = next(
+            (
+                card
+                for card in getattr(service.catalog, "cards", ())
+                if getattr(card, "id", None) == BNB_VZAIMNO_CARD_ID
+            ),
+            None,
+        )
+        if card is not None:
+            rate = vzaimno_erip_rate()
+            label = f"{card.name} · {rate}% баллами" if rate is not None else card.name
+            rows.insert(0, [(label, "erip_vzaimno")])
     arrows = []
     if page:
         arrows.append(("←", f"erip_list:{page - 1}"))
@@ -497,6 +512,34 @@ async def _show_erip_card(update: Update, service: CommunityService, rule_id: in
     )
 
 
+async def _show_vzaimno_erip(update: Update) -> None:
+    rate = vzaimno_erip_rate()
+    reward = (
+        f"{rate}% баллами за платежи от 10 BYN."
+        if rate is not None
+        else "Ставка на месяц в «Искре»."
+    )
+    await _say_inline(
+        update,
+        "⚡ БНБ Взаимно! · ЕРИП\n\n"
+        f"{reward}\n"
+        "Выберите категорию «ЕРИП» и платите в «Искре».\n\n"
+        "Лимиты за месяц\n"
+        "• До 5 баллов за мобильную связь.\n"
+        "• До 10 баллов суммарно за коммунальные платежи и образование.",
+        InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Условия на сайте банка", url="https://bnb.by/o-lichnom/vzaimno/"
+                    )
+                ],
+                [InlineKeyboardButton("← К списку карт", callback_data="community:erip_list")],
+            ]
+        ),
+    )
+
+
 async def _erip_edit_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -507,11 +550,16 @@ async def _erip_edit_callback(
     action = parts[0]
     catalog_cards = getattr(context.application.bot_data.get("catalog"), "cards", ())
     if action == "erip_other" or parts == ["erip_edit"]:
-        known = {normalize_store_name(rule.values["card"]) for rule in service.erip.list_rules()}
+        known = {
+            normalize_store_name(name)
+            for rule in service.erip.list_rules()
+            for name in (rule.values["card"], erip_card_title(rule.values))
+        }
         candidates = [
             (index, card.name)
             for index, card in enumerate(catalog_cards)
-            if normalize_store_name(card.name) not in known
+            if getattr(card, "id", None) != BNB_VZAIMNO_CARD_ID
+            and normalize_store_name(card.name) not in known
         ]
         size = 8
         raw_page = int(parts[1]) if len(parts) == 2 else 0
@@ -3752,7 +3800,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = query.data.split(":")[1:]
     action = parts[0]
     user_id = _identity(update)
-    if user_id is None and action not in {"erip_list", "erip_card"}:
+    if user_id is None and action not in {"erip_list", "erip_card", "erip_vzaimno"}:
         await _say(update, "Это действие доступно только в личном чате с ботом.")
         return
     service = _service(context)
@@ -3764,6 +3812,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await show_erip_list(update, service, int(parts[1]) if len(parts) == 2 else 0)
         elif action == "erip_card":
             await _show_erip_card(update, service, int(parts[1]))
+        elif action == "erip_vzaimno":
+            await _show_vzaimno_erip(update)
         elif user_id is not None:
             await _dispatch_callback(update, context, service, user_id, parts)
     except (CommunityError, ValueError, KeyError, IndexError) as exc:

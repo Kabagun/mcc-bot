@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
+from datetime import date
 from decimal import Decimal
 
 from mcc_bot.catalog import CardCatalog
@@ -182,6 +183,7 @@ STATUSKARTA_EXCLUSIONS = {
     "9402",
 }
 BNB_1_2_3_EXCLUSIONS = {
+    "4814",
     "4829",
     "4900",
     "6012",
@@ -315,14 +317,14 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 21
+    assert len(raw["cards"]) == 22
     assert (
         sum(
             len(program.get("offers", []))
             for card in raw["cards"]
             for program in card["reward_programs"]
         )
-        == 2830
+        == 2829
     )
     assert all(set(card) <= SUPPORTED_CARD_KEYS for card in raw["cards"])
     assert all(
@@ -381,6 +383,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
                     "kufar",
                     "belarusbank_shchodraya",
                     "alfa_bonus",
+                    "bnb_vzaimno",
                 }
                 else "cash"
             ),
@@ -403,7 +406,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
 
 def test_real_catalog_5411_has_expected_sorted_output() -> None:
-    matches = _catalog().lookup("5411")
+    matches = _catalog().lookup("5411", on_date=date(2026, 11, 22))
 
     assert [match.card.id for match in matches] == [
         "vitamin_d",
@@ -416,6 +419,7 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "paritet_combo",
         "dabrabyt_spraunaya",
         "bnb_1_2_3",
+        "bnb_vzaimno",
         "belveb_dvizhenie",
         "kufar",
         "mtkarta",
@@ -464,14 +468,16 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         "7. 💳 R-карта — 1,5% деньгами\n"
         "8. 💳 КОМБОкарта — 1,2% деньгами\n"
         "9. 💳 Спраўная — 1,11% деньгами\n"
-        "10. 💳 1-2-3 — 1% деньгами\n"
-        "11. 💳 Движение — 1% деньгами\n"
-        "12. 💳 Куфар — 1% баллами\n"
-        "13. 💳 МТкарта — 1% баллами\n"
-        "14. 💳 Социальная — 1% деньгами\n"
-        "15. 💳 Яркая — 1% деньгами\n"
-        "16. 💳 Cashalot — 0,5% деньгами\n"
-        "17. 💳 Статускарта — 0,5% деньгами"
+        "10. 💳 БНБ 123 — 1% деньгами · до перехода на «Взаимно!»\n"
+        "11. 💳 БНБ Взаимно! — 1% баллами за «Все покупки»"  # noqa: RUF001
+        " · если категория выбрана в «Искре»\n"
+        "12. 💳 Движение — 1% деньгами\n"
+        "13. 💳 Куфар — 1% баллами\n"
+        "14. 💳 МТкарта — 1% баллами\n"
+        "15. 💳 Социальная — 1% деньгами\n"
+        "16. 💳 Яркая — 1% деньгами\n"
+        "17. 💳 Cashalot — 0,5% деньгами\n"
+        "18. 💳 Статускарта — 0,5% деньгами"
     )
 
 
@@ -590,7 +596,8 @@ def test_real_catalog_new_cards_have_exact_program_shapes_and_no_duplicates() ->
 
     bnb_program = cards["bnb_1_2_3"]["reward_programs"][0]
     assert bnb_program["default"] == {"value": 1}
-    assert bnb_program["offers"] == [{"mcc": "4814", "value": 2}]
+    assert bnb_program.get("offers", []) == []
+    assert "4814" in bnb_program["excluded_mccs"]
     assert "6012" in bnb_program["excluded_mccs"]
 
     for card_id in (
@@ -623,7 +630,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
 
 
 def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> None:
-    matches = _catalog().lookup("5411")
+    matches = _catalog().lookup("5411", on_date=date(2026, 11, 22))
     rendered = format_matches("5411", matches, _descriptions(), html=True)
 
     assert rendered == (
@@ -637,14 +644,16 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
         "7. 💳 <b>R-карта</b> — 1,5% деньгами\n"
         "8. 💳 <b>КОМБОкарта</b> — 1,2% деньгами\n"
         "9. 💳 <b>Спраўная</b> — 1,11% деньгами\n"
-        "10. 💳 <b>1-2-3</b> — 1% деньгами\n"
-        "11. 💳 <b>Движение</b> — 1% деньгами\n"
-        "12. 💳 <b>Куфар</b> — 1% баллами\n"
-        "13. 💳 <b>МТкарта</b> — 1% баллами\n"
-        "14. 💳 <b>Социальная</b> — 1% деньгами\n"
-        "15. 💳 <b>Яркая</b> — 1% деньгами\n"
-        "16. 💳 <b>Cashalot</b> — 0,5% деньгами\n"
-        "17. 💳 <b>Статускарта</b> — 0,5% деньгами"
+        "10. 💳 <b>БНБ 123</b> — 1% деньгами · до перехода на «Взаимно!»\n"
+        "11. 💳 <b>БНБ Взаимно!</b> — 1% баллами за «Все покупки»"  # noqa: RUF001
+        " · если категория выбрана в «Искре»\n"
+        "12. 💳 <b>Движение</b> — 1% деньгами\n"
+        "13. 💳 <b>Куфар</b> — 1% баллами\n"
+        "14. 💳 <b>МТкарта</b> — 1% баллами\n"
+        "15. 💳 <b>Социальная</b> — 1% деньгами\n"
+        "16. 💳 <b>Яркая</b> — 1% деньгами\n"
+        "17. 💳 <b>Cashalot</b> — 0,5% деньгами\n"
+        "18. 💳 <b>Статускарта</b> — 0,5% деньгами"
     )
     pages = format_match_pages("5411", matches, _descriptions(), html=True)
     assert len(pages) == 1
@@ -747,7 +756,7 @@ def test_real_catalog_statuskarta_default_overrides_and_exclusions() -> None:
     assert all(match.card.id != "statusbank_statuskarta" for match in catalog.lookup("4812"))
 
 
-def test_real_catalog_bnb_1_2_3_default_mobile_rate_and_exclusions() -> None:
+def test_real_catalog_bnb_1_2_3_default_rate_and_exclusions() -> None:
     catalog = _catalog()
     grocery = next(match for match in catalog.lookup("5411") if match.card.id == "bnb_1_2_3")
 
@@ -755,9 +764,25 @@ def test_real_catalog_bnb_1_2_3_default_mobile_rate_and_exclusions() -> None:
     assert format_moneyback(grocery) == "1% деньгами"
     travel = next(match for match in catalog.lookup("4722") if match.card.id == "bnb_1_2_3")
     assert travel.gross_percent == Decimal("1")
-    mobile = next(match for match in catalog.lookup("4814") if match.card.id == "bnb_1_2_3")
-    assert mobile.gross_percent == Decimal("2")
+    assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("4814"))
     assert all(match.card.id != "bnb_1_2_3" for match in catalog.lookup("6012"))
+
+
+def test_real_catalog_vzaimno_offers_eligible_alternatives_without_stacking() -> None:
+    catalog = _catalog()
+    november = date(2026, 11, 22)
+    matches = catalog.lookup("5541", on_date=november)
+    (vzaimno,) = [match for match in matches if match.card.id == "bnb_vzaimno"]
+    assert vzaimno.gross_value == Decimal(5)
+    assert format_matches("5541", (vzaimno,), details=True).count("БНБ Взаимно!") == 1
+    rendered = format_matches("5541", (vzaimno,))
+    assert "5% баллами за «АЗС» / 1% баллами за «Все покупки»" in rendered  # noqa: RUF001
+    assert "если категория выбрана в «Искре»" in rendered
+    assert all(match.card.id != "bnb_vzaimno" for match in catalog.lookup("4814", on_date=november))
+    assert all(
+        match.card.id != "bnb_vzaimno"
+        for match in catalog.lookup("5541", on_date=date(2026, 12, 1))
+    )
 
 
 def test_real_catalog_combo_default_and_exclusions() -> None:
@@ -877,8 +902,9 @@ def test_real_catalog_uses_requested_display_metadata() -> None:
     assert cards["belgazprombank_cashalot"].issuer == "Белгазпромбанк"
     assert cards["statusbank_statuskarta"].name == "Статускарта"
     assert cards["statusbank_statuskarta"].issuer == "СтатусБанк"
-    assert cards["bnb_1_2_3"].name == "1-2-3"
+    assert cards["bnb_1_2_3"].name == "БНБ 123"
     assert cards["bnb_1_2_3"].issuer == "БНБ-Банк"
+    assert cards["bnb_vzaimno"].name == "БНБ Взаимно!"
     assert cards["dabrabyt_spraunaya"].name == "Спраўная"
     assert cards["dabrabyt_spraunaya"].issuer == "Банк Дабрабыт"
     assert cards["belarusbank_izi"].name == "Изи-карта"
@@ -960,7 +986,8 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     assert cashalot.maximum_reward is not None and cashalot.maximum_reward.unlimited
 
     rendered = format_limits(tuple(cards.values()))
-    assert "💳 1-2-3 — 💵 мин. платёж 10 BYN · макс. в месяц 123 BYN" in rendered
+    assert "💳 БНБ 123 — 💵 мин. платёж 10 BYN · макс. в месяц 123 BYN" in rendered
+    assert "💳 БНБ Взаимно! — ⭐ мин. платёж 10 BYN · макс. в месяц 123 баллов" in rendered
     assert "💳 Социальная — 💵 мин. платёж 0 BYN · макс. в месяц 100 BYN" in rendered
     assert (
         "💳 Visa Решение · оплата Apple Pay и др. — 💵 мин. платёж 0 BYN · макс. в месяц 30 BYN"
@@ -1073,7 +1100,7 @@ def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:
 
 def test_r_card_is_restored_but_visa_offer_stays_hidden() -> None:
     catalog = _catalog()
-    assert len(catalog.cards) == 20
+    assert len(catalog.cards) == 21
     assert {card.id for card in catalog.disabled_cards} == {"reshenie_visa_pay"}
     assert any(match.card.id == "reshenie_r_karta" for match in catalog.lookup("5411"))
     assert "R-карта" in format_limits(catalog.cards)

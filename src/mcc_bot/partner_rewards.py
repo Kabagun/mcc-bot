@@ -1244,7 +1244,7 @@ def resolve_store_matches(
     displayed component.
     """
 
-    base = {match.card.id: match for match in catalog.lookup(mcc)}
+    base = {match.card.id: match for match in catalog.lookup(mcc, on_date=on_date)}
     cards = {card.id: card for card in catalog.cards}
     relevant = {offer.card_id for offer in partners.list_offers(brand_id)} | {
         exclusion.card_id for exclusion in partners.list_exclusions(brand_id)
@@ -1294,12 +1294,16 @@ def resolve_store_matches(
             if offer_context:
                 context_lines.append(offer_context)
         if components:
+            resolved = tuple(components)
             results.append(
                 CardMatch(
                     card=card,
                     mcc=mcc,
-                    components=tuple(components),
+                    components=resolved,
                     context_lines=tuple(context_lines),
+                    vzaimno_rates=(
+                        match.vzaimno_rates if match and resolved == match.components else ()
+                    ),
                 )
             )
     results.sort(key=lambda item: (-item.gross_value, item.card.name.casefold(), item.card.id))

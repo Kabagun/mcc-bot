@@ -11884,7 +11884,7 @@
     },
     {
       "id": "bnb_1_2_3",
-      "name": "1-2-3",
+      "name": "БНБ 123",
       "issuer": "БНБ-Банк",
       "emoji": "💳",
       "partner_policy": {
@@ -11909,6 +11909,7 @@
             "value": 1
           },
           "excluded_mccs": [
+            "4814",
             "4900",
             "6012",
             "6028",
@@ -11935,13 +11936,29 @@
             "9311",
             "9399",
             "9402"
-          ],
-          "offers": [
-            {
-              "mcc": "4814",
-              "value": 2
-            }
           ]
+        }
+      ]
+    },
+    {
+      "id": "bnb_vzaimno",
+      "name": "БНБ Взаимно!",
+      "issuer": "БНБ-Банк",
+      "emoji": "💳",
+      "condition": {
+        "kind": "selected_category"
+      },
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "points"
+      },
+      "reward_programs": [
+        {
+          "id": "points",
+          "kind": "points",
+          "tax_exempt": false,
+          "minimum_payment": {"amount": 10, "currency": "BYN"},
+          "maximum_reward": {"amount": 123, "unit": "points"}
         }
       ]
     },
