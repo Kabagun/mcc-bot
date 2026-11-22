@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from .descriptions import DescriptionCatalog
+from .erip import KIND as ERIP_KIND
+from .erip import EripError, EripRepository
+from .erip import validate as validate_erip
 from .stores import MAX_MCC_NOTE_LENGTH, StoreRepository, normalize_location, normalize_store_name
 
 if TYPE_CHECKING:
@@ -40,7 +43,7 @@ FINAL_STATES = frozenset({"approved", "rejected", "cancelled"})
 MCC_KINDS = frozenset({"add_merchant", "add_mcc", "add_mcc_both", "replace_mcc"})
 PUBLIC_KINDS = MCC_KINDS | {"rename_merchant", "merge_merchant", "card_partnership"}
 FORM_KINDS = frozenset(
-    {"store_metadata", "mcc_save", "mcc_delete", "partner_save", "partner_delete"}
+    {"store_metadata", "mcc_save", "mcc_delete", "partner_save", "partner_delete", ERIP_KIND}
 )
 PUBLIC_KINDS = PUBLIC_KINDS | FORM_KINDS
 EDIT_KINDS = PUBLIC_KINDS | {
@@ -197,6 +200,7 @@ class CommunityService:
         self.owner_id = owner_id
         self.partners = partners
         self.catalog = catalog
+        self.erip = EripRepository(stores)
         source = DescriptionCatalog.from_file().labels if allowed_mccs is None else allowed_mccs
         self.allowed_mccs = frozenset(source)
 
@@ -210,6 +214,7 @@ class CommunityService:
 
         self.stores.initialize()
         with self.stores.transaction() as conn:
+            self.erip.initialize(conn)
             for statement in (
                 """CREATE TABLE IF NOT EXISTS community_roles (
                     user_id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0,
@@ -1040,6 +1045,11 @@ class CommunityService:
             return self._proposal(conn, proposal_id)
 
     def _validate_payload(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if kind == ERIP_KIND:
+            try:
+                return validate_erip(payload)
+            except EripError as error:
+                raise CommunityError(str(error)) from error
         schemas = {
             "add_merchant": (
                 {"name", "channel", "mcc"},
@@ -1352,7 +1362,9 @@ class CommunityService:
     def _fingerprint(kind: str, payload: dict[str, Any]) -> str:
         """Return a stable exact-effect fingerprint; sources/comments are not identity."""
 
-        values = {key: value for key, value in payload.items() if key != "source_url"}
+        values = {
+            key: value for key, value in payload.items() if key != "source_url" or kind == ERIP_KIND
+        }
         if "name" in values:
             values["name"] = normalize_store_name(values["name"])
         if "aliases" in values:
@@ -1393,6 +1405,12 @@ class CommunityService:
         if row:
             raise CommunityError("Точное такое предложение уже ожидает проверки.")
 
+        if kind == ERIP_KIND:
+            try:
+                self.erip.check(conn, payload)
+            except EripError as error:
+                raise CommunityError(str(error)) from error
+            return
         if kind in {"mcc_save", "partner_save"} and "name" in payload:
             needle = normalize_store_name(payload["name"])
             location = normalize_location(payload["location"]) if payload.get("location") else ""
@@ -1693,6 +1711,12 @@ class CommunityService:
     ) -> int:
         kind = proposal.kind
         payload = self._validate_payload(kind, proposal.payload)
+        if kind == ERIP_KIND:
+            self._require_admin(conn, actor_id)
+            try:
+                return self.erip.publish(conn, payload)
+            except EripError as error:
+                raise StaleAction(str(error)) from error
         if kind in FORM_KINDS:
             self._require_admin(conn, actor_id)
             if expected is not None and self._snapshot(conn, kind, payload) != expected:
@@ -2095,7 +2119,7 @@ class CommunityService:
             expected_kind = draft.data.get("form")
             if expected_kind == "store_create":
                 expected_kind = "mcc_save"
-            if kind != expected_kind or kind not in LOCKED_BRAND_KINDS:
+            if kind != expected_kind or kind not in LOCKED_BRAND_KINDS | {ERIP_KIND}:
                 raise StaleAction("Вид данных формы изменился. Откройте форму заново.")
             payload = self._validate_payload(kind, payload)
             protected = self._protect_draft_data(
@@ -2193,7 +2217,7 @@ class CommunityService:
         proposal = self._proposal(conn, proposal_id)
         # A response to clarification always returns to review, even if its
         # author received a role while their original proposal was pending.
-        if role != "user" and not original:
+        if role != "user" and not original and kind != ERIP_KIND:
             audit_id = self._publish(
                 conn, proposal, user_id, expected=protected_data.get("expected")
             )

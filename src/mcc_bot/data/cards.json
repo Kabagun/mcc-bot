@@ -13206,6 +13206,23 @@
         "mode": "additional",
         "reward_kind": "points"
       }
+    },
+    {
+      "id": "alfa_bonus",
+      "name": "Альфа-Бонус",
+      "issuer": "Альфа-Банк",
+      "emoji": "🔴",
+      "partner_policy": {
+        "mode": "total",
+        "reward_kind": "points"
+      },
+      "reward_programs": [
+        {
+          "id": "points",
+          "kind": "points",
+          "tax_exempt": true
+        }
+      ]
     }
   ]
 }

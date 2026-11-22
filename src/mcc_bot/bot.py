@@ -27,6 +27,7 @@ from telegram.ext import (
     filters,
 )
 
+from .alfa_bonus import alfa_bonus_categories
 from .catalog import CardCatalog, CatalogError, InvalidMccError, normalize_mcc
 from .community import CommunityService
 from .community_handlers import INFO, keyboard_for, show_menu
@@ -117,8 +118,11 @@ async def _lookup_and_reply(
         )
         return
     matches = catalog.lookup(normalized_mcc)
+    categories = alfa_bonus_categories(catalog.cards, normalized_mcc)
     try:
-        pages = format_match_pages(normalized_mcc, matches, descriptions, html=True)
+        pages = format_match_pages(
+            normalized_mcc, matches, descriptions, html=True, alfa_categories=categories
+        )
     except ValueError:
         await _reply(update, RESULT_TOO_LONG)
         return
@@ -126,7 +130,7 @@ async def _lookup_and_reply(
     if message is None:
         return
     for page_index, page in enumerate(pages):
-        if matches:
+        if matches or page.compact != page.expanded:
             await message.reply_text(
                 page.compact,
                 parse_mode=ParseMode.HTML,
@@ -165,18 +169,21 @@ async def toggle_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     mcc, raw_page, raw_details = payload.groups()
     page_index, details = int(raw_page), raw_details == "1"
     catalog: CardCatalog = context.application.bot_data["catalog"]
-    # There cannot be more non-empty pages than cards. Reject forged large indices
-    # before catalog lookup and formatting, then check the actual page count below.
+    # Each catalog entry contributes at most one result block. Reject forged large
+    # indices before catalog lookup, then check the actual page count below.
     if page_index >= len(catalog.cards):
         return
     descriptions: DescriptionCatalog = context.application.bot_data["descriptions"]
     if mcc not in descriptions:
         return
     matches = catalog.lookup(mcc)
-    if not matches:
+    categories = alfa_bonus_categories(catalog.cards, mcc)
+    if not matches and not categories:
         return
     try:
-        pages = format_match_pages(mcc, matches, descriptions, html=True)
+        pages = format_match_pages(
+            mcc, matches, descriptions, html=True, alfa_categories=categories
+        )
     except ValueError:
         text, keyboard = RESULT_TOO_LONG, None
     else:

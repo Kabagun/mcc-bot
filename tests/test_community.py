@@ -14,6 +14,7 @@ from mcc_bot.community import (
     CommunityService,
     StaleAction,
 )
+from mcc_bot.erip import KIND as ERIP_KIND
 from mcc_bot.partner_rewards import PartnerRepository
 from mcc_bot.stores import StoreRepository
 
@@ -41,6 +42,27 @@ def make_draft(service, user_id=10, *, kind="add_merchant", payload=None, media=
         draft.data,
         media=("secret-file-token", "unique-photo") if media else None,
     )
+
+
+def test_concurrent_erip_reviews_cannot_overwrite_a_more_recent_rule(community):
+    original = next(rule for rule in community.erip.list_rules() if rule.values["card"] == "Бархат")
+    proposals = []
+    for user_id, branch in ((10, "Тестовая ветка 1"), (11, "Тестовая ветка 2")):
+        values = {**original.edit_values(), "exclusions": [*original.values["exclusions"], branch]}
+        draft = make_draft(community, user_id, kind=ERIP_KIND, payload=values, media=False)
+        proposals.append(community.submit(user_id, draft.id, draft.version))
+    first, second = (
+        community.claim(actor, proposal.id, proposal.version)
+        for actor, proposal in zip((2, 3), proposals, strict=True)
+    )
+    community.review(2, first.id, first.version, "approved")
+    with pytest.raises(StaleAction, match="Условия ЕРИП уже изменились"):
+        community.review(3, second.id, second.version, "approved")
+    current = community.erip.get(original.id)
+    assert "Тестовая ветка 1" in current.values["exclusions"]
+    assert "Тестовая ветка 2" not in current.values["exclusions"]
+    community.initialize()
+    assert community.erip.get(original.id) == current
 
 
 def make_proposal(service, user_id=10, **kwargs):

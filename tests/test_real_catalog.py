@@ -315,7 +315,7 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
 
     assert list(raw) == ["version", "cards"]
     assert raw["version"] == 2
-    assert len(raw["cards"]) == 20
+    assert len(raw["cards"]) == 21
     assert (
         sum(
             len(program.get("offers", []))
@@ -374,7 +374,14 @@ def test_real_catalog_has_expected_card_and_offer_counts() -> None:
             "reward_kind": (
                 "points"
                 if card["id"]
-                in {"vitamin_d", "cactus_mtbank", "mtkarta", "kufar", "belarusbank_shchodraya"}
+                in {
+                    "vitamin_d",
+                    "cactus_mtbank",
+                    "mtkarta",
+                    "kufar",
+                    "belarusbank_shchodraya",
+                    "alfa_bonus",
+                }
                 else "cash"
             ),
         }
@@ -892,6 +899,7 @@ def test_real_catalog_has_requested_payment_and_reward_limits() -> None:
     assert all(
         program.minimum_payment is not None
         for card in cards.values()
+        if card.id != "alfa_bonus"
         for program in card.reward_programs
     )
     for card_id, program_id in (
@@ -1065,7 +1073,7 @@ def test_mcc_descriptions_are_pinned_shape_with_fallback() -> None:
 
 def test_r_card_is_restored_but_visa_offer_stays_hidden() -> None:
     catalog = _catalog()
-    assert len(catalog.cards) == 19
+    assert len(catalog.cards) == 20
     assert {card.id for card in catalog.disabled_cards} == {"reshenie_visa_pay"}
     assert any(match.card.id == "reshenie_r_karta" for match in catalog.lookup("5411"))
     assert "R-карта" in format_limits(catalog.cards)

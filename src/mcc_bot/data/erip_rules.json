@@ -1,0 +1,119 @@
+[
+  {
+    "card": "Бархат",
+    "issuer": "Беларусбанк",
+    "rate": "1",
+    "reward_kind": "cash",
+    "payment_channel": "За платежи через ЕРИП в дистанционных каналах Беларусбанка.",
+    "exclusions": ["Банковские, финансовые услуги", "Мобильная связь"],
+    "limits": "Общий лимит с возвратом за покупки по тарифу — 20 BYN в месяц на карту.",
+    "source_url": "https://belarusbank.by/fizicheskim_licam/cards/klub-barkhat/"
+  },
+  {
+    "card": "1-2-3",
+    "issuer": "БНБ-Банк",
+    "rate": "2",
+    "reward_kind": "cash",
+    "payment_channel": "В приложении «Искра» по веткам «Коммунальные платежи», «Мобильная связь», «Образование и развитие».",
+    "limits": "От 10 BYN за платёж. По ЕРИП до 15 BYN в месяц, из них до 5 BYN за мобильную связь. Лимит возврата от банка по всем картам 1-2-3 клиента — 123 BYN/мес. Получите манибэк в приложении с 1-го по 5-е число следующего месяца.",
+    "source_url": "https://bnb.by/o-lichnom/bankovskie-kartochki/1-2-3/"
+  },
+  {
+    "card": "Cashalot",
+    "issuer": "Белгазпромбанк",
+    "rate": "0.5",
+    "reward_kind": "cash",
+    "payment_channel": "За оплату в ветке «Коммунальные платежи» в мобильном приложении или интернет-банке Белгазпромбанка.",
+    "limits": "От 10 BYN за платёж.",
+    "source_url": "https://belgazprombank.by/upload/userfiles/files/personal/cards/docs/rules_cash-back_card_belgazprombank.pdf"
+  },
+  {
+    "card": "Яркая",
+    "issuer": "Приорбанк",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Платежи через АИС ЕРИП исключены из расчёта кешбэка.",
+    "source_url": "https://www.priorbank.by/offers/cards/yarkaya-karta"
+  },
+  {
+    "card": "КОМБОкарта",
+    "issuer": "Паритетбанк",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Исключены платежи через ЕРИП в интернет-банке и мобильном приложении iParitet.",
+    "source_url": "https://www.paritetbank.by/private/cards/money_back/kombokarta-mastercard/"
+  },
+  {
+    "card": "Шчодрая",
+    "issuer": "Беларусбанк",
+    "rate": "0",
+    "reward_kind": "points",
+    "payment_channel": "Программа «Шчодрыя баллы» исключает оплату услуг через ЕРИП.",
+    "source_url": "https://shchodraya.by/s3/documents/1/offer_belb.pdf"
+  },
+  {
+    "card": "Спраўная",
+    "issuer": "Банк Дабрабыт",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Платежи в ЕРИП исключены из расчёта манибэка.",
+    "source_url": "https://bankdabrabyt.by/upload/userfiles/files/nachislenie_money_back.pdf"
+  },
+  {
+    "card": "Социальная",
+    "issuer": "МТБанк",
+    "rate": "1",
+    "reward_kind": "cash",
+    "payment_channel": "Для карты «Для Себя» с базовыми условиями. Оплата через интернет-банк «Мой Банк», Moby или инфокиоск МТБанка по веткам «Коммунальные платежи» и «Мобильная связь».",
+    "limits": "Общий лимит программы — 100 BYN в месяц.",
+    "source_url": "https://www.mtbank.by/cards/bazovyy-schet/"
+  },
+  {
+    "card": "Кактус",
+    "issuer": "МТБанк",
+    "rate": "0",
+    "reward_kind": "points",
+    "payment_channel": "По правилам «Кактуса» платежи в дистанционных каналах банков исключены из начисления баллов.",
+    "source_url": "https://www.mtbank.by/upload/docs/Retail_docs/Cards/cactus/Loyalty_Cactus_2025.pdf"
+  },
+  {
+    "card": "Куфар",
+    "issuer": "МТБанк",
+    "rate": "0",
+    "reward_kind": "points",
+    "payment_channel": "По правилам программы платежи в дистанционных каналах банков исключены из начисления баллов.",
+    "source_url": "https://www.mtbank.by/upload/kufar/pravila-programmy-lojalnosti-kufar.pdf"
+  },
+  {
+    "card": "Статускарта",
+    "issuer": "СтатусБанк",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Кешбэк не начисляется при оплате картой в системе дистанционного обслуживания СтатусБанка.",
+    "source_url": "https://stbank.by/upload/iblock/5e3/ib7bw42j208f1175rs30u8353drh4q64/DKBO-1.10.2026.pdf"
+  },
+  {
+    "card": "Витамин Д",
+    "issuer": "Белинвестбанк",
+    "rate": "0",
+    "reward_kind": "points",
+    "payment_channel": "Платежи в ЕРИП исключены из начисления баллов «Плюшек».",
+    "source_url": "https://plushki.by/s3/documents/2/offer.pdf"
+  },
+  {
+    "card": "Оплати",
+    "issuer": "Белинвестбанк",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Операции в АИС ЕРИП исключены из кешбэка услуги «Премиум».",
+    "source_url": "https://www.o-plati.by/assets/doc/premium.pdf"
+  },
+  {
+    "card": "R-карта",
+    "issuer": "Банк Решение",
+    "rate": "0",
+    "reward_kind": "cash",
+    "payment_channel": "Операции в приложении «Мобильный банк» исключены из начисления манибэка.",
+    "source_url": "https://rbank.by/life/card/r_karta/"
+  }
+]

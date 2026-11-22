@@ -48,6 +48,22 @@ sites while answering users.
 
 ## Reviewed sources and scope
 
+### ERIP cashback and Alfa-Bonus categories
+
+`erip_rules.json` contains the reviewed bank sources as of 2026-11-22. It covers
+Barkhat and 13 catalog cards, including rules limited to a named channel or
+reward program. Published corrections use the shared queue, and importing the
+seed on startup preserves later approved corrections. The bank sources checked
+for Movement, both Zepter cards, MTcard, Shopper and Izi did not establish a
+direct ERIP cashback rule. These cards can be selected when proposing terms.
+
+`alfa_bonus_categories.json` uses the bank's
+[category appendix](https://www.alfabank.by/upload/docs/bank/categor010626.pdf),
+including the merchant-specific categories and the excluded MCCs for other
+purchases. [Favorite categories](https://infocenter.alfabank.by/article/4260)
+are selected in INSNC. Their percentages depend on the user's offer from the
+bank. The lookup presents matching categories in a single position.
+
 ### Cashalot
 
 Source: <https://cashalot.by/stores/>

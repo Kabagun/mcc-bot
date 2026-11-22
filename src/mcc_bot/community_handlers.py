@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from html import escape
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,6 +32,12 @@ from .community import (
     StaleAction,
     clean_text,
 )
+from .erip import EXCLUSION_CHOICES, MAX_EXCLUSIONS, normalize_branch, parse_rate
+from .erip import KIND as ERIP_KIND
+from .erip import card_title as erip_card_title
+from .erip import describe as describe_erip
+from .erip import reward_text as erip_reward_text
+from .erip import validate as validate_erip
 from .form_rollout import is_form_flow_v2_enabled
 from .formatting import format_limits, split_message
 from .notifications import (
@@ -415,6 +422,180 @@ async def _close_draft(
     await _say(update, "Действие отменено.", keyboard_for(service, draft.user_id))
 
 
+async def _card_info_menu(update: Update) -> None:
+    await _say_inline(
+        update,
+        "💳 Информация по картам\n\nВыберите, что хотите проверить.",
+        _keyboard(
+            [[("Ставки и лимиты", "card_limits")], [("⚡ Возврат за платежи в ЕРИП", "erip_list")]]
+        ),
+    )
+
+
+async def show_erip_list(update: Update, service: CommunityService, page: int = 0) -> None:
+    """Show published ERIP rules from the card menu or merchant search."""
+
+    rules = service.erip.list_rules()
+    page_size = 8
+    page = min(max(0, page), max(0, (len(rules) - 1) // page_size))
+    rows = []
+    for rule in rules[page * page_size : (page + 1) * page_size]:
+        values = rule.values
+        rate = values["rate"].replace(".", ",")
+        label = erip_card_title(values)[:43]
+        if rate != "0":
+            label += f" · {rate}%"
+        rows.append([(label, f"erip_card:{rule.id}")])
+    arrows = []
+    if page:
+        arrows.append(("←", f"erip_list:{page - 1}"))
+    if (page + 1) * page_size < len(rules):
+        arrows.append(("→", f"erip_list:{page + 1}"))
+    if arrows:
+        rows.append(arrows)
+    if _identity(update) is not None:
+        rows.extend(
+            [
+                [("＋ Предложить условия по другой карте", "erip_edit")],
+                [("← Информация по картам", "card_info")],
+            ]
+        )
+    await _say_inline(
+        update,
+        "⚡ ЕРИП\n\nВыберите карту, чтобы посмотреть условия возврата и исключения.",
+        _keyboard(rows),
+    )
+
+
+async def _show_erip_card(update: Update, service: CommunityService, rule_id: int) -> None:
+    rule = service.erip.get(rule_id)
+    if rule is None:
+        raise CommunityError("Карточка ЕРИП больше недоступна. Откройте список карт.")
+    lines = [
+        f"<b>{escape(line)}</b>"
+        if index in (0, 2) or line.startswith("Возврат не начисляется в")
+        else escape(line)
+        for index, line in enumerate(describe_erip(rule.values).splitlines())
+    ]
+    actions = []
+    if _identity(update) is not None:
+        actions.append([("✏️ Предложить поправку", f"erip_edit:{rule.id}")])
+    actions.append([("← К списку карт", "erip_list")])
+    rows = _keyboard(actions).inline_keyboard
+    source = rule.values["source_url"]
+    if source:
+        rows = ((InlineKeyboardButton("Условия на сайте банка", url=source),), *rows)
+    await _say_inline(
+        update, "\n".join(lines), InlineKeyboardMarkup(rows), parse_mode=ParseMode.HTML
+    )
+
+
+async def _erip_edit_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service: CommunityService,
+    user_id: int,
+    parts: list[str],
+) -> None:
+    action = parts[0]
+    catalog_cards = getattr(context.application.bot_data.get("catalog"), "cards", ())
+    if action == "erip_other" or parts == ["erip_edit"]:
+        known = {normalize_store_name(rule.values["card"]) for rule in service.erip.list_rules()}
+        candidates = [
+            (index, card.name)
+            for index, card in enumerate(catalog_cards)
+            if normalize_store_name(card.name) not in known
+        ]
+        size = 8
+        raw_page = int(parts[1]) if len(parts) == 2 else 0
+        page = min(raw_page, max(0, (len(candidates) - 1) // size))
+        rows = [
+            [(name[:55], f"erip_pick:{index}")]
+            for index, name in candidates[page * size : (page + 1) * size]
+        ]
+        nav = []
+        if page:
+            nav.append(("←", f"erip_other:{page - 1}"))
+        if (page + 1) * size < len(candidates):
+            nav.append(("→", f"erip_other:{page + 1}"))
+        if nav:
+            rows.append(nav)
+        rows.extend(
+            [[("Ввести название карты", "erip_manual")], [("← К списку карт", "erip_list")]]
+        )
+        await _say_inline(
+            update,
+            "⚡ Предложить условия ЕРИП\n\nВыберите карту или введите её название.",
+            _keyboard(rows),
+        )
+        return
+    if action in {"erip_pick", "erip_manual"}:
+        if service.draft(user_id) is not None:
+            raise StaleAction("Сначала отправьте или отмените открытую форму.")
+        values = {"reward_kind": "cash", "exclusions": []}
+        if action == "erip_pick":
+            card = catalog_cards[int(parts[1])]
+            values.update(card=card.name, issuer=(card.issuer or "").split("/")[0].strip())
+        await _begin_form(update, context, ERIP_KIND, values=values)
+        return
+    rule = service.erip.get(int(parts[1])) if len(parts) == 2 else None
+    if rule is None:
+        raise CommunityError("Карточка ЕРИП больше недоступна. Откройте список карт.")
+    if service.draft(user_id) is not None:
+        raise StaleAction("Сначала отправьте или отмените открытую форму.")
+    await _begin_form(update, context, ERIP_KIND, values=rule.edit_values())
+
+
+def _erip_branch_choices(data: dict[str, Any]) -> tuple[str, ...]:
+    selected = data.get("values", {}).get("exclusions", [])
+    return tuple(dict.fromkeys((*EXCLUSION_CHOICES, *selected)))
+
+
+def _clip_erip(value: str, maximum: int = 150) -> str:
+    return value if len(value) <= maximum else value[: maximum - 1].rstrip() + "…"
+
+
+def _erip_change_text(
+    service: CommunityService, payload: dict[str, Any], *, preview: bool = False
+) -> str:
+    if "rule_id" not in payload:
+        text = "⚡ Новые условия ЕРИП\n\n" + describe_erip(payload, include_source=not preview)
+        return text + (
+            "\n\nСсылка на источник приложена." if preview and payload["source_url"] else ""
+        )
+    title = f"⚡ Поправка по ЕРИП · {erip_card_title(payload)}"
+    previous = service.erip.get(payload["rule_id"])
+    if previous is None or previous.revision != payload["revision"]:
+        return title + "\n\nКарточка изменилась после открытия заявки."
+    old = previous.values
+    changes = []
+    reward = erip_reward_text(payload)
+    if reward != erip_reward_text(old):
+        changes.append(f"Возврат — {erip_reward_text(old)} → {reward}")
+    for key, label in (("payment_channel", "Где платить"), ("limits", "Лимиты и условия")):
+        if payload[key] != old[key]:
+            old_value = old[key] or "не указано"
+            new_value = payload[key] or "не указано"
+            if preview:
+                old_value, new_value = _clip_erip(old_value), _clip_erip(new_value)
+            changes.append(f"{label} — {old_value} → {new_value}")
+    added = ", ".join(item for item in payload["exclusions"] if item not in old["exclusions"])
+    removed = ", ".join(item for item in old["exclusions"] if item not in payload["exclusions"])
+    if added:
+        changes.append(f"Добавить в исключения — {added}")
+    if removed:
+        changes.append(f"Убрать из исключений — {removed}")
+    if payload["source_url"] != old["source_url"]:
+        changes.append(
+            "Обновить источник" if payload["source_url"] else "Убрать ссылку на источник"
+        )
+    if payload["source_url"]:
+        changes.append(
+            "Ссылка на источник приложена." if preview else f"Источник — {payload['source_url']}"
+        )
+    return "\n\n".join((title, "\n".join(changes) or "Изменений пока нет."))
+
+
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show a private role-aware start menu without clearing a durable draft."""
 
@@ -542,6 +723,8 @@ def _draft_buttons(
 
 
 def _display_payload(service: CommunityService, kind: str, payload: dict[str, Any]) -> str:
+    if kind == ERIP_KIND:
+        return _erip_change_text(service, payload)
     if kind == "card_partnership":
         brand = _brand(service, payload["brand_id"], include_archived=True)
         channel = {
@@ -1454,6 +1637,8 @@ def _queue_proposal_label(service: CommunityService, proposal: Proposal) -> str:
     """Render one compact queue label with a brand and a plain-language action."""
 
     payload = proposal.payload
+    if proposal.kind == ERIP_KIND:
+        return f"№{proposal.id} · ЕРИП · {payload['card'][:28]}"
     brand = None
     if isinstance(payload.get("brand_id"), int):
         brand = _brand(service, payload["brand_id"], include_archived=True)
@@ -1880,17 +2065,24 @@ async def _access_callback(
 
 
 async def _notify(context: ContextTypes.DEFAULT_TYPE, proposal: Proposal) -> None:
-    if proposal.status != "clarification":
-        return
     if _blocked_by_registry(context, proposal.user_id):
         return
-    rows = [[("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")]]
-    text = f"Нужно уточнить предложение №{proposal.id}."
-    if proposal.reason:
-        text += "\n" + proposal.reason
+    if proposal.status == "clarification":
+        markup = _keyboard(
+            [[("Ответить на уточнение", f"respond:{proposal.id}:{proposal.version}")]]
+        )
+        text = f"Нужно уточнить предложение №{proposal.id}."
+        if proposal.reason:
+            text += "\n" + proposal.reason
+    elif proposal.kind == ERIP_KIND and proposal.status == "approved":
+        markup = _keyboard([[("Открыть условия ЕРИП", f"erip_card:{proposal.audit_id}")]])
+        text = f"Поправка принята. Условия ЕРИП по карте «{proposal.payload['card']}» обновлены."
+    else:
+        return
     try:
+        options = {"disable_notification": True} if proposal.kind == ERIP_KIND else {}
         await context.bot.send_message(
-            chat_id=proposal.user_id, text=text, reply_markup=_keyboard(rows)
+            chat_id=proposal.user_id, text=text, reply_markup=markup, **options
         )
     except TelegramError as error:
         _mark_forbidden(context, proposal.user_id, error)
@@ -1974,6 +2166,7 @@ _FORM_TITLES = {
     "store_metadata": "Данные магазина",
     "mcc_save": "🏪 Магазин с MCC",
     "partner_save": "Партнёрство по карте",
+    ERIP_KIND: "⚡ Условия возврата в ЕРИП",
 }
 
 
@@ -1982,6 +2175,24 @@ def _form_fields(
 ) -> tuple[tuple[str, str, bool], ...]:
     """Return ordered editor fields as key, Russian label and mandatory flag."""
 
+    if form == ERIP_KIND:
+        identity = (
+            ()
+            if (data or {}).get("values", {}).get("rule_id")
+            else (
+                ("card", "Карта", True),
+                ("issuer", "Банк", True),
+            )
+        )
+        return (
+            *identity,
+            ("rate", "Возврат, %", True),
+            ("reward_kind", "Деньгами или баллами", True),
+            ("payment_channel", "Где платить", True),
+            ("exclusions", "Исключения", False),
+            ("limits", "Лимиты и условия", False),
+            ("source_url", "Источник", False),
+        )
     if form == "store_create":
         return (
             ("name", "Название", True),
@@ -2094,6 +2305,10 @@ def _finish_form_field(data: dict[str, Any], service: CommunityService) -> None:
 
 
 def _form_title(data: dict[str, Any]) -> str:
+    if data["form"] == ERIP_KIND:
+        if data.get("values", {}).get("rule_id"):
+            return "✏️ Поправка по ЕРИП"
+        return _FORM_TITLES[ERIP_KIND]
     if data.get("form_flow_v2") is not True:
         return _FORM_TITLES[data["form"]]
     if data.get("review_edit"):
@@ -2139,6 +2354,18 @@ def _form_value_text(
 ) -> str:
     values = draft.data.get("values", {})
     value = values.get(key)
+    if draft.data["form"] == ERIP_KIND:
+        if key == "reward_kind":
+            return {"cash": "деньгами", "points": "баллами"}.get(value, "")
+        if key == "exclusions":
+            return _clip_erip(", ".join(value), 300) if value else "нет"
+        if key == "source_url":
+            if value:
+                return "ссылка на условия"
+            if service.draft_has_media(draft.user_id, draft.id):
+                return "скриншот приложен"
+        if key in {"payment_channel", "limits"} and value:
+            return _clip_erip(value, 250)
     if key == "brand_id":
         if isinstance(value, int):
             brand = _brand(service, value, include_archived=True)
@@ -2233,6 +2460,8 @@ def _form_payload(
 ) -> tuple[str, dict[str, Any]]:
     form = data["form"]
     values = dict(data.get("values", {}))
+    if form == ERIP_KIND:
+        return ERIP_KIND, validate_erip(values)
     locked_brand_id = data.get("locked_brand_id")
     if locked_brand_id is not None and values.get("brand_id") != locked_brand_id:
         raise StaleAction("Контекст магазина изменился. Откройте форму заново.")
@@ -2308,6 +2537,14 @@ def _form_payload(
 
 def _form_prompt(key: str) -> str:
     return {
+        "card": "Отправьте название карты одним сообщением.",
+        "issuer": "Отправьте название банка.",
+        "rate": "Введите процент. Например, 1 или 0,5. Если возврата нет, укажите 0.",
+        "reward_kind": "Выберите, как начисляется возврат.",
+        "payment_channel": "Укажите, где нужно провести платёж в ЕРИП.",
+        "exclusions": "В каких ветках ЕРИП возврат не начисляется?",
+        "custom_exclusion": "Отправьте название другой ветки ЕРИП.",
+        "limits": "Напишите сумму, лимит или особые условия. Чтобы очистить, отправьте «-».",
         "name": "Отправьте название одним сообщением.",
         "brand_id": "Отправьте название магазина. Затем выберите его кнопкой.",
         "mcc": "Отправьте MCC: ровно четыре цифры.",
@@ -2339,6 +2576,30 @@ def _form_rows(
     active = data.get("active_field")
     pilot = data.get("form_flow_v2") is True
     rows: list[list[tuple[str, str]]] = []
+    if data["form"] == ERIP_KIND:
+        if data.get("erip_preview"):
+            return [[("Отправить на проверку", "form_save")], [("← К форме", "form_back")]]
+        if active == "exclusions":
+            selected = data.get("values", {}).get("exclusions", [])
+            for index, branch in enumerate(_erip_branch_choices(data)):
+                mark = "✓" if branch in selected else "□"
+                rows.append([(f"{mark} {branch[:55]}", f"form_erip_toggle:{index}")])
+            return [
+                *rows,
+                [("＋ Указать другую ветку", "form_erip_other")],
+                [("Готово", "form_back")],
+            ]
+        if active == "reward_kind":
+            rows.append([("Деньгами", "form_erip_kind:cash"), ("Баллами", "form_erip_kind:points")])
+        if active is not None:
+            back = "← К исключениям" if active == "custom_exclusion" else "← К форме"
+            return [*rows, [(back, "form_back")]]
+        for key, label, required in _form_fields(ERIP_KIND, data):
+            marker = "❗ " if required and not _form_field_filled(data, key) else ""
+            rows.append([(f"{marker}{label}{' *' if required else ''}", f"form_field:{key}")])
+        if _form_complete(data, service):
+            rows.append([("Посмотреть заявку", "form_erip_preview")])
+        return rows
     if active == "brand_id":
         for brand_id in data.get("matches", [])[:10]:
             brand = _brand(service, brand_id)
@@ -2482,9 +2743,28 @@ async def _render_form_editor(
 ) -> None:
     """Render and update the one durable Telegram message for a form."""
 
+    if draft.data.get("erip_preview"):
+        _kind, payload = _form_payload(context, service, draft.data)
+        text = _erip_change_text(service, payload, preview=True)
+        if service.draft_has_media(draft.user_id, draft.id):
+            text += "\n\nСкриншот приложен."
+        if notice:
+            text += "\n\n" + notice
+        await _render_durable_form_message(
+            update,
+            context,
+            service,
+            draft,
+            text,
+            _draft_buttons(draft, _form_rows(context, service, draft)),
+        )
+        return
     title = _form_title(draft.data)
     lines = [title]
     pilot = draft.data.get("form_flow_v2") is True
+    erip = draft.data["form"] == ERIP_KIND
+    if erip and draft.data.get("values", {}).get("rule_id"):
+        lines.append(erip_card_title(draft.data["values"]))
     locked_brand_id = draft.data.get("locked_brand_id")
     if isinstance(locked_brand_id, int):
         locked_brand = _brand(service, locked_brand_id)
@@ -2495,7 +2775,7 @@ async def _render_form_editor(
     optional_open = bool(draft.data.get("optional_open")) or (
         not pilot and _location_required(service, draft.data)
     )
-    if pilot:
+    if pilot and not erip:
         required_fields = _form_required_fields(draft.data, service)
         filled = sum(_form_field_filled(draft.data, key) for key in required_fields)
         lines.extend((f"Обязательные поля: {filled} из {len(required_fields)}", ""))
@@ -2505,13 +2785,21 @@ async def _render_form_editor(
         if key == "location" and _location_required(service, draft.data):
             required = True
         value = _form_value_text(context, service, draft, key)
-        if pilot and not required and not optional_open and not value:
+        if pilot and not erip and not required and not optional_open and not value:
             continue
         marker = "❗" if required and not value else "•"
         lines.append(f"{marker} {label}{' *' if required else ''}: {value or 'не заполнено'}")
     active = draft.data.get("active_field")
     if active:
-        lines.extend(("", _form_prompt(active)))
+        prompt = _form_prompt(active)
+        if erip and active == "source_url":
+            prompt = (
+                "Пришлите ссылку на правила банка или скриншот. Чтобы убрать ссылку, отправьте «-»."
+            )
+        if erip:
+            lines = [*lines[:2], "", prompt]
+        else:
+            lines.extend(("", prompt))
         if pilot and active == "brand_id" and "matches" in draft.data:
             if draft.data["matches"]:
                 lines.append("Выберите магазин из результатов или уточните название.")
@@ -2591,6 +2879,8 @@ def _new_form_data(
         "values": dict(values or {}),
         "optional_open": False,
     }
+    if form == ERIP_KIND:
+        return {**data, "form_flow_v2": True}
     if form == "partner_save":
         data["cards"] = [card.id for card in context.application.bot_data["catalog"].cards]
     if locked_brand_id is not None:
@@ -2694,8 +2984,37 @@ def _consume_form_text(
     field = data.get("active_field")
     if not isinstance(field, str):
         raise CommunityError("Сначала выберите поле кнопкой в редакторе.")
-    if field in {"channel", "card_id", "screenshot"}:
+    if field in {"channel", "card_id", "screenshot", "exclusions", "reward_kind"}:
         raise CommunityError(_form_prompt(field))
+    if data["form"] == ERIP_KIND and field in {
+        "card",
+        "issuer",
+        "rate",
+        "payment_channel",
+        "limits",
+        "custom_exclusion",
+    }:
+        active = None
+        if field == "custom_exclusion":
+            branch = normalize_branch(text)
+            branches = list(values.get("exclusions", []))
+            if branch.casefold() not in {item.casefold() for item in branches}:
+                if len(branches) >= MAX_EXCLUSIONS:
+                    raise CommunityError(f"Можно выбрать до {MAX_EXCLUSIONS} веток.")
+                branches.append(branch)
+            values["exclusions"] = branches
+            active = "exclusions"
+        elif field == "rate":
+            values[field] = parse_rate(text)
+        else:
+            maximum = {"card": 90, "issuer": 90, "payment_channel": 450, "limits": 300}[field]
+            values[field] = (
+                "" if field == "limits" and text == "-" else clean_text(text, maximum=maximum)
+            )
+        data.update(values=values, active_field=active, dirty=True)
+        return service.advance(
+            draft.user_id, draft.id, draft.version, "form_editor", data, update_id=update_id
+        )
     if field == "brand_id":
         if data.get("locked_brand_id") is not None:
             raise StaleAction("Магазин закреплён контекстом формы.")
@@ -2874,12 +3193,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
                 await _consume_access_lookup(update, context, service, draft, text)
             return True
         if text == INFO:
-            catalog = context.application.bot_data["catalog"]
-            await _say(
-                update,
-                format_limits(catalog.cards),
-                _current_reply_keyboard(service, user_id),
-            )
+            await _card_info_menu(update)
         elif text == GUIDE:
             await _say(
                 update,
@@ -3241,8 +3555,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bo
         draft = service.draft(user_id)
         if draft is None:
             return False
-        form_screenshot = (
-            draft.stage == "form_editor" and draft.data.get("active_field") == "screenshot"
+        form_screenshot = draft.stage == "form_editor" and (
+            draft.data.get("active_field") == "screenshot"
+            or (
+                draft.data.get("form") == ERIP_KIND
+                and draft.data.get("active_field") == "source_url"
+            )
         )
         if not form_screenshot and draft.stage not in {
             "evidence",
@@ -3304,26 +3622,34 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if getattr(query, "message", None) is None or not getattr(query.message, "is_accessible", True):
         return
-    user_id = _identity(update)
-    if user_id is None:
-        await _say(update, "Это действие доступно только в личном чате с ботом.")
-        return
     if (
         not isinstance(query.data, str)
         or len(query.data) > 64
         or not query.data.startswith("community:")
     ):
         return
-    service = _service(context)
     parts = query.data.split(":")[1:]
+    action = parts[0]
+    user_id = _identity(update)
+    if user_id is None and action not in {"erip_list", "erip_card"}:
+        await _say(update, "Это действие доступно только в личном чате с ботом.")
+        return
+    service = _service(context)
     try:
         for part in parts:
             if re.fullmatch(r"[+-]?[0-9]+", part) and not 0 <= int(part) <= 2**63 - 1:
                 raise CommunityError("Кнопка устарела. Откройте меню заново.")
-        await _dispatch_callback(update, context, service, user_id, parts)
+        if action == "erip_list":
+            await show_erip_list(update, service, int(parts[1]) if len(parts) == 2 else 0)
+        elif action == "erip_card":
+            await _show_erip_card(update, service, int(parts[1]))
+        elif user_id is not None:
+            await _dispatch_callback(update, context, service, user_id, parts)
     except (CommunityError, ValueError, KeyError, IndexError) as exc:
         text = str(exc) if isinstance(exc, ValueError) else "Кнопка устарела. Откройте меню заново."
-        if not await _render_pilot_error(update, context, service, user_id, text):
+        if user_id is None:
+            await _say(update, text)
+        elif not await _render_pilot_error(update, context, service, user_id, text):
             await _say(update, text, _current_reply_keyboard(service, user_id))
 
 
@@ -3380,6 +3706,8 @@ def _form_result_summary(
     else:
         title = "✅ Данные опубликованы"
     payload = proposal.payload
+    if proposal.kind == ERIP_KIND:
+        return f"{title}\n\nЕРИП · {erip_card_title(payload)}\nЗаявка №{proposal.id}"
     brand = _brand(service, payload["brand_id"]) if payload.get("brand_id") else None
     name = payload.get("name") or (brand.name if brand else "магазин")
     lines = [title, "", f"Магазин: {name}"]
@@ -3410,6 +3738,8 @@ async def _form_editor_callback(
     values = dict(data.get("values", {}))
     if action == "form_field":
         field = parts[1]
+        if data.get("erip_preview"):
+            raise StaleAction("Вернитесь к форме, чтобы изменить поля.")
         if field == "brand_id" and data.get("locked_brand_id") is not None:
             raise StaleAction("Магазин закреплён контекстом формы.")
         if field not in {item[0] for item in _form_fields(data["form"], data)}:
@@ -3428,6 +3758,30 @@ async def _form_editor_callback(
         data.update(active_field=None, guided_input=False)
         data.pop("matches", None)
         data.pop("new_store_name", None)
+        data.pop("erip_preview", None)
+        if draft.data.get("active_field") == "custom_exclusion":
+            data["active_field"] = "exclusions"
+    elif action == "form_erip_toggle" and data.get("active_field") == "exclusions":
+        branch = _erip_branch_choices(data)[int(parts[1])]
+        selected = list(values.get("exclusions", []))
+        if branch in selected:
+            selected.remove(branch)
+        elif len(selected) < MAX_EXCLUSIONS:
+            selected.append(branch)
+        else:
+            raise CommunityError(f"Можно выбрать до {MAX_EXCLUSIONS} веток.")
+        values["exclusions"] = selected
+        data.update(values=values, dirty=True)
+    elif action == "form_erip_other" and data.get("active_field") == "exclusions":
+        data["active_field"] = "custom_exclusion"
+    elif action == "form_erip_kind" and data.get("active_field") == "reward_kind":
+        if parts[1] not in {"cash", "points"}:
+            raise StaleAction("Выберите вид возврата из списка.")
+        values["reward_kind"] = parts[1]
+        data.update(values=values, active_field=None, dirty=True)
+    elif action == "form_erip_preview" and data.get("form") == ERIP_KIND:
+        _form_payload(context, service, data)
+        data.update(active_field=None, erip_preview=True)
     elif action == "form_select" and data.get("active_field") == "brand_id":
         if data.get("locked_brand_id") is not None:
             raise StaleAction("Магазин закреплён контекстом формы.")
@@ -3484,6 +3838,8 @@ async def _form_editor_callback(
         await _close_draft(update, context, service, draft)
         return
     elif action == "form_save":
+        if data.get("form") == ERIP_KIND and not data.get("erip_preview"):
+            raise CommunityError("Сначала проверьте заявку.")
         if not _form_complete(data, service):
             if _location_required(service, data):
                 raise CommunityError(
@@ -3879,7 +4235,18 @@ async def _dispatch_callback(
     parts: list[str],
 ) -> None:
     action = parts[0]
-    if action in {"pending", "pending_new"}:
+    if action == "card_info":
+        await _card_info_menu(update)
+    elif action == "card_limits":
+        catalog = context.application.bot_data["catalog"]
+        await _say_inline(
+            update,
+            format_limits(catalog.cards),
+            _keyboard([[("← Информация по картам", "card_info")]]),
+        )
+    elif action in {"erip_edit", "erip_other", "erip_pick", "erip_manual"}:
+        await _erip_edit_callback(update, context, service, user_id, parts)
+    elif action in {"pending", "pending_new"}:
         from .store_handlers import pending_new_overlay, pending_overlay
 
         if action == "pending":

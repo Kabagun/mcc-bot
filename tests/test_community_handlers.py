@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 
+from mcc_bot.bot import lookup_text
 from mcc_bot.community import CommunityService
 from mcc_bot.community_handlers import (
     ADD,
@@ -345,6 +346,113 @@ def test_partner_editor_recovers_cached_buttons_in_the_same_message(flow):
     send(flow, "12", 2)
     draft_click(flow, "form_save", 2)
     assert partners.get_offer(offer.id).tiers[0].min_purchase == Decimal(12)
+
+
+@pytest.mark.parametrize(
+    ("text", "chat_type"), [(" еРип ", "private"), ("ERIP", "private"), ("ЕРИП", "group")]
+)
+def test_erip_store_search_opens_published_card_rules(flow, text, chat_type):
+    event = update(text=text, chat_type=chat_type)
+    asyncio.run(lookup_text(event, flow))
+    result = event.effective_message.reply_text.await_args.args[0]
+    assert result.startswith("⚡ ЕРИП\n")
+    assert "MCC" not in result
+    card = next(button for button in all_buttons(event) if "Бархат" in button.text)
+
+    opened = update(data=card.callback_data, chat_type=chat_type)
+    opened.callback_query.edit_message_text = AsyncMock()
+    asyncio.run(callback(opened, flow))
+    opened.effective_message.reply_text.assert_not_awaited()
+    call = opened.callback_query.edit_message_text.await_args
+    assert "1% деньгами" in call.args[0]
+    assert "Мобильная связь" in call.args[0]
+    actions = [button for row in call.kwargs["reply_markup"].inline_keyboard for button in row]
+    assert any(button.callback_data == "community:erip_list" for button in actions)
+    edit_allowed = any(
+        (button.callback_data or "").startswith("community:erip_edit:") for button in actions
+    )
+    assert edit_allowed == (chat_type == "private")
+
+
+def test_erip_group_cannot_open_a_correction_form(flow):
+    service = flow.application.bot_data["community"]
+    rule = service.erip.list_rules()[0]
+    event = click(flow, f"erip_edit:{rule.id}", chat_type="group")
+    assert "в личном чате" in event.effective_message.reply_text.await_args.args[0]
+    assert service.draft(10) is None
+
+
+def test_erip_updates_use_the_shared_review_queue(flow):
+    service = flow.application.bot_data["community"]
+    rule = next(item for item in service.erip.list_rules() if item.values["card"] == "Бархат")
+    info = send(flow, INFO)
+    assert [button.text for button in all_buttons(info)] == [
+        "Ставки и лимиты",
+        "⚡ Возврат за платежи в ЕРИП",
+    ]
+    cards = click(flow, "erip_list")
+    assert any(
+        button.callback_data == f"community:erip_card:{rule.id}" for button in all_buttons(cards)
+    )
+    opened = click(flow, f"erip_card:{rule.id}")
+    assert "1% деньгами" in opened.effective_message.reply_text.await_args.args[0]
+    assert "Мобильная связь" in opened.effective_message.reply_text.await_args.args[0]
+
+    editor = click(flow, f"erip_edit:{rule.id}")
+    keyboard = editor.effective_message.reply_text.await_args_list[0].kwargs["reply_markup"]
+    assert [button.text for row in keyboard.keyboard for button in row] == [CANCEL_DRAFT]
+    choices = draft_click(flow, "form_field:exclusions")
+    assert "✓ Мобильная связь" in [button.text for button in all_buttons(choices)]
+    draft_click(flow, "form_erip_other")
+    send(flow, "Тестовая ветка ЕРИП")
+    draft_click(flow, "form_back")
+    draft_click(flow, "form_field:source_url")
+    screenshot(flow, caption="")
+    preview = draft_click(flow, "form_erip_preview")
+    text = preview.effective_message.reply_text.await_args.args[0]
+    assert "Добавить в исключения — Тестовая ветка ЕРИП" in text
+    assert "Скриншот приложен" in text
+    submitted = draft_click(flow, "form_save")
+    assert "отправлено на проверку" in submitted.effective_message.reply_text.await_args.args[0]
+    assert service.erip.get(rule.id) == rule
+
+    queue = send(flow, QUEUE, 2)
+    pending = service.own_proposals(10)[0]
+    assert any(f"№{pending.id} · ЕРИП · Бархат" in button.text for button in all_buttons(queue))
+    claimed = click(flow, f"q:{pending.id}:{pending.version}:claim", 2)
+    assert "Тестовая ветка ЕРИП" in claimed.effective_message.reply_text.await_args.args[0]
+    current = service.proposal(2, pending.id)
+    assert service.proposal_has_media(2, pending.id)
+    click(flow, f"q:{pending.id}:{current.version}:approve", 2)
+    updated = service.erip.get(rule.id)
+    assert updated.revision == rule.revision + 1
+    assert "Тестовая ветка ЕРИП" in updated.values["exclusions"]
+    assert service.proposal(2, pending.id).status == "approved"
+    flow.bot.send_message.assert_awaited_once()
+    assert flow.bot.send_message.await_args.kwargs["disable_notification"] is True
+
+
+def test_erip_users_can_suggest_rules_for_another_catalog_card(flow):
+    service = flow.application.bot_data["community"]
+    card = SimpleNamespace(name="Новая карта", issuer="Новый банк")
+    flow.application.bot_data["catalog"] = SimpleNamespace(cards=(card,))
+    cards = click(flow, "erip_edit")
+    assert any(button.text == card.name for button in all_buttons(cards))
+    click(flow, "erip_pick:0")
+    draft_click(flow, "form_field:rate")
+    send(flow, "0,5")
+    draft_click(flow, "form_field:payment_channel")
+    send(flow, "В приложении банка")
+    draft_click(flow, "form_erip_preview")
+    draft_click(flow, "form_save")
+    proposal = service.own_proposals(10)[0]
+    assert proposal.status == "pending"
+    assert (proposal.payload["card"], proposal.payload["issuer"], proposal.payload["rate"]) == (
+        card.name,
+        card.issuer,
+        "0.5",
+    )
+    assert all(rule.values["card"] != card.name for rule in service.erip.list_rules())
 
 
 def test_user_partner_editor_accepts_store_without_mcc(flow):

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from html import escape
 
+from .alfa_bonus import ALFA_BONUS_CARD_ID, ALFA_BONUS_NAME, AlfaCategory
 from .catalog import (
     PERCENT_TAX_THRESHOLD,
     Card,
@@ -214,6 +215,9 @@ def format_limits(cards: tuple[Card, ...]) -> str:
 
     lines = ["📊 Лимиты по картам", ""]
     for index, card in enumerate(sorted(cards, key=lambda item: item.name.casefold()), start=1):
+        if card.id == ALFA_BONUS_CARD_ID:
+            lines.append(f"{index}. {card.emoji} {card.name} — условия в INSNC")
+            continue
         programs = []
         for program in card.reward_programs:
             icon = "⭐" if program.kind == "points" else "💵"
@@ -248,6 +252,27 @@ def _header_emoji(description: str) -> str:
     return "🧾"
 
 
+def format_alfa_bonus(
+    categories: tuple[AlfaCategory, ...], *, details: bool = False, html: bool = False
+) -> str:
+    """Render one position for the applicable category choices and their activation."""
+
+    if not categories:
+        return ""
+    name = f"<b>{ALFA_BONUS_NAME}</b>" if html else ALFA_BONUS_NAME
+    labels = " / ".join(
+        f"«{category.name if details else category.short_name}»" for category in categories
+    )
+    return f"🔴 {name} · выберите в INSNC\n   {escape(labels) if html else labels}"
+
+
+def _alfa_categories_for_result(
+    matches: tuple[CardMatch, ...], categories: tuple[AlfaCategory, ...]
+) -> tuple[AlfaCategory, ...]:
+    # A known partner offer takes precedence over the favorite category.
+    return () if any(match.card.id == ALFA_BONUS_CARD_ID for match in matches) else categories
+
+
 def format_matches(
     mcc: str,
     matches: tuple[CardMatch, ...],
@@ -255,6 +280,7 @@ def format_matches(
     *,
     details: bool = False,
     html: bool = False,
+    alfa_categories: tuple[AlfaCategory, ...] = (),
 ) -> str:
     """Format MCC results, optionally adding banks and effective program terms.
 
@@ -264,17 +290,16 @@ def format_matches(
     """
 
     header = _match_header(mcc, descriptions, html=html)
-    if not matches:
-        return f"{header}\n\n❌ Доступных карт нет."
+    blocks = [
+        _match_block(match, index, details=details, html=html)
+        for index, match in enumerate(matches, start=1)
+    ]
+    if alfa_block := format_alfa_bonus(
+        _alfa_categories_for_result(matches, alfa_categories), details=details, html=html
+    ):
+        blocks.append(alfa_block)
     separator = "\n\n" if details else "\n"
-    return (
-        header
-        + "\n\n"
-        + separator.join(
-            _match_block(match, index, details=details, html=html)
-            for index, match in enumerate(matches, start=1)
-        )
-    )
+    return header + "\n\n" + (separator.join(blocks) if blocks else "❌ Доступных карт нет.")
 
 
 def _match_header(
@@ -319,6 +344,7 @@ def format_match_pages(
     *,
     max_length: int = SAFE_MESSAGE_LENGTH,
     html: bool = False,
+    alfa_categories: tuple[AlfaCategory, ...] = (),
 ) -> tuple[MatchPage, ...]:
     """Build stable whole-card pages sized for both compact and expanded views.
 
@@ -331,7 +357,7 @@ def format_match_pages(
 
     if not 0 < max_length <= MAX_TELEGRAM_MESSAGE_LENGTH:
         raise ValueError("Invalid Telegram message length bound")
-    if not matches:
+    if not matches and not alfa_categories:
         text = format_matches(mcc, matches, descriptions, html=html)
         if _telegram_length(text) > max_length:
             raise ValueError("MCC header exceeds the Telegram message length bound")
@@ -339,27 +365,39 @@ def format_match_pages(
     header = _match_header(mcc, descriptions, html=html)
     pages: list[MatchPage] = []
     compact = expanded = header
-    has_cards = False
-    for index, match in enumerate(matches, start=1):
-        compact_block = _match_block(match, index, details=False, html=html)
-        expanded_block = _match_block(match, index, details=True, html=html)
-        compact_candidate = compact + ("\n" if has_cards else "\n\n") + compact_block
-        expanded_candidate = expanded + "\n\n" + expanded_block
+    blocks = [
+        MatchPage(
+            _match_block(match, index, details=False, html=html),
+            _match_block(match, index, details=True, html=html),
+        )
+        for index, match in enumerate(matches, start=1)
+    ]
+    if categories := _alfa_categories_for_result(matches, alfa_categories):
+        blocks.append(
+            MatchPage(
+                format_alfa_bonus(categories, html=html),
+                format_alfa_bonus(categories, details=True, html=html),
+            )
+        )
+    has_entries = False
+    for block in blocks:
+        compact_candidate = compact + ("\n" if has_entries else "\n\n") + block.compact
+        expanded_candidate = expanded + "\n\n" + block.expanded
         if (
             max(_telegram_length(compact_candidate), _telegram_length(expanded_candidate))
             > max_length
         ):
-            if has_cards:
+            if has_entries:
                 pages.append(MatchPage(compact, expanded))
-            compact_candidate = header + "\n\n" + compact_block
-            expanded_candidate = header + "\n\n" + expanded_block
+            compact_candidate = header + "\n\n" + block.compact
+            expanded_candidate = header + "\n\n" + block.expanded
             if (
                 max(_telegram_length(compact_candidate), _telegram_length(expanded_candidate))
                 > max_length
             ):
                 raise ValueError("A card or MCC header exceeds the Telegram message length bound")
         compact, expanded = compact_candidate, expanded_candidate
-        has_cards = True
+        has_entries = True
     pages.append(MatchPage(compact, expanded))
     return tuple(pages)
 

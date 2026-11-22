@@ -137,7 +137,10 @@ The persistent private-chat keyboard is role-aware. Everyone also sees
 `❓ Как пользоваться` as the final button; its instructions adapt to the current
 role and explain stacked partner rewards and online/offline differences:
 
-- Everyone: `ℹ️ Информация по картам`.
+- Everyone: `ℹ️ Информация по картам` opens card limits and the ERIP section. In
+  ERIP, open a card to see its rate, payment channels, and exclusions. Use the
+  card's correction button or suggest rules for another card. Both use the
+  shared moderation queue. A bank link or screenshot can accompany the proposal.
 - Users: `➕ Предложить данные`, `🙋 Хочу помогать`.
 - Helpers, superadmins and owner: `➕ Добавить данные`, `📋 Разобрать очередь`,
   `⚙️ Управление`.

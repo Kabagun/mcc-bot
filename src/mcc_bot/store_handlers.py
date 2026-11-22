@@ -16,7 +16,14 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from .formatting import MAX_TELEGRAM_MESSAGE_LENGTH, _telegram_length, format_match_pages
+from .alfa_bonus import ALFA_BONUS_CARD_ID, alfa_bonus_categories
+from .community_handlers import show_erip_list
+from .formatting import (
+    MAX_TELEGRAM_MESSAGE_LENGTH,
+    _telegram_length,
+    format_alfa_bonus,
+    format_match_pages,
+)
 from .partner_rewards import format_partner_offer_condition, resolve_store_matches
 from .stores import StoreRepository, normalize_store_name
 
@@ -286,6 +293,12 @@ def _brand_view(repository, brand, page, context, user_id, *, private=True):
                 if condition:
                     text += f"\n  {escape(condition)}"
             text += "\n\n⚠️ MCC магазина пока не указан; перед оплатой проверьте его в банке."
+        if not any(offer.card_id == ALFA_BONUS_CARD_ID for offer, _tier in offers):
+            categories = alfa_bonus_categories(
+                cards.values(), merchant_names=(brand.name, *getattr(brand, "aliases", ()))
+            )
+            if categories:
+                text += "\n\n" + format_alfa_bonus(categories, html=True)
     text += footer
     if private:
         rows.append(
@@ -515,7 +528,7 @@ def pending_new_overlay(context, proposal_id: int) -> tuple[str, tuple[int, ...]
     return "\n".join(lines), (proposal_id,)
 
 
-def _search_view(repository, query, page, token, *, private=True, admin=False):
+def _search_view(repository, query, page, token, *, cards=(), private=True, admin=False):
     matches, suggestions = _search_entities(repository, query)
     entities = matches or suggestions
     total = len(entities)
@@ -529,6 +542,10 @@ def _search_view(repository, query, page, token, *, private=True, admin=False):
         text = f"Магазин <b>{escape(query)}</b> не найден."
         if private:
             text += " Хотите добавить его? Укажите MCC и способ оплаты."
+    if not matches:
+        categories = alfa_bonus_categories(cards, merchant_names=(query,))
+        if categories:
+            text += "\n\n" + format_alfa_bonus(categories, html=True)
     name_counts: dict[str, int] = {}
     for entity in entities:
         key = normalize_store_name(entity.name)
@@ -588,6 +605,10 @@ async def search_stores(
     if not query or len(query) > 180:
         await message.reply_text("Укажите название магазина, например: Евроопт.")
         return
+    community = context.application.bot_data.get("community")
+    if community is not None and normalize_store_name(query) == "erip":
+        await show_erip_list(update, community)
+        return
     repository: StoreRepository = context.application.bot_data["stores"]
     matches, _suggestions = _search_entities(repository, query)
     private = bool(update.effective_chat and update.effective_chat.type == "private")
@@ -612,6 +633,7 @@ async def search_stores(
             query,
             0,
             token,
+            cards=getattr(context.application.bot_data.get("catalog"), "cards", ()),
             private=private,
             admin=_is_admin(context, update.effective_user.id if update.effective_user else None),
         )
@@ -681,6 +703,7 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
             query,
             page,
             parts[2],
+            cards=getattr(context.application.bot_data.get("catalog"), "cards", ()),
             private=bool(update.effective_chat and update.effective_chat.type == "private"),
             admin=_is_admin(context, update.effective_user.id if update.effective_user else None),
         )
@@ -786,6 +809,11 @@ async def handle_store_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 context.application.bot_data["descriptions"],
                 html=True,
                 max_length=3900 - len(prefix.encode("utf-16-le")) // 2,
+                alfa_categories=alfa_bonus_categories(
+                    getattr(context.application.bot_data["catalog"], "cards", ()),
+                    mcc,
+                    merchant_names=(brand.name, *getattr(brand, "aliases", ())),
+                ),
             )
         except ValueError:
             text = (
