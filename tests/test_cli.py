@@ -32,7 +32,7 @@ def test_cli_prints_russian_unicode_card_names(capsys) -> None:
     output = capsys.readouterr().out
     assert "🛒 MCC 5411 — Продуктовые магазины" in output
     assert "💳 Витамин Д" in output
-    assert "2,5% (2,435%)" in output
+    assert "2,5% деньгами (2,435%)" in output
 
 
 def test_cli_json_contains_all_components(capsys) -> None:

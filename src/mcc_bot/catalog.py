@@ -180,12 +180,7 @@ class Card:
 
 @dataclass(frozen=True, slots=True)
 class RewardComponent:
-    """One resolved reward component in a card match.
-
-    ``display_kind`` is an optional presentation override used by store-only
-    partner composition.  ``None`` keeps ordinary catalog formatting, an empty
-    string hides the kind, and values such as ``" баллами"`` make it explicit.
-    """
+    """One resolved reward component in a card match."""
 
     program_id: str
     kind: str
@@ -193,7 +188,6 @@ class RewardComponent:
     tax_exempt: bool
     unit: str = "percent"
     currency: str | None = None
-    display_kind: str | None = None
 
     @property
     def gross_percent(self) -> Decimal:

@@ -83,6 +83,13 @@ with the documented per-operation cap. UniStore, MTS, Belpochta, and passenger
 transport exclusions are separate rows. Passenger-transport rules are global
 MCC exclusions rather than a fake public store.
 
+The [public Plushki rules](https://plushki.by/s3/documents/2/Order_of_scoring.pdf)
+list an end date for 21vek. The bot keeps this specific offer open for community
+maintenance. After importing the historical partner data, run
+`python -m mcc_bot.partner_21vek_plushki` once against the configured stores
+database. It clears the stored cutoff, records the current official source and
+leaves later editor changes in place.
+
 ### 1-2-3
 
 Sources:

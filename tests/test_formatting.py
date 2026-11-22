@@ -30,8 +30,8 @@ def test_format_matches_renders_only_cards_and_rewards(catalog_path: Path, tmp_p
     rendered = format_matches("5411", matches, descriptions)
 
     assert rendered.startswith("🛒 MCC 5411 — Продуктовые магазины")
-    assert "1. 🅱️ Beta Card — 5% (4,61%)" in rendered
-    assert "3. 🅰️ Alpha Card — 2,5% (2,435%)" in rendered
+    assert "1. 🅱️ Beta Card — 5% деньгами (4,61%)" in rendered
+    assert "3. 🅰️ Alpha Card — 2,5% деньгами (2,435%)" in rendered
     assert "Beta Bank" not in rendered
     assert "Alpha Bank" not in rendered
     assert "мин. платёж" not in rendered
@@ -52,7 +52,7 @@ def test_expanded_matches_hide_address_annotations(catalog_path: Path) -> None:
 
     rendered = format_matches("5411", (match,), details=True)
 
-    assert "5% (4,61%)" in rendered
+    assert "5% деньгами (4,61%)" in rendered
     assert "только в точках, участвующих в предложении" in rendered
     assert "Минск" not in rendered
     assert "Точная точка Изи-карты" not in rendered
@@ -130,7 +130,7 @@ def test_format_moneyback_tax_and_points_exemption(tmp_path: Path) -> None:
     matches = CardCatalog.from_file(path).lookup("5411")
     by_kind = {match.components[0].kind: match for match in matches}
     assert format_moneyback(by_kind["points"]) == "3% баллами"
-    assert format_moneyback(by_kind["cash"]) == "3% (2,87%)"
+    assert format_moneyback(by_kind["cash"]) == "3% деньгами (2,87%)"
 
 
 def test_format_matches_does_not_render_internal_conditions(tmp_path: Path) -> None:
@@ -208,9 +208,9 @@ def test_default_format_remains_exact_and_single_page_compact_is_identical(catal
 
     assert compact == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
-        "1. 🅱️ Beta Card — 5% (4,61%)\n"
-        "2. 🌀 Gamma Card — 5% (4,61%)\n"
-        "3. 🅰️ Alpha Card — 2,5% (2,435%)"
+        "1. 🅱️ Beta Card — 5% деньгами (4,61%)\n"
+        "2. 🌀 Gamma Card — 5% деньгами (4,61%)\n"
+        "3. 🅰️ Alpha Card — 2,5% деньгами (2,435%)"
     )
     pages = format_match_pages("5411", matches, descriptions)
     assert len(pages) == 1
@@ -255,7 +255,7 @@ def test_details_keep_cash_and_points_terms_separate_and_select_effective_progra
 
     rendered = format_matches("5411", (match,), details=True)
 
-    assert "1% + 3% баллами" in rendered
+    assert "1% деньгами + 3% баллами" in rendered
     assert "   Деньги: мин. платёж 10 BYN · макс. 50 BYN/мес." in rendered
     assert "   Баллы: без минимума · макс. 200 баллов/мес." in rendered
 
@@ -478,8 +478,8 @@ def test_html_matches_style_only_header_names_and_issuers(catalog_path, details)
     rendered = format_matches("5411", matches, descriptions, details=details, html=True)
 
     assert rendered.startswith("<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n")
-    assert "1. 🅱️ <b>Beta Card</b> — 5% (4,61%)" in rendered
-    assert "3. 🅰️ <b>Alpha Card</b> — 2,5% (2,435%)" in rendered
+    assert "1. 🅱️ <b>Beta Card</b> — 5% деньгами (4,61%)" in rendered
+    assert "3. 🅰️ <b>Alpha Card</b> — 2,5% деньгами (2,435%)" in rendered
     assert rendered.count("<b>") == len(matches) + 1
     assert rendered.count("<i>") == (len(matches) if details else 0)
     if details:
@@ -491,11 +491,11 @@ def test_html_matches_style_only_header_names_and_issuers(catalog_path, details)
 @pytest.mark.parametrize(
     ("gross", "reward"),
     [
-        ("0.5", "0,5%"),
-        ("1", "1%"),
-        ("1.11", "1,11%"),
-        ("2.50", "2,5% (2,435%)"),
-        ("19.8765432", "19,8765432% (17,553%)"),
+        ("0.5", "0,5% деньгами"),
+        ("1", "1% деньгами"),
+        ("1.11", "1,11% деньгами"),
+        ("2.50", "2,5% деньгами (2,435%)"),
+        ("19.8765432", "19,8765432% деньгами (17,553%)"),
     ],
 )
 def test_html_matches_use_ordinary_digits_for_all_percentages(catalog_path, gross, reward):

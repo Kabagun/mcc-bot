@@ -50,13 +50,13 @@ def _format_decimal(value: Decimal, *, places: int | None = None) -> str:
     return (rendered or "0").replace(".", ",")
 
 
-def _component_label(component: RewardComponent, *, show_kind: bool = False) -> str:
+def _component_label(component: RewardComponent, *, show_kind: bool) -> str:
     if component.unit == "currency":
         currency = component.currency or ""
         return f"{_format_decimal(component.gross_value)} {currency}".strip()
     value = _format_decimal(component.gross_value)
-    kind_label = component.display_kind or ""
-    if component.display_kind is None and show_kind:
+    kind_label = ""
+    if show_kind:
         kind_label = " деньгами" if component.kind == "cash" else " баллами"
     result = f"{value}%{kind_label}"
     if not component.tax_exempt and component.gross_value > PERCENT_TAX_THRESHOLD:
@@ -66,17 +66,19 @@ def _component_label(component: RewardComponent, *, show_kind: bool = False) -> 
 
 
 def format_moneyback(match: CardMatch) -> str:
-    """Render a compact reward with ordinary digits and explicit points labels."""
+    """Label each run of percentage rewards paid in the same form."""
 
-    if len(match.components) == 1:
-        component = match.components[0]
-        show_kind = component.kind == "points" or any(
-            program.kind == "points" for program in match.card.reward_programs
-        )
-        return _component_label(component, show_kind=show_kind)
+    components = match.components
     return " + ".join(
-        _component_label(component, show_kind=component.kind == "points")
-        for component in match.components
+        _component_label(
+            component,
+            show_kind=(
+                index + 1 == len(components)
+                or component.kind != components[index + 1].kind
+                or component.unit != components[index + 1].unit
+            ),
+        )
+        for index, component in enumerate(components)
     )
 
 

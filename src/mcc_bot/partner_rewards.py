@@ -1226,13 +1226,6 @@ def resolve_store_matches(
                         for component in components
                         if component.kind != exclusion.reward_kind
                     ]
-                components = [
-                    replace(
-                        component,
-                        display_kind=(" деньгами" if component.kind == "cash" else " баллами"),
-                    )
-                    for component in components
-                ]
                 continue
             assert resolution.offer is not None and resolution.tier is not None
             offer, tier = resolution.offer, resolution.tier
@@ -1241,19 +1234,11 @@ def resolve_store_matches(
                 # the ordinary catalog component uses another unit (for example
                 # ordinary cash versus a final Cactus points rate).
                 components = []
-            else:
-                components = [
-                    replace(component, display_kind="")
-                    if component.kind == offer.reward_kind
-                    else component
-                    for component in components
-                ]
             component = RewardComponent(
                 program_id=f"partner:{offer.id}",
                 kind=offer.reward_kind,
                 gross_value=tier.value,
                 tax_exempt=offer.reward_kind == "points",
-                display_kind=" баллами" if offer.reward_kind == "points" else " деньгами",
             )
             components.append(component)
             card = replace(

@@ -11,6 +11,8 @@ import pytest
 
 from mcc_bot.catalog import CardCatalog, MoneyAmount, RewardCap
 from mcc_bot.formatting import format_matches, format_moneyback
+from mcc_bot.partner_21vek_plushki import SOURCE_KEY, SOURCE_URL
+from mcc_bot.partner_21vek_plushki import apply as apply_open_ended_21vek_offer
 from mcc_bot.partner_rewards import (
     PartnerExclusionInput,
     PartnerOfferInput,
@@ -356,6 +358,38 @@ def _offer(brand_id, **overrides) -> PartnerOfferInput:
     }
     values.update(overrides)
     return PartnerOfferInput(**values)
+
+
+def test_21vek_vitamin_d_offer_stays_active_and_preserves_later_edits(tmp_path) -> None:
+    stores, partners, brand_id = _repositories(tmp_path)
+    original = _offer(brand_id)
+    dated = replace(original, tiers=(replace(original.tiers[0], ends_on=original.ends_on),))
+    offer = partners.create_offer(dated, actor_id=1, source_key=SOURCE_KEY)
+    future = date(2027, 1, 1)
+    assert partners.resolve(brand_id, "vitamin_d", "online", "1234", on_date=future) is None
+
+    assert apply_open_ended_21vek_offer(stores, actor_id=1)
+    current = partners.get_offer(offer.id)
+    assert current == replace(
+        offer, ends_on=None, source_url=SOURCE_URL, tiers=(replace(offer.tiers[0], ends_on=None),)
+    )
+
+    catalog = _catalog(tmp_path)
+    matches = resolve_store_matches(catalog, partners, brand_id, "online", "1234", on_date=future)
+    vitamin = next(match for match in matches if match.card.id == "vitamin_d")
+    assert format_moneyback(vitamin) == "3% + 5% баллами"
+    expanded = format_matches("1234", (vitamin,), details=True)
+    assert "100 BYN" in expanded and "50 баллов за операцию" in expanded
+    assert partners.resolve(brand_id, "vitamin_d", "offline", "1234", on_date=future) is None
+    below_minimum = partners.resolve(
+        brand_id, "vitamin_d", "online", "1234", amount=Decimal(99), on_date=future
+    )
+    assert below_minimum is None
+
+    correction = replace(original, ends_on=date(2027, 2, 1))
+    corrected = partners.update_offer(offer.id, correction, actor_id=2)
+    assert not apply_open_ended_21vek_offer(stores, actor_id=1)
+    assert partners.get_offer(offer.id) == corrected
 
 
 def test_address_list_is_compacted_for_display_without_changing_offer_eligibility(tmp_path) -> None:

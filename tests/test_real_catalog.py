@@ -427,11 +427,11 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
         Decimal("1"),
         Decimal("3"),
     ]
-    assert format_moneyback(vitamin) == "1% + 3% баллами"
+    assert format_moneyback(vitamin) == "1% деньгами + 3% баллами"
 
     shopper = next(match for match in matches if match.card.id == "shopper_mtbank")
     assert shopper.gross_percent == Decimal("2.5")
-    assert format_moneyback(shopper) == "2,5% (2,435%)"
+    assert format_moneyback(shopper) == "2,5% деньгами (2,435%)"
     oplati = next(match for match in matches if match.card.id == "oplati")
     assert oplati.gross_percent == Decimal("3")
     assert oplati.components[0].kind == "cash"
@@ -448,23 +448,23 @@ def test_real_catalog_5411_has_expected_sorted_output() -> None:
     rendered = format_matches("5411", matches, _descriptions())
     assert rendered == (
         "🛒 MCC 5411 — Продуктовые магазины\n\n"
-        "1. 💳 Витамин Д — 1% + 3% баллами\n"
-        "2. 💳 Оплати — 3%\n"
-        "3. 💳 Шоппер — 2,5% (2,435%)\n"
-        "4. 💳 Цептер Card — 2%\n"
-        "5. 💳 Цептер PLUS — 2%\n"
+        "1. 💳 Витамин Д — 1% деньгами + 3% баллами\n"
+        "2. 💳 Оплати — 3% деньгами\n"
+        "3. 💳 Шоппер — 2,5% деньгами (2,435%)\n"
+        "4. 💳 Цептер Card — 2% деньгами\n"
+        "5. 💳 Цептер PLUS — 2% деньгами\n"
         "6. 💳 Шчодрая — 2% баллами\n"
-        "7. 💳 R-карта — 1,5%\n"
-        "8. 💳 КОМБОкарта — 1,2%\n"
-        "9. 💳 Спраўная — 1,11%\n"
-        "10. 💳 1-2-3 — 1%\n"
-        "11. 💳 Движение — 1%\n"
+        "7. 💳 R-карта — 1,5% деньгами\n"
+        "8. 💳 КОМБОкарта — 1,2% деньгами\n"
+        "9. 💳 Спраўная — 1,11% деньгами\n"
+        "10. 💳 1-2-3 — 1% деньгами\n"
+        "11. 💳 Движение — 1% деньгами\n"
         "12. 💳 Куфар — 1% баллами\n"
         "13. 💳 МТкарта — 1% баллами\n"
-        "14. 💳 Социальная — 1%\n"
-        "15. 💳 Яркая — 1%\n"
-        "16. 💳 Cashalot — 0,5%\n"
-        "17. 💳 Статускарта — 0,5%"
+        "14. 💳 Социальная — 1% деньгами\n"
+        "15. 💳 Яркая — 1% деньгами\n"
+        "16. 💳 Cashalot — 0,5% деньгами\n"
+        "17. 💳 Статускарта — 0,5% деньгами"
     )
 
 
@@ -602,7 +602,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
     social = next(match for match in matches if match.card.id == "mtbank_social")
     assert social.gross_percent == Decimal("5")
     assert social.net_percent == Decimal("4.61")
-    assert format_moneyback(social) == "5% (4,61%)"
+    assert format_moneyback(social) == "5% деньгами (4,61%)"
     assert next(match for match in matches if match.card.id == "mtkarta").card.condition.kind == (
         "max_connected_categories"
     )
@@ -610,7 +610,7 @@ def test_real_catalog_5912_has_taxed_five_percent_without_internal_conditions() 
         match for match in matches if match.card.id == "cactus_mtbank"
     ).card.condition.kind == ("selected_category")
     rendered = format_matches("5912", matches, _descriptions())
-    assert "💳 Движение — 5% (4,61%)" in rendered
+    assert "💳 Движение — 5% деньгами (4,61%)" in rendered
     assert "подключённых категорий" not in rendered
     assert "выбранная категория" not in rendered
 
@@ -621,23 +621,23 @@ def test_real_catalog_5411_has_exact_rich_output_without_changing_rewards() -> N
 
     assert rendered == (
         "<b>🛒 MCC 5411 — Продуктовые магазины</b>\n\n"
-        "1. 💳 <b>Витамин Д</b> — 1% + 3% баллами\n"
-        "2. 💳 <b>Оплати</b> — 3%\n"
-        "3. 💳 <b>Шоппер</b> — 2,5% (2,435%)\n"
-        "4. 💳 <b>Цептер Card</b> — 2%\n"
-        "5. 💳 <b>Цептер PLUS</b> — 2%\n"
+        "1. 💳 <b>Витамин Д</b> — 1% деньгами + 3% баллами\n"
+        "2. 💳 <b>Оплати</b> — 3% деньгами\n"
+        "3. 💳 <b>Шоппер</b> — 2,5% деньгами (2,435%)\n"
+        "4. 💳 <b>Цептер Card</b> — 2% деньгами\n"
+        "5. 💳 <b>Цептер PLUS</b> — 2% деньгами\n"
         "6. 💳 <b>Шчодрая</b> — 2% баллами\n"
-        "7. 💳 <b>R-карта</b> — 1,5%\n"
-        "8. 💳 <b>КОМБОкарта</b> — 1,2%\n"
-        "9. 💳 <b>Спраўная</b> — 1,11%\n"
-        "10. 💳 <b>1-2-3</b> — 1%\n"
-        "11. 💳 <b>Движение</b> — 1%\n"
+        "7. 💳 <b>R-карта</b> — 1,5% деньгами\n"
+        "8. 💳 <b>КОМБОкарта</b> — 1,2% деньгами\n"
+        "9. 💳 <b>Спраўная</b> — 1,11% деньгами\n"
+        "10. 💳 <b>1-2-3</b> — 1% деньгами\n"
+        "11. 💳 <b>Движение</b> — 1% деньгами\n"
         "12. 💳 <b>Куфар</b> — 1% баллами\n"
         "13. 💳 <b>МТкарта</b> — 1% баллами\n"
-        "14. 💳 <b>Социальная</b> — 1%\n"
-        "15. 💳 <b>Яркая</b> — 1%\n"
-        "16. 💳 <b>Cashalot</b> — 0,5%\n"
-        "17. 💳 <b>Статускарта</b> — 0,5%"
+        "14. 💳 <b>Социальная</b> — 1% деньгами\n"
+        "15. 💳 <b>Яркая</b> — 1% деньгами\n"
+        "16. 💳 <b>Cashalot</b> — 0,5% деньгами\n"
+        "17. 💳 <b>Статускарта</b> — 0,5% деньгами"
     )
     pages = format_match_pages("5411", matches, _descriptions(), html=True)
     assert len(pages) == 1
@@ -658,7 +658,7 @@ def test_real_catalog_social_uses_one_percent_fallback_with_kufar_exclusions() -
     social = next(match for match in matches if match.card.id == "mtbank_social")
     assert social.gross_percent == Decimal("1")
     assert social.net_percent == Decimal("1")
-    assert format_moneyback(social) == "1%"
+    assert format_moneyback(social) == "1% деньгами"
     assert all(match.card.id != "mtbank_social" for match in catalog.lookup("6010"))
 
 
@@ -666,7 +666,7 @@ def test_real_catalog_r_karta_default_and_exclusions() -> None:
     catalog = _catalog(include_disabled=True)
     r_karta = next(match for match in catalog.lookup("7297") if match.card.id == "reshenie_r_karta")
     assert r_karta.gross_percent == Decimal("1.5")
-    assert format_moneyback(r_karta) == "1,5%"
+    assert format_moneyback(r_karta) == "1,5% деньгами"
     assert all(match.card.id != "reshenie_r_karta" for match in catalog.lookup("4812"))
 
 
@@ -678,7 +678,7 @@ def test_real_catalog_reshenie_visa_pay_default_and_exact_mcc_exclusions() -> No
     assert match.card.name == "Visa Решение · оплата Apple Pay и др."
     assert match.card.issuer == "Банк Решение"
     assert match.gross_percent == match.net_percent == Decimal("10")
-    assert format_moneyback(match) == "10%"
+    assert format_moneyback(match) == "10% деньгами"
     program = match.card.reward_programs[0]
     assert program.default_value == Decimal("10")
     assert program.tax_exempt is True
@@ -745,7 +745,7 @@ def test_real_catalog_bnb_1_2_3_default_mobile_rate_and_exclusions() -> None:
     grocery = next(match for match in catalog.lookup("5411") if match.card.id == "bnb_1_2_3")
 
     assert grocery.gross_percent == Decimal("1")
-    assert format_moneyback(grocery) == "1%"
+    assert format_moneyback(grocery) == "1% деньгами"
     travel = next(match for match in catalog.lookup("4722") if match.card.id == "bnb_1_2_3")
     assert travel.gross_percent == Decimal("1")
     mobile = next(match for match in catalog.lookup("4814") if match.card.id == "bnb_1_2_3")
@@ -758,7 +758,7 @@ def test_real_catalog_combo_default_and_exclusions() -> None:
     grocery = next(match for match in catalog.lookup("5411") if match.card.id == "paritet_combo")
 
     assert grocery.gross_percent == Decimal("1.2")
-    assert format_moneyback(grocery) == "1,2%"
+    assert format_moneyback(grocery) == "1,2% деньгами"
     assert all(match.card.id != "paritet_combo" for match in catalog.lookup("4812"))
 
 
@@ -767,7 +767,7 @@ def test_real_catalog_spraunaya_uses_default_and_visible_exclusions() -> None:
     match = next(match for match in catalog.lookup("5411") if match.card.id == "dabrabyt_spraunaya")
 
     assert match.gross_percent == Decimal("1.11")
-    assert format_moneyback(match) == "1,11%"
+    assert format_moneyback(match) == "1,11% деньгами"
     fallback = next(
         match for match in catalog.lookup("1234") if match.card.id == "dabrabyt_spraunaya"
     )
@@ -780,10 +780,10 @@ def test_real_catalog_izi_uses_two_percent_for_only_listed_mccs() -> None:
     match = next(match for match in catalog.lookup("5812") if match.card.id == "belarusbank_izi")
 
     assert match.gross_percent == Decimal("2")
-    assert format_moneyback(match) == "2%"
+    assert format_moneyback(match) == "2% деньгами"
     assert all(match.card.id != "belarusbank_izi" for match in catalog.lookup("5411"))
     rendered = format_matches("5812", catalog.lookup("5812"), _descriptions())
-    assert "💳 Изи-карта — 2%" in rendered
+    assert "💳 Изи-карта — 2% деньгами" in rendered
     assert "Беларусбанк" not in rendered
     assert "мин. платёж" not in rendered
 
@@ -1002,7 +1002,7 @@ def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() ->
     by_id = {match.card.id: match for match in matches}
 
     oplati = format_matches("5411", (by_id["oplati"],), _descriptions(), details=True)
-    assert "💳 Оплати — 3%" in oplati
+    assert "💳 Оплати — 3% деньгами" in oplati
     assert "Белинвестбанк" in oplati
     assert "Мин. платёж 3 BYN" in oplati
     assert "20 BYN/неделю" in oplati
@@ -1025,7 +1025,7 @@ def test_real_catalog_expanded_results_show_effective_bank_and_reward_terms() ->
     assert "10 BYN" in bnb and "123 BYN/мес." in bnb
 
     visa_pay = format_matches("5411", (by_id["reshenie_visa_pay"],), details=True)
-    assert "💳 Visa Решение · оплата Apple Pay и др. — 10%" in visa_pay
+    assert "💳 Visa Решение · оплата Apple Pay и др. — 10% деньгами" in visa_pay
     assert "Банк Решение" in visa_pay
 
     pages = format_match_pages("5411", matches, _descriptions())
