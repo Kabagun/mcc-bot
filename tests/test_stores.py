@@ -8,6 +8,7 @@ import sqlite3
 
 import pytest
 
+from mcc_bot.partner_rewards import PartnerRepository
 from mcc_bot.stores import StaleChangeError, StoreError, StoreRepository, normalize_store_name
 
 
@@ -634,6 +635,145 @@ def test_brand_search_ignores_names_of_archived_members(repository):
 
     assert repository.search("Canonical").matches[0].id == active.brand_id
     assert repository.search("Obsolete branch").matches == ()
+
+
+def test_archive_brand_hides_all_active_members_and_undo_restores_them(repository):
+    offline = repository.import_store(source_metadata(), source_evidence())
+    brand_id = offline.brand_id
+    online = repository.apply_change(
+        "add_merchant",
+        {
+            "name": "Online branch",
+            "aliases": ["App branch"],
+            "channel": "online",
+            "brand_id": brand_id,
+            "mcc": "5411",
+        },
+        2,
+    )
+    obsolete = repository.apply_change(
+        "add_merchant", {"name": "Obsolete branch", "brand_id": brand_id, "mcc": "5311"}, 2
+    )
+    repository.apply_change("archive_merchant", {"merchant_id": obsolete.merchant_id}, 2)
+    old_merchant = repository.get(obsolete.merchant_id, include_archived=True)
+    independent = add(repository, name="Independent brand", mcc="5812")
+    active_members = (offline.merchant_id, online.merchant_id)
+    facts = {merchant_id: repository.list_mcc(merchant_id) for merchant_id in active_members}
+    PartnerRepository(repository).initialize()
+    with repository.connection() as connection:
+        connection.execute(
+            "INSERT INTO partner_seed_brands(source_key,brand_id) VALUES(?,?)", ("sample", brand_id)
+        )
+
+    archive = repository.apply_change("archive_brand", {"brand_id": brand_id}, 3)
+
+    assert repository.get_brand(brand_id) is None
+    assert repository.list_brand_members(brand_id) == ()
+    assert repository.list_brand_mcc(brand_id) == ()
+    assert all(repository.get(merchant_id) is None for merchant_id in active_members)
+    assert repository.find_exact("Евроопт", "offline") == ()
+    assert repository.find_exact("App branch", "online") == ()
+    for query in ("Евроопт", "App branch"):
+        result = repository.search(query)
+        assert result.matches == result.suggestions == ()
+    assert repository.get(independent.merchant_id) is not None
+    assert repository.get(obsolete.merchant_id, include_archived=True) == old_merchant
+    for merchant_id, original_facts in facts.items():
+        assert repository.list_mcc(merchant_id) == original_facts
+    with repository.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT brand_id FROM partner_seed_brands WHERE source_key='sample'"
+            ).fetchone()["brand_id"]
+            == brand_id
+        )
+    entry = repository.brand_history(brand_id)[0]
+    assert (entry.id, entry.brand_id, entry.kind, entry.actor_id) == (
+        archive.audit_id,
+        brand_id,
+        "archive_brand",
+        3,
+    )
+    assert entry.summary == "магазин убран из поиска"
+    assert entry.details == ("Магазин убран из поиска.",)
+    for unavailable_id in (brand_id, 999999):
+        with pytest.raises(StoreError, match="Магазин недоступен"):
+            repository.apply_change("archive_brand", {"brand_id": unavailable_id}, 4)
+    assert repository.brand_history(brand_id)[0].id == archive.audit_id
+
+    reimported = repository.import_store(source_metadata(2), source_evidence("5499"))
+    assert (reimported.merchant_id, reimported.brand_id) == (offline.merchant_id, brand_id)
+    assert repository.get(reimported.merchant_id) is None
+    assert repository.find_exact("Евроопт", "offline") == ()
+    assert repository.search("Евроопт").matches == ()
+
+    undo = repository.apply_change("revert", {"audit_id": archive.audit_id}, 4)
+
+    assert undo.brand_id == brand_id
+    assert tuple(member.id for member in repository.list_brand_members(brand_id)) == active_members
+    assert repository.get(obsolete.merchant_id, include_archived=True) == old_merchant
+    assert repository.find_exact("Евроопт", "offline")[0].id == offline.merchant_id
+    assert repository.find_exact("App branch", "online")[0].id == online.merchant_id
+    assert repository.search("App branch").matches[0].id == brand_id
+    assert "5499" in {fact.mcc for fact in repository.list_brand_mcc(brand_id)}
+    assert repository.audit_entry(archive.audit_id).reverted_by == undo.audit_id
+    assert repository.audit_entry(undo.audit_id).summary == "магазин возвращён в поиск"
+
+
+def test_archived_brand_hides_a_member_restored_by_an_earlier_audit(repository):
+    member = add(repository, name="Hidden brand")
+    older_archive = repository.apply_change(
+        "archive_merchant", {"merchant_id": member.merchant_id}, 1
+    )
+    archive = repository.apply_change("archive_brand", {"brand_id": member.brand_id}, 2)
+
+    repository.apply_change("revert", {"audit_id": older_archive.audit_id}, 3)
+
+    assert repository.get(member.merchant_id) is None
+    assert repository.find_exact("Hidden brand", "offline") == ()
+    assert repository.list_brand_members(member.brand_id) == ()
+    assert repository.list_brand_mcc(member.brand_id) == ()
+    assert repository.search("Hidden brand").matches == ()
+    restored_member = repository.get(member.merchant_id, include_archived=True)
+    assert not restored_member.archived
+
+    repository.apply_change("revert", {"audit_id": archive.audit_id}, 4)
+
+    assert repository.get(member.merchant_id) == restored_member
+
+
+def test_archive_brand_undo_retains_brand_attribution_without_a_member(repository):
+    empty = add(repository, name="Empty brand", mcc=None)
+    target = add(repository, name="Target brand", mcc=None)
+    repository.apply_change(
+        "set_brand_membership", {"merchant_id": empty.merchant_id, "brand_id": target.brand_id}, 1
+    )
+    archive = repository.apply_change("archive_brand", {"brand_id": empty.brand_id}, 2)
+
+    undo = repository.apply_change("revert", {"audit_id": archive.audit_id}, 3)
+
+    assert repository.get_brand(empty.brand_id) is not None
+    assert repository.list_brand_members(empty.brand_id) == ()
+    assert undo.brand_id == empty.brand_id
+    assert repository.brand_history(empty.brand_id)[0].id == undo.audit_id
+
+
+def test_archive_brand_undo_rejects_a_member_moved_by_an_earlier_audit(repository):
+    source = add(repository, name="Source brand", mcc=None)
+    target = add(repository, name="Target brand", mcc=None)
+    move = repository.apply_change(
+        "set_brand_membership", {"merchant_id": source.merchant_id, "brand_id": target.brand_id}, 1
+    )
+    archive = repository.apply_change("archive_brand", {"brand_id": target.brand_id}, 2)
+    repository.apply_change("revert", {"audit_id": move.audit_id}, 3)
+
+    with pytest.raises(StaleChangeError, match="более поздние изменения"):
+        repository.apply_change("revert", {"audit_id": archive.audit_id}, 4)
+
+    assert repository.get_brand(target.brand_id) is None
+    assert repository.get(source.merchant_id, include_archived=True).archived
+    assert repository.get(target.merchant_id, include_archived=True).archived
+    assert repository.audit_entry(archive.audit_id).reverted_by is None
 
 
 def test_brand_merge_adopts_note_and_conflicting_notes_require_manual_edit(repository):

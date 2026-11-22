@@ -87,6 +87,7 @@ KINDS = {
     "rename_merchant": "Исправить название",
     "merge_merchant": "Объединить дубль",
     "aliases": "Изменить другие названия",
+    "archive_brand": "Убрать магазин из поиска",
     "archive_merchant": "Убрать магазин из поиска",
     "archive_mcc": "Убрать ошибочный MCC",
     "revert": "Отменить изменение",
@@ -3832,6 +3833,14 @@ async def _finish_form_submission(
     proposal: Proposal | None = None,
 ) -> None:
     proposal = proposal or service.submit(draft.user_id, draft.id, draft.version)
+    if proposal.status == "approved" and proposal.kind == "archive_brand":
+        await _say_with_restored_menu(
+            update,
+            "Магазин убран из поиска. Его можно восстановить из истории изменений.",
+            keyboard_for(service, draft.user_id),
+            _keyboard([[("Открыть запись в истории", f"history_entry:{proposal.audit_id}:0")]]),
+        )
+        return
     pilot = draft.data.get("form_flow_v2") is True
     summary = _form_result_summary(context, service, draft, proposal) if pilot else ""
     if proposal.status != "approved":
@@ -4095,6 +4104,8 @@ async def _render_form_menu(
                     ("🗑", f"menu_partner_delete:{index}"),
                 ]
             )
+        if service.can_edit_brand(draft.user_id, brand.id):
+            rows.append([("🗑 Удалить магазин", "menu_brand_archive")])
         rows.append([("⬅️ Назад", "menu_root")])
     else:
         channels: dict[str, list[str]] = {"offline": [], "online": []}
@@ -4224,7 +4235,24 @@ async def _begin_form_menu(
     await _render_form_menu(update, context, service, draft)
 
 
-async def _render_delete_confirm(update: Update, service: CommunityService, draft: Draft) -> None:
+async def _render_delete_confirm(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, service: CommunityService, draft: Draft
+) -> None:
+    if draft.data["kind"] == "archive_brand":
+        brand = _brand(service, draft.data["brand_id"])
+        if brand is None:
+            raise StaleAction("Магазин больше недоступен.")
+        rows = [[("🗑 Удалить магазин", "delete_yes")], [("← К редактору", "delete_no")]]
+        await _render_durable_form_message(
+            update,
+            context,
+            service,
+            draft,
+            f"Убрать магазин «{brand.name}» из поиска?\n\n"
+            "Магазин можно будет восстановить из истории изменений.",
+            _draft_buttons(draft, rows),
+        )
+        return
     warning = draft.data.get("warning")
     text = draft.data["title"] + "\n\nУдалить?"
     if warning:
@@ -4257,6 +4285,20 @@ async def _form_menu_callback(
         }[action]
         next_draft = service.advance(draft.user_id, draft.id, draft.version, "form_menu", next_data)
         await _render_form_menu(update, context, service, next_draft)
+        return
+    if action == "menu_brand_archive":
+        if not service.can_edit_brand(draft.user_id, brand.id):
+            raise CommunityError("Удалять магазины из поиска могут только помощники.")
+        delete_data = {
+            "draft_mode": True,
+            "brand_id": brand.id,
+            "kind": "archive_brand",
+            "payload": {"brand_id": brand.id},
+        }
+        if data.get("form_flow_v2") is True:
+            delete_data["form_flow_v2"] = True
+        draft = service.advance(draft.user_id, draft.id, draft.version, "form_delete", delete_data)
+        await _render_delete_confirm(update, context, service, draft)
         return
     if action == "menu_metadata":
         form_data = _new_form_data(
@@ -4305,7 +4347,7 @@ async def _form_menu_callback(
             draft = service.advance(
                 draft.user_id, draft.id, draft.version, "form_delete", delete_data
             )
-            await _render_delete_confirm(update, service, draft)
+            await _render_delete_confirm(update, context, service, draft)
             return
         form_data = _new_form_data(
             context,
@@ -4347,7 +4389,7 @@ async def _form_menu_callback(
             draft = service.advance(
                 draft.user_id, draft.id, draft.version, "form_delete", delete_data
             )
-            await _render_delete_confirm(update, service, draft)
+            await _render_delete_confirm(update, context, service, draft)
             return
         form_data = _new_form_data(
             context,
@@ -4370,21 +4412,31 @@ async def _form_delete_callback(
     draft: Draft,
     parts: list[str],
 ) -> None:
+    archive_brand = draft.data["kind"] == "archive_brand"
     if parts[0] == "delete_no":
         brand_id = draft.data.get("brand_id")
         if not isinstance(brand_id, int):
             raise StaleAction("Магазин больше недоступен.")
-        draft = service.advance(
-            draft.user_id,
-            draft.id,
-            draft.version,
-            "form_menu",
-            _menu_data(service, brand_id),
-        )
+        menu_data = _menu_data(service, brand_id)
+        if archive_brand:
+            menu_data["menu_view"] = "more"
+            if draft.data.get("form_flow_v2") is True:
+                menu_data["form_flow_v2"] = True
+        draft = service.advance(draft.user_id, draft.id, draft.version, "form_menu", menu_data)
         await _render_form_menu(update, context, service, draft)
         return
     if parts[0] != "delete_yes":
         raise StaleAction("Выберите подтверждение или отмену.")
+    if archive_brand:
+        bound = service.editor_message(draft.user_id, draft.id)
+        proposal = service.submit(draft.user_id, draft.id, draft.version)
+        await _finish_form_submission(update, context, service, draft, proposal)
+        if bound is not None:
+            try:
+                await context.bot.delete_message(chat_id=bound[0], message_id=bound[1])
+            except (TelegramError, AttributeError):
+                LOGGER.info("Could not delete the finished store archive confirmation")
+        return
     preview = {
         "draft_mode": True,
         "dirty": True,

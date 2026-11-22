@@ -971,17 +971,19 @@ class StoreRepository:
                 connection.execute("DELETE FROM store_audit WHERE id=?", (audit["id"],))
 
     def get(self, merchant_id: int, *, connection=None, include_archived=False) -> Merchant | None:
-        """Read a merchant; archived and merged records are hidden by default."""
+        """Read a merchant; archived records and their brands are hidden by default."""
 
         if connection is None:
             with self.connection() as conn:
                 return self.get(merchant_id, connection=conn, include_archived=include_archived)
         row = connection.execute(
-            "SELECT * FROM store_merchants WHERE id=?", (merchant_id,)
+            """SELECT m.* FROM store_merchants m
+            LEFT JOIN store_brand_members bm ON bm.merchant_id=m.id
+            LEFT JOIN store_brands b ON b.id=bm.brand_id
+            WHERE m.id=? AND (? OR (m.archived=0 AND coalesce(b.archived,0)=0))""",
+            (merchant_id, include_archived),
         ).fetchone()
-        if row is None or (row["archived"] and not include_archived):
-            return None
-        return self._merchant(row)
+        return self._merchant(row) if row is not None else None
 
     def get_brand(self, brand_id: int, *, connection=None, include_archived=False) -> Brand | None:
         """Read a brand; merged and archived brands are hidden by default."""
@@ -1118,8 +1120,9 @@ class StoreRepository:
         rows = connection.execute(
             """SELECT m.* FROM store_merchants m
             JOIN store_brand_members bm ON bm.merchant_id=m.id
+            JOIN store_brands b ON b.id=bm.brand_id
             WHERE bm.brand_id=? AND (? IS NULL OR m.channel=?)
-              AND (? OR m.archived=0)
+              AND (? OR (m.archived=0 AND b.archived=0))
             ORDER BY CASE m.channel WHEN 'offline' THEN 0 ELSE 1 END,m.id""",
             (brand_id, channel, channel, include_archived),
         )
@@ -1210,7 +1213,10 @@ class StoreRepository:
                 return self.find_exact(name, channel, connection=conn)
         needle = normalize_store_name(name)
         rows = connection.execute(
-            "SELECT * FROM store_merchants WHERE archived=0 AND channel=? ORDER BY id",
+            """SELECT m.* FROM store_merchants m
+            LEFT JOIN store_brand_members bm ON bm.merchant_id=m.id
+            LEFT JOIN store_brands b ON b.id=bm.brand_id
+            WHERE m.archived=0 AND coalesce(b.archived,0)=0 AND m.channel=? ORDER BY m.id""",
             (_channel(channel),),
         )
         return tuple(
@@ -1307,8 +1313,9 @@ class StoreRepository:
                WHERE e.fact_id=f.id AND e.revoked=0 AND e.source<>'tannei') AS evidence_count
             FROM store_brand_members bm
             JOIN store_merchants m ON m.id=bm.merchant_id
+            JOIN store_brands b ON b.id=bm.brand_id
             JOIN store_facts f ON f.merchant_id=m.id
-            WHERE bm.brand_id=? AND m.archived=0
+            WHERE bm.brand_id=? AND m.archived=0 AND b.archived=0
               AND (? IS NULL OR m.channel=?) AND (? OR f.archived=0)
             ORDER BY CASE m.channel WHEN 'offline' THEN 0 ELSE 1 END,f.mcc,m.id""",
             (brand_id, channel, channel, include_archived),
@@ -1457,9 +1464,25 @@ class StoreRepository:
     def _audit_entry_from_row(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> AuditEntry:
         values = dict(row)
         changes_json = values.pop("changes_json")
-        values["details"] = cls._audit_details(connection, changes_json)
+        values["details"] = cls._audit_details(connection, changes_json, kind=values["kind"])
         values["summary"] = cls._audit_summary(connection, values["kind"], changes_json)
         return AuditEntry(**values)
+
+    @staticmethod
+    def _restores_archived_brand(edits: list[dict]) -> bool:
+        for edit in edits:
+            if not isinstance(edit, dict) or edit.get("table") != "store_brands":
+                continue
+            before, after = edit.get("before"), edit.get("after")
+            if (
+                isinstance(before, dict)
+                and isinstance(after, dict)
+                and before.get("archived") == 1
+                and before.get("merged_into") is None
+                and after.get("archived") == 0
+            ):
+                return True
+        return False
 
     @staticmethod
     def _audit_summary(connection: sqlite3.Connection, kind: str, changes_json: str) -> str:
@@ -1483,6 +1506,10 @@ class StoreRepository:
         if not isinstance(changes, list):
             changes = []
         edits = [edit for edit in changes if isinstance(edit, dict)]
+        if kind == "archive_brand":
+            return "магазин убран из поиска"
+        if kind == "revert" and StoreRepository._restores_archived_brand(edits):
+            return "магазин возвращён в поиск"
 
         merchant_states: dict[int, dict] = {}
         fact_states: dict[int, dict] = {}
@@ -1710,7 +1737,9 @@ class StoreRepository:
         return "обновлена запись"
 
     @staticmethod
-    def _audit_details(connection: sqlite3.Connection, changes_json: str) -> tuple[str, ...]:
+    def _audit_details(
+        connection: sqlite3.Connection, changes_json: str, *, kind: str = ""
+    ) -> tuple[str, ...]:
         """Summarize allowlisted audit fields without exposing raw evidence metadata."""
 
         def clipped(value: Any, maximum: int = 80) -> str:
@@ -1741,6 +1770,10 @@ class StoreRepository:
             changes = []
         if not isinstance(changes, list):
             changes = []
+        if kind == "archive_brand":
+            return ("Магазин убран из поиска.",)
+        if kind == "revert" and StoreRepository._restores_archived_brand(changes):
+            return ("Магазин возвращён в поиск.",)
         details: list[str] = []
         added_mcc: list[str] = []
         hidden_mcc: list[str] = []
@@ -2155,7 +2188,7 @@ class StoreRepository:
         Supported kinds: add_merchant, add_mcc, add_mcc_both, replace_mcc, archive_mcc,
         edit_mcc_note, rename_merchant, aliases, archive_merchant,
         rename_brand, brand_aliases, edit_brand_names, set_brand_membership, merge_brand,
-        merge_merchant, revert.
+        archive_brand, merge_merchant, revert.
         Reversion creates a new audit and retains the historical evidence rows.
         """
 
@@ -2233,8 +2266,7 @@ class StoreRepository:
         reverted = None
         brand_id = None
         if kind == "revert":
-            merchant_id, reverted = self._revert(connection, changes, payload["audit_id"])
-            brand_id = self._brand_id_for_merchant(connection, merchant_id)
+            merchant_id, brand_id, reverted = self._revert(connection, changes, payload["audit_id"])
         elif kind == "add_merchant":
             location = _location(payload.get("location"))
             merchant_id = self._insert(
@@ -2277,6 +2309,7 @@ class StoreRepository:
             "edit_brand_names",
             "set_brand_membership",
             "merge_brand",
+            "archive_brand",
         }:
             if kind == "set_brand_membership":
                 merchant_id = int(payload["merchant_id"])
@@ -2320,6 +2353,8 @@ class StoreRepository:
                         aliases_json=_json(_aliases(payload["aliases"])),
                         revision=brand["revision"] + 1,
                     )
+                elif kind == "archive_brand":
+                    self._archive_brand(connection, changes, brand)
                 else:
                     brand_id = self._merge_brands(
                         connection, changes, brand, int(payload["target_id"])
@@ -2420,6 +2455,26 @@ class StoreRepository:
                 "UPDATE store_audit SET reverted_by=? WHERE id=?", (cursor.lastrowid, reverted)
             )
         return ChangeResult(cursor.lastrowid, merchant_id, brand_id)
+
+    def _archive_brand(self, connection, changes, brand):
+        members = self.list_brand_members(brand["id"], connection=connection)
+        for member in members:
+            self._update(
+                connection,
+                changes,
+                "store_merchants",
+                member.id,
+                archived=1,
+                revision=member.revision + 1,
+            )
+        self._update(
+            connection,
+            changes,
+            "store_brands",
+            brand["id"],
+            archived=1,
+            revision=brand["revision"] + 1,
+        )
 
     def _move_mcc(self, connection, changes, payload):
         """Move/replace one logical MCC while leaving empty source brands searchable."""
@@ -3034,7 +3089,11 @@ class StoreRepository:
             row = connection.execute(
                 f"SELECT * FROM {edit['table']} WHERE id=?", (edit["id"],)
             ).fetchone()
-            if (dict(row) if row else None) != edit["after"]:
+            if (dict(row) if row else None) != edit["after"] or (
+                audit["kind"] == "archive_brand"
+                and edit["table"] == "store_merchants"
+                and self._brand_id_for_merchant(connection, edit["id"]) != audit["brand_id"]
+            ):
                 raise StaleChangeError(
                     "Есть более поздние изменения; внесите отдельное исправление"
                 )
@@ -3140,7 +3199,12 @@ class StoreRepository:
                         if state is not None:
                             brand_ids.add(state["brand_id"])
             self._redistribute_tannei_snapshots(connection, changes, brand_ids)
-        return audit["merchant_id"], audit["id"]
+        brand_id = (
+            audit["brand_id"]
+            if audit["kind"] == "archive_brand"
+            else self._brand_id_for_merchant(connection, audit["merchant_id"])
+        )
+        return audit["merchant_id"], brand_id, audit["id"]
 
     def _revoke_import_snapshot_additions(self, connection, changes, row_id, before, after):
         """Keep reverted source keys as tombstones so reimport cannot reactivate them."""

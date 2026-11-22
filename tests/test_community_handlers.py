@@ -540,6 +540,75 @@ def test_operation_menu_deletes_last_mcc_but_keeps_store_searchable(flow):
     assert service.stores.search("Empty after delete").matches[0].id == brand_id
 
 
+def test_helper_archives_an_entire_store_and_can_restore_it_from_history(flow):
+    service = flow.application.bot_data["community"]
+    store = service.stores.apply_change(
+        "add_mcc_both", {"name": "Fixture duplicate store", "mcc": "5411"}, 1
+    )
+    brand_id = store.brand_id
+
+    click(flow, f"edit:{brand_id}", 2)
+    more = draft_click(flow, "menu_more", 2)
+    assert "🗑 Удалить магазин" in [button.text for button in all_buttons(more)]
+    confirmation = draft_click(flow, "menu_brand_archive", 2)
+    assert any(
+        "Убрать магазин «Fixture duplicate store» из поиска?" in call.args[0]
+        for call in confirmation.effective_message.reply_text.await_args_list
+    )
+    assert service.stores.get_brand(brand_id) is not None
+    returned = draft_click(flow, "delete_no", 2)
+    assert "🗑 Удалить магазин" in [button.text for button in all_buttons(returned)]
+
+    draft_click(flow, "menu_brand_archive", 2)
+    completed = draft_click(flow, "delete_yes", 2)
+    assert "Магазин убран из поиска" in completed.effective_message.reply_text.await_args.args[0]
+    assert service.draft(2) is None
+    assert service.stores.search("Fixture duplicate store").matches == ()
+    entry = service.stores.history()[0]
+    assert (entry.kind, entry.brand_id, entry.actor_id) == ("archive_brand", brand_id, 2)
+
+    click(flow, f"history_entry:{entry.id}:0", 2)
+    draft_click(flow, f"undo:{entry.id}", 2)
+    draft_click(flow, "submit", 2)
+    assert service.stores.search("Fixture duplicate store").matches[0].id == brand_id
+    (fact,) = service.stores.list_brand_mcc_groups(brand_id)
+    assert fact.channels == ("offline", "online")
+
+
+def test_store_archive_is_unavailable_to_ordinary_users_and_revoked_helpers(flow):
+    service = flow.application.bot_data["community"]
+    brand_id = service.stores.brand_for_merchant(merchant(flow)).id
+
+    click(flow, f"edit:{brand_id}")
+    more = draft_click(flow, "menu_more")
+    assert all(button.text != "🗑 Удалить магазин" for button in all_buttons(more))
+    forged = draft_click(flow, "menu_brand_archive")
+    assert "только помощники" in forged.effective_message.reply_text.await_args.args[0]
+
+    click(flow, f"edit:{brand_id}", 2)
+    draft_click(flow, "menu_more", 2)
+    draft_click(flow, "menu_brand_archive", 2)
+    draft = service.draft(2)
+    service.set_role(1, 2, False)
+    click(flow, f"d:{draft.id}:{draft.version}:delete_yes", 2)
+    assert service.stores.get_brand(brand_id) is not None
+
+
+def test_store_archive_requires_a_fresh_confirmation_after_an_mcc_is_added(flow):
+    service = flow.application.bot_data["community"]
+    merchant_id = merchant(flow, "Changing store")
+    brand_id = service.stores.brand_for_merchant(merchant_id).id
+    click(flow, f"edit:{brand_id}", 2)
+    draft_click(flow, "menu_more", 2)
+    draft_click(flow, "menu_brand_archive", 2)
+
+    service.stores.apply_change("add_mcc", {"merchant_id": merchant_id, "mcc": "5812"}, 1)
+    stale = draft_click(flow, "delete_yes", 2)
+    assert "изменились после просмотра" in stale.effective_message.reply_text.await_args.args[0]
+    assert service.stores.get_brand(brand_id) is not None
+    assert service.draft(2).stage == "form_delete"
+
+
 def test_helper_edits_claimed_payload_in_the_same_editor(flow):
     service = flow.application.bot_data["community"]
     merchant_id = merchant(flow, "Review editor")

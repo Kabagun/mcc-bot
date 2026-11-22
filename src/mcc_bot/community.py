@@ -54,6 +54,7 @@ FORM_KINDS = frozenset(
 PUBLIC_KINDS = PUBLIC_KINDS | FORM_KINDS
 EDIT_KINDS = PUBLIC_KINDS | {
     "aliases",
+    "archive_brand",
     "archive_merchant",
     "archive_mcc",
     "revert",
@@ -68,6 +69,7 @@ STRUCTURAL_KINDS = frozenset(
     {
         "rename_merchant",
         "aliases",
+        "archive_brand",
         "archive_merchant",
         "merge_merchant",
         "add_mcc_both",
@@ -81,7 +83,7 @@ STRUCTURAL_KINDS = frozenset(
         "edit_mcc_note",
     }
 )
-LOCKED_BRAND_KINDS = frozenset({"store_metadata", "mcc_save", "partner_save"})
+LOCKED_BRAND_KINDS = frozenset({"store_metadata", "mcc_save", "partner_save", "archive_brand"})
 LOCKED_SOURCE_KEYS = {
     "mcc_save": ("merchant_id", "merchant_ids", "channels", "old_mcc"),
     "partner_save": ("offer_id",),
@@ -1049,11 +1051,9 @@ class CommunityService:
             data = self._protect_draft_data(conn, stage, data, current=draft.data)
             data = self._protect_form_snapshot(conn, stage, data, current=draft.data)
             if (
-                stage == "preview"
-                and draft.stage != "preview"
-                and data.get("kind") in EDIT_KINDS
-                and "expected" not in data
-            ):
+                (stage == "preview" and draft.stage != "preview" and data.get("kind") in EDIT_KINDS)
+                or (stage == "form_delete" and data.get("kind") == "archive_brand")
+            ) and "expected" not in data:
                 data["expected"] = self._snapshot(conn, data["kind"], data["payload"])
             conn.execute(
                 """UPDATE community_drafts SET stage=?,data=?,version=version+1,updated_at=?
@@ -1119,6 +1119,7 @@ class CommunityService:
             "rename_merchant": ({"merchant_id", "name"}, set()),
             "merge_merchant": ({"merchant_id", "target_id"}, set()),
             "aliases": ({"merchant_id", "aliases"}, set()),
+            "archive_brand": ({"brand_id"}, set()),
             "archive_merchant": ({"merchant_id"}, set()),
             "archive_mcc": ({"merchant_id", "mcc"}, {"merchant_ids", "channels"}),
             "rename_brand": ({"brand_id", "name"}, set()),
@@ -2006,6 +2007,7 @@ class CommunityService:
             in {
                 "rename_brand",
                 "brand_aliases",
+                "archive_brand",
                 "edit_brand_names",
                 "merge_brand",
                 "set_brand_membership",
@@ -2024,6 +2026,24 @@ class CommunityService:
                 if brand is None:
                     raise CommunityError("Магазин больше недоступен. Откройте поиск заново.")
                 result["brands"][str(value)] = [brand.revision, brand.archived, brand.location]
+        if kind == "archive_brand" and brand_id is not None:
+            members = self.stores.list_brand_members(brand_id, connection=conn)
+            member_state = [
+                (
+                    member.id,
+                    member.revision,
+                    [
+                        (fact.mcc, fact.revision, fact.evidence_count)
+                        for fact in self.stores.list_mcc(member.id, connection=conn)
+                    ],
+                )
+                for member in members
+            ]
+            imported = self.stores.tannei_snapshot(brand_id, connection=conn)
+            result["archive_state"] = self._fingerprint(
+                kind,
+                {"members": member_state, "import_revision": imported and imported["revision"]},
+            )
         if kind == "add_mcc_both" and brand_id is not None:
             for merchant in self.stores.list_brand_members(
                 brand_id, connection=conn, include_archived=True
@@ -2189,7 +2209,10 @@ class CommunityService:
 
         with self.stores.transaction() as conn:
             draft = self._draft(conn, user_id, draft_id, version)
-            if draft.stage != "preview":
+            archive_confirmation = (
+                draft.stage == "form_delete" and draft.data.get("kind") == "archive_brand"
+            )
+            if draft.stage != "preview" and not archive_confirmation:
                 raise StaleAction("Сначала проверьте предложение.")
             protected_data = self._protect_draft_data(
                 conn, draft.stage, draft.data, current=draft.data
