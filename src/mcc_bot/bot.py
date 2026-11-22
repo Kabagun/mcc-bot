@@ -14,7 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telegram import BotCommand, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -78,11 +78,14 @@ def load_environment() -> None:
 async def _configure_bot_commands(application: Application) -> None:
     """Synchronize the public Telegram profile and supported command menu."""
 
-    await application.bot.set_my_commands(
-        [BotCommand(command="start", description="Начало и меню")]
-    )
-    await application.bot.set_my_name("Какой картой?")
-    await application.bot.set_my_short_description("Подскажет лучшую карту по магазину или MCC.")
+    try:
+        await application.bot.set_my_commands(
+            [BotCommand(command="start", description="Начало и меню")]
+        )
+        await application.bot.set_my_name("Какой картой?")
+        await application.bot.set_my_short_description("Подскажет лучшую карту по магазину или MCC.")
+    except RetryAfter:
+        LOGGER.warning("Telegram limited bot profile changes. Continuing startup.")
 
 
 async def _reply(update: Update, text: str) -> None:

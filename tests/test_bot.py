@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from telegram import BotCommand
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, NetworkError
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 from telegram.ext import CallbackQueryHandler, CommandHandler
 
 from mcc_bot.bot import (
@@ -279,6 +279,20 @@ def test_command_menu_lists_only_start_with_russian_description() -> None:
     )
     set_name.assert_awaited_once_with("Какой картой?")
     set_short_description.assert_awaited_once_with("Подскажет лучшую карту по магазину или MCC.")
+
+
+def test_bot_profile_rate_limit_does_not_abort_startup() -> None:
+    bot = SimpleNamespace(
+        set_my_commands=AsyncMock(),
+        set_my_name=AsyncMock(side_effect=RetryAfter(3600)),
+        set_my_short_description=AsyncMock(),
+    )
+
+    asyncio.run(_configure_bot_commands(SimpleNamespace(bot=bot)))
+
+    bot.set_my_commands.assert_awaited_once()
+    bot.set_my_name.assert_awaited_once()
+    bot.set_my_short_description.assert_not_awaited()
 
 
 def test_remember_chat_persists_effective_chat_id(catalog_path, tmp_path) -> None:
