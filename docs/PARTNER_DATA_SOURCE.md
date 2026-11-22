@@ -61,8 +61,9 @@ direct ERIP cashback rule. These cards can be selected when proposing terms.
 [category appendix](https://www.alfabank.by/upload/docs/bank/categor010626.pdf),
 including the merchant-specific categories and the excluded MCCs for other
 purchases. [Favorite categories](https://infocenter.alfabank.by/article/4260)
-are selected in INSNC. Their percentages depend on the user's offer from the
-bank. The lookup presents matching categories in a single position.
+are selected in INSNC. The lookup groups matching categories in one position,
+with published welcome rates and the package-dependent range for other
+purchases. Other category rates are shown in the customer's offer in INSNC.
 
 ### Cashalot
 

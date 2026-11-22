@@ -20,6 +20,7 @@ ALFA_BONUS_NAME = "Альфа-Бонус"
 class AlfaCategory:
     name: str
     short_name: str
+    rate_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +38,9 @@ def _category_index() -> _CategoryIndex:
     by_mcc = defaultdict(list)
     by_merchant = {}
     for row in rows:
-        category = AlfaCategory(row["name"], row.get("short_name", row["name"]))
+        category = AlfaCategory(
+            row["name"], row.get("short_name", row["name"]), row.get("rate_hint")
+        )
         for mcc in row.get("mccs", ()):
             by_mcc[mcc].append(category)
         for merchant in row.get("merchants", ()):

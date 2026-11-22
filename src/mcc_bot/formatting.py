@@ -260,10 +260,14 @@ def format_alfa_bonus(
     if not categories:
         return ""
     name = f"<b>{ALFA_BONUS_NAME}</b>" if html else ALFA_BONUS_NAME
-    labels = " / ".join(
-        f"«{category.name if details else category.short_name}»" for category in categories
-    )
-    return f"🔴 {name} · выберите в INSNC\n   {escape(labels) if html else labels}"
+    labels = []
+    for category in categories:
+        label = f"«{category.name if details else category.short_name}»"
+        if category.rate_hint:
+            label += f" — {category.rate_hint}"
+        labels.append(label)
+    line = " / ".join(labels)
+    return f"🔴 {name} · ставка и выбор в INSNC\n   {escape(line) if html else line}"
 
 
 def _alfa_categories_for_result(

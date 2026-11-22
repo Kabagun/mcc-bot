@@ -12,6 +12,7 @@ from mcc_bot.alfa_bonus import ALFA_BONUS_CARD_ID, alfa_bonus_categories
 from mcc_bot.bot import _lookup_and_reply, toggle_details
 from mcc_bot.catalog import CardCatalog, PartnerPolicy
 from mcc_bot.descriptions import DescriptionCatalog
+from mcc_bot.formatting import format_alfa_bonus
 from mcc_bot.partner_rewards import PartnerOfferInput, PartnerRepository, PartnerTierInput
 from mcc_bot.resources import DEFAULT_CATALOG_PATH, PACKAGE_DATA_DIR
 from mcc_bot.store_handlers import handle_store_callback, search_stores
@@ -76,7 +77,7 @@ def test_raw_mcc_shows_one_two_line_position_and_expands_overlapping_category(ca
     compact = message.reply_text.await_args.args[0]
     assert compact.count("Альфа-Бонус") == 1
     assert compact.splitlines()[-2:] == [
-        "🔴 <b>Альфа-Бонус</b> · выберите в INSNC",
+        "🔴 <b>Альфа-Бонус</b> · ставка и выбор в INSNC",
         "   «Спа и фитнес» / «Аквапарки и бассейны»",
     ]
     assert "Другие покупки" not in compact
@@ -90,6 +91,27 @@ def test_raw_mcc_shows_one_two_line_position_and_expands_overlapping_category(ca
     expanded = callback.edit_message_text.await_args.args[0]
     assert expanded.count("Альфа-Бонус") == 1
     assert expanded.endswith("«Спа и фитнес» / «Аквапарки, бассейны, активный отдых»")
+
+
+@pytest.mark.parametrize(
+    ("mcc", "expected"),
+    [
+        ("5411", "«Супермаркеты» — 3% баллами для новых клиентов"),
+        ("5300", "«Маркетплейсы» — 3% баллами для новых клиентов"),
+        ("5812", "«Рестораны, кафе и доставка» — 3% баллами для новых клиентов"),
+        ("4121", "«Такси» — 3% баллами для новых клиентов"),
+        ("5499", "«Другие покупки» — 0,7–1,3% баллами по пакету"),  # noqa: RUF001
+        ("5712", "«Дом, ремонт» / «Мебель»"),
+    ],
+)
+def test_category_rows_label_published_rates_without_guessing_personal_rates(
+    catalog, mcc, expected
+):
+    categories = alfa_bonus_categories(catalog.cards, mcc)
+    assert format_alfa_bonus(categories).splitlines() == [
+        "🔴 Альфа-Бонус · ставка и выбор в INSNC",
+        f"   {expected}",
+    ]
 
 
 def test_store_uses_exact_category_until_applicable_partner_reward_is_known(catalog, tmp_path):
@@ -128,7 +150,7 @@ def test_store_uses_exact_category_until_applicable_partner_reward_is_known(cata
     asyncio.run(handle_store_callback(update, context))
     categories = query.edit_message_text.await_args.args[0]
     assert categories.count("Альфа-Бонус") == 1
-    assert "«Wildberries» / «Маркетплейсы»" in categories
+    assert "«Wildberries» / «Маркетплейсы» — 3% баллами для новых клиентов" in categories
 
     partners.create_offer(
         PartnerOfferInput(
@@ -145,7 +167,7 @@ def test_store_uses_exact_category_until_applicable_partner_reward_is_known(cata
     partner = query.edit_message_text.await_args.args[0]
     assert partner.count("Альфа-Бонус") == 1
     assert "Альфа-Бонус</b> — 4% баллами" in partner
-    assert "выберите в INSNC" not in partner
+    assert "ставка и выбор в INSNC" not in partner
     assert not any(match.card.id == ALFA_BONUS_CARD_ID for match in catalog.lookup("5262"))
 
     asyncio.run(search_stores(update, context, "Додо Пицца"))
