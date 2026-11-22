@@ -65,13 +65,13 @@ def test_summary_is_private_and_distinguishes_explicit_choices(activity):
 
     with community.stores.transaction() as conn:
         conn.execute("UPDATE community_roles SET digest_choice_recorded_at=NULL WHERE user_id=2")
-    assert repository.list_activity(1, owner_id=1, now=NOW)[1].reminder_state == "legacy_disabled"
+    assert repository.list_activity(1, owner_id=1, now=NOW)[1].reminder_state == "unconfirmed"
 
     for unauthorized_id in (0, True, 2, 5, 6, 2**63):
         with pytest.raises(PermissionError):
             repository.list_activity(unauthorized_id, owner_id=1, now=NOW)
     community.set_role(1, 3, True, role="admin")
-    assert repository.list_activity(1, owner_id=1, now=NOW)[1].reminder_state == "unanswered"
+    assert repository.list_activity(1, owner_id=1, now=NOW)[1].reminder_state == "unconfirmed"
     with pytest.raises(PermissionError):
         repository.list_activity(3, owner_id=1, now=NOW)
 

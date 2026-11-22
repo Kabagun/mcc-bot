@@ -1834,7 +1834,7 @@ async def _helper_activity_view(
     reminders = {
         "enabled": "включены",
         "disabled": "выключены",
-        "legacy_disabled": "выключены, выбор не подтверждён",
+        "unconfirmed": "выключены, выбор не подтверждён",
         "unanswered": "выбор не сделан",
     }
     for person in people[offset : offset + size]:

@@ -149,7 +149,7 @@ class HelperActivityRepository:
                    SELECT r.user_id,p.username,p.first_name,p.last_name,r.role,
                           CASE WHEN r.digest=1 THEN 'enabled'
                                WHEN r.digest_choice_made=1 AND r.digest_choice_recorded_at IS NULL
-                                 THEN 'legacy_disabled'
+                                 THEN 'unconfirmed'
                                WHEN r.digest_choice_made=1 THEN 'disabled'
                                ELSE 'unanswered' END AS reminder_state,
                           COALESCE(a.lookups,0) AS lookups,COALESCE(a.lookup_days,0) AS lookup_days,

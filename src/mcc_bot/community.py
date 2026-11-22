@@ -528,8 +528,6 @@ class CommunityService:
                    VALUES(?,?,?,0,?)
                    ON CONFLICT(user_id) DO UPDATE SET active=excluded.active,
                    epoch=excluded.epoch,role=excluded.role,
-                   digest_choice_made=CASE WHEN community_roles.digest=1
-                                           THEN 0 ELSE community_roles.digest_choice_made END,
                    digest_choice_recorded_at=CASE WHEN community_roles.digest=1
                        THEN NULL ELSE community_roles.digest_choice_recorded_at END,
                    digest=0""",
