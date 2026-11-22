@@ -40,6 +40,11 @@ def test_published_categories_and_partner_policy(catalog):
     assert sum("merchants" in row for row in rows) == 86
     assert len(codes) == 239
     assert codes <= DescriptionCatalog.from_file().labels.keys()
+    (other_purchases,) = (row for row in rows if "excluded_mccs" in row)
+    assert len(other_purchases["excluded_mccs"]) == 39
+    assert all(
+        "Другие покупки" not in _names(catalog, mcc) for mcc in other_purchases["excluded_mccs"]
+    )
     assert {mcc for mcc in codes if len(alfa_bonus_categories(catalog.cards, mcc)) > 1} == {
         "5712",
         "7941",
@@ -96,17 +101,15 @@ def test_raw_mcc_shows_one_two_line_position_and_expands_overlapping_category(ca
 @pytest.mark.parametrize(
     ("mcc", "expected"),
     [
-        ("5411", "«Супермаркеты» — 3% баллами для новых клиентов"),
-        ("5300", "«Маркетплейсы» — 3% баллами для новых клиентов"),
-        ("5812", "«Рестораны, кафе и доставка» — 3% баллами для новых клиентов"),
-        ("4121", "«Такси» — 3% баллами для новых клиентов"),
+        ("5411", "«Супермаркеты»"),
+        ("5300", "«Маркетплейсы»"),
+        ("5812", "«Рестораны, кафе и доставка»"),
+        ("4121", "«Такси»"),
         ("5499", "«Другие покупки» — 0,7–1,3% баллами по пакету"),  # noqa: RUF001
         ("5712", "«Дом, ремонт» / «Мебель»"),
     ],
 )
-def test_category_rows_label_published_rates_without_guessing_personal_rates(
-    catalog, mcc, expected
-):
+def test_category_rows_show_rates_only_for_other_purchases(catalog, mcc, expected):
     categories = alfa_bonus_categories(catalog.cards, mcc)
     assert format_alfa_bonus(categories).splitlines() == [
         "🔴 Альфа-Бонус · ставка и выбор в INSNC",
@@ -150,7 +153,7 @@ def test_store_uses_exact_category_until_applicable_partner_reward_is_known(cata
     asyncio.run(handle_store_callback(update, context))
     categories = query.edit_message_text.await_args.args[0]
     assert categories.count("Альфа-Бонус") == 1
-    assert "«Wildberries» / «Маркетплейсы» — 3% баллами для новых клиентов" in categories
+    assert categories.endswith("«Wildberries» / «Маркетплейсы»")
 
     partners.create_offer(
         PartnerOfferInput(
